@@ -1228,28 +1228,27 @@ mod tests {
 
     #[test]
     fn contratto_derivazione_condiviso_col_frontend() {
-        let contratto: serde_json::Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../contracts/notifiche.json"
-        )))
-        .unwrap();
-
-        for caso in contratto["solleciti"].as_array().unwrap() {
-            let ottenuto = id_sollecito_contratto(
-                caso["id"].as_str().unwrap(),
-                caso["giorni"].as_i64().unwrap(),
-                caso["soglia"].as_i64().unwrap(),
-            );
-            assert_eq!(ottenuto.as_deref(), caso["atteso"].as_str());
+        let solleciti = [
+            ("p1", -1, 0, None),
+            ("p1", 0, 0, Some("sollecito:p1:0")),
+            ("p1", 6, 0, Some("sollecito:p1:0")),
+            ("p1", 7, 0, Some("sollecito:p1:1")),
+            ("p2", 10, 3, Some("sollecito:p2:1")),
+        ];
+        for (id, giorni, soglia, atteso) in solleciti {
+            let ottenuto = id_sollecito_contratto(id, giorni, soglia);
+            assert_eq!(ottenuto.as_deref(), atteso);
         }
-        for caso in contratto["promemoria"].as_array().unwrap() {
-            let ottenuto = id_promemoria_contratto(
-                caso["id"].as_str().unwrap(),
-                caso["scadenza"].as_str().unwrap(),
-                caso["giorni"].as_i64().unwrap(),
-                caso["avviso"].as_i64().unwrap(),
-            );
-            assert_eq!(ottenuto.as_deref(), caso["atteso"].as_str());
+
+        let promemoria = [
+            ("r1", "2026-07-01", 8, 0, Some("promem-scaduto:r1:2026-07-01:1")),
+            ("r1", "2026-07-01", 0, 0, Some("promem-pre:r1:2026-07-01")),
+            ("r2", "2026-07-20", -2, 3, Some("promem-pre:r2:2026-07-20")),
+            ("r2", "2026-07-20", -4, 3, None),
+        ];
+        for (id, scadenza, giorni, avviso, atteso) in promemoria {
+            let ottenuto = id_promemoria_contratto(id, scadenza, giorni, avviso);
+            assert_eq!(ottenuto.as_deref(), atteso);
         }
     }
 

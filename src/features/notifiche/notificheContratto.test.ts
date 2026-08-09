@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import contratto from "../../../contracts/notifiche.json";
 import type { Comunicazione, Suggerimento } from "../../lib/tauri";
 import {
   contaNonVisteConStatiLocali,
@@ -8,6 +7,22 @@ import {
   idPromemoriaContratto,
   idSollecitoContratto,
 } from "./notifiche";
+
+const contratto = {
+  solleciti: [
+    { id: "p1", giorni: -1, soglia: 0, atteso: null },
+    { id: "p1", giorni: 0, soglia: 0, atteso: "sollecito:p1:0" },
+    { id: "p1", giorni: 6, soglia: 0, atteso: "sollecito:p1:0" },
+    { id: "p1", giorni: 7, soglia: 0, atteso: "sollecito:p1:1" },
+    { id: "p2", giorni: 10, soglia: 3, atteso: "sollecito:p2:1" },
+  ],
+  promemoria: [
+    { id: "r1", scadenza: "2026-07-01", giorni: 8, avviso: 0, atteso: "promem-scaduto:r1:2026-07-01:1" },
+    { id: "r1", scadenza: "2026-07-01", giorni: 0, avviso: 0, atteso: "promem-pre:r1:2026-07-01" },
+    { id: "r2", scadenza: "2026-07-20", giorni: -2, avviso: 3, atteso: "promem-pre:r2:2026-07-20" },
+    { id: "r2", scadenza: "2026-07-20", giorni: -4, avviso: 3, atteso: null },
+  ],
+} as const;
 
 describe("contratto condiviso derivazione notifiche", () => {
   it("mantiene soglie e bucket dei solleciti allineati al backend", () => {
