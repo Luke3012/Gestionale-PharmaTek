@@ -111,6 +111,10 @@ if ($env:TAURI_SIGNING_PRIVATE_KEY) {
     Write-Warning "Genera le chiavi: npx tauri signer generate -w `"$HOME\.tauri\pharmatek-public.key`" --ci"
 }
 
+Write-Host "Pulisco le build Tauri precedenti..." -ForegroundColor Cyan
+npm run clean:tauri
+if ($LASTEXITCODE -ne 0) { throw "Pulizia delle build Tauri precedenti fallita." }
+
 Write-Host "Build di produzione Tauri..." -ForegroundColor Cyan
 if ($firmaManualePasswordVuota -or -not $env:TAURI_SIGNING_PRIVATE_KEY) {
     # `createUpdaterArtifacts=false` evita sia il prompt senza password sia una
@@ -119,7 +123,8 @@ if ($firmaManualePasswordVuota -or -not $env:TAURI_SIGNING_PRIVATE_KEY) {
     $configBuildLocale = Join-Path $PSScriptRoot 'tauri-build-no-updater.json'
     & npx tauri build --config $configBuildLocale
 } else {
-    npm run app:build
+    # La pulizia e' gia' stata eseguita sopra; evita di ripeterla tramite app:build.
+    & npx tauri build
 }
 if ($LASTEXITCODE -ne 0) { throw "Build fallita." }
 

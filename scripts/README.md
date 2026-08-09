@@ -6,7 +6,7 @@ Eseguibili dalla root del progetto (anche da una sottocartella: usano percorsi a
 |---|---|
 | `scripts/dev.ps1` | Avvia l'app in sviluppo (`tauri dev`); installa le dipendenze se mancano. |
 | `scripts/test.ps1` | Typecheck + build frontend e `cargo test` (+ clippy se presente). |
-| `scripts/build.ps1` | Build locale di produzione → installer Windows. `-Version X.Y.Z` allinea `tauri.conf.json`, `package.json` e `package-lock.json` prima di buildare. |
+| `scripts/build.ps1` | Pulisce le build Tauri precedenti, poi crea l'installer Windows. `-Version X.Y.Z` allinea `tauri.conf.json`, `package.json` e `package-lock.json` prima di buildare. |
 
 ## Uso
 
@@ -22,6 +22,9 @@ Eseguibili dalla root del progetto (anche da una sottocartella: usano percorsi a
 ./scripts/build.ps1
 ./scripts/build.ps1 -SkipTests      # build veloce senza test
 ./scripts/build.ps1 -Version 0.2.0  # imposta la versione e builda
+
+# Pulizia manuale degli artefatti Rust/Tauri (equivale a cargo clean)
+npm run clean:tauri
 
 ```
 
