@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "purpose": "documentation-and-visual-tests-only",
+  "records": [
+    { "type": "cliente", "name": "Cliente Demo 001" },
+    { "type": "agente", "name": "Agente Demo 001" },
+    { "type": "medico", "name": "Medico Demo 001" },
+    { "type": "paziente", "name": "Paziente Demo 001" },
+    { "type": "corriere", "name": "Corriere Demo 001" },
+    { "type": "conto", "name": "Conto Demo 001" }
+  ]
+}

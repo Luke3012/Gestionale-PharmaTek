@@ -1,0 +1,330 @@
+{
+  "versioni": [
+    {
+      "versione": "0.7.0",
+      "data": "2026-08-02",
+      "sintesi": "Nuove funzionalità premium e diversi bugfix.",
+      "voci": []
+    },
+    {
+      "versione": "0.6.4",
+      "data": "2026-07-20",
+      "sintesi": "Menù contestuale per copia e incolla",
+      "voci": []
+    },
+    {
+      "versione": "0.6.2",
+      "data": "2026-07-19",
+      "sintesi": "Migliorie tecniche, perfezionamenti e correzioni alla sessione dopo l'aggiornamento.",
+      "voci": []
+    },
+    {
+      "versione": "0.6.1",
+      "data": "2026-07-17",
+      "sintesi": "Fix per Aruba, sincronizzazione e onboarding.",
+      "voci": []
+    },
+    {
+      "versione": "0.6.0",
+      "data": "2026-07-16",
+      "sintesi": "Molti cambiamenti sotto la scocca... che riguardano la sincronizzazione.",
+      "voci": [
+        {
+          "categoria": "correzioni",
+          "testo": "Un pc modifica i dati di un utente mentre l'altro cerca di inserirlo in una spedizione? Adesso l'applicazione ne è a conoscenza."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Due pc vogliono rompere le scatole e spedire insieme? Il gestionale è consapevole anche di questo."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Un pc effettua l'importazione dei dati mentre l'altro fa un ripristino? Il pc che effettua il ripristino impedisce a tutti di fare ogni cosa, per il bene comune."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Alcune piccole rifiniture estetiche!"
+        }
+      ]
+    },
+    {
+      "versione": "0.5.9",
+      "data": "2026-07-13",
+      "sintesi": "Rifiniture estetiche alle impostazioni e alla lista promemoria; risolti problemi.",
+      "voci": []
+    },
+    {
+      "versione": "0.5.6",
+      "data": "2026-07-12",
+      "sintesi": "Ottimizzazioni e rifinimenti importanti ai processi di: Produzione, Spedizioni, Impostazioni.",
+      "voci": []
+    },
+    {
+      "versione": "0.5.5",
+      "data": "2026-07-10",
+      "sintesi": "Aggiornamenti qualitativi 🎇!",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Adesso puoi filtrare in contabilità per spedizioni effettuate."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Miglioramenti alla gestione dei rateali e i rimborsi."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Miglioramenti alla logica delle produzioni Laboratorio."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Sono stati aggiornati diversi pacchetti alle ultime versioni."
+        },
+        {
+          "categoria": "altro",
+          "testo": "E' stato riscritto e ristrutturato tutto il codice!"
+        }
+      ]
+    },
+    {
+      "versione": "0.5.3",
+      "data": "2026-07-09",
+      "sintesi": "Aggiunto il campo \"numero di rate predefinite\" ai medici.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Sappiamo bene che Medico Demo 001 ha le sue preferenze!"
+        },
+        {
+          "categoria": "altro",
+          "testo": "Effettuati ulteriori cambiamenti! Nel profondo."
+        }
+      ]
+    },
+    {
+      "versione": "0.5.2",
+      "data": "2026-07-08",
+      "sintesi": "Tentativo di risoluzione problematica ripristino!",
+      "voci": []
+    },
+    {
+      "versione": "0.5.1",
+      "data": "2026-07-07",
+      "sintesi": "Miglioramenti importanti alla logica dello scadenziario pagamenti e alla creazione degli ordini.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Adesso è possibile salvare un ordine senza necessariamente inserire un prodotto (utile per le indecisioni)."
+        },
+        {
+          "categoria": "novita",
+          "testo": "... quindi, nella pagina \"Produzioni\", tali persone saranno segnalate."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "E' stato rivisto il sistema dello scadenziario pagamenti nel caso in cui si volessero effettuare delle modifiche. Ora è tutto più fluido e coerente."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "E' stato risolto un grave problema di sincronizzazione dati."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Sono state aggiunte nuove animazioni per rendere l'utilizzo più piacevole!"
+        }
+      ]
+    },
+    {
+      "versione": "0.5.0",
+      "data": "2026-07-04",
+      "sintesi": "Migliorie funzionali e risoluzione di problemi.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Nuova scorciatoia di ricerca sul desktop, creala dalle Impostazioni."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Spotlight ha nuovi bellissimi comandi rapidi!"
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Durante l'utilizzo del programma potevano mostrarsi schermate nere un po' sospette... adesso non succede più :)"
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Sono state risolte alcune pazzarie 🤩!"
+        },
+        {
+          "categoria": "altro",
+          "testo": "Adesso registrare e adeguare i rateizzi e gli importi dei pagamenti è più facile!"
+        },
+        {
+          "categoria": "altro",
+          "testo": "Bilanciato il carico computazionale."
+        }
+      ]
+    },
+    {
+      "versione": "0.4.5",
+      "data": "2026-07-03",
+      "sintesi": "Riepiloghi cliente e aggiornamenti più curati.",
+      "voci": []
+    },
+    {
+      "versione": "0.4.4",
+      "data": "2026-07-03",
+      "sintesi": "Ritocchi all'installazione e agli aggiornamenti.",
+      "voci": []
+    },
+    {
+      "versione": "0.4.3",
+      "data": "2026-07-02",
+      "sintesi": "Sono state corrette funzioni e apportati miglioramenti.",
+      "voci": []
+    },
+    {
+      "versione": "0.4.2",
+      "data": "2026-07-02",
+      "sintesi": "Notifiche di team più comode e avvio più pulito.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Dalla bacheca puoi rinotificare pagamenti scaduti, segnalazioni e promemoria agli utenti scelti."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Testi di reset, ritiro PC e impostazioni più semplici, con un avvio più fluido."
+        }
+      ]
+    },
+    {
+      "versione": "0.4.0",
+      "data": "2026-07-01",
+      "sintesi": "Nuovi strumenti di pulizia dati e una sincronizzazione più affidabile.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Aggiunte la pulizia dati, nuove funzioni per spedizioni e lotti e una ricerca più completa."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Migliorati backup, sincronizzazione e controlli sulle operazioni più delicate."
+        }
+      ]
+    },
+    {
+      "versione": "0.3.6",
+      "data": "2026-06-30",
+      "sintesi": "Ricerca, finestre e aggiornamenti più affidabili.",
+      "voci": [
+        {
+          "categoria": "correzioni",
+          "testo": "Ridotte lentezze e aperture duplicate, con avvisi di aggiornamento più stabili."
+        }
+      ]
+    },
+    {
+      "versione": "0.3.5",
+      "data": "2026-06-30",
+      "sintesi": "Sincronizzazione in tempo reale più stabile e veloce.",
+      "voci": []
+    },
+    {
+      "versione": "0.3.1",
+      "data": "2026-06-29",
+      "sintesi": "Notifiche, cestino e spedizioni più affidabili.",
+      "voci": []
+    },
+    {
+      "versione": "0.3.0",
+      "data": "2026-06-29",
+      "sintesi": "Nuove funzioni per clienti, Aruba, notifiche e spedizioni.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Migliorati import clienti ed export Aruba, con più controlli sui dati."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Notifiche e spedizioni diventano più flessibili, rapide e facili da correggere."
+        }
+      ]
+    },
+    {
+      "versione": "0.2.5",
+      "data": "2026-06-28",
+      "sintesi": "Ricerca più veloce e interfaccia più comoda.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Velocizzati ricerca e filtri e aggiunte nuove scorciatoie."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Migliorata la gestione di popover e notifiche."
+        }
+      ]
+    },
+    {
+      "versione": "0.2.3",
+      "data": "2026-06-24",
+      "sintesi": "Scadenze, dati cliente e avvio dell'app più curati.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Migliorate scadenze, contrassegni e compilazione dei dati cliente."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Aggiunto l'avvio rapido e silenzioso in background."
+        }
+      ]
+    },
+    {
+      "versione": "0.2.2",
+      "data": "2026-06-23",
+      "sintesi": "Migliorate spedizioni, produzione, rate e compilazione degli ordini.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Rese più semplici la gestione di spedizioni, produzione, rate e ordini."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Migliorati esportazioni, importi e calcolo del residuo."
+        }
+      ]
+    },
+    {
+      "versione": "0.2.1",
+      "data": "2026-06-21",
+      "sintesi": "Novità in-app e storico aggiornamenti più facili da leggere.",
+      "voci": []
+    },
+    {
+      "versione": "0.2.0",
+      "data": "2026-06-21",
+      "sintesi": "Nuove animazioni e correzioni.",
+      "voci": []
+    },
+    {
+      "versione": "0.1.2",
+      "data": "2026-06-20",
+      "sintesi": "Le finestre secondarie ricordano posizione e dimensione tra le sessioni.",
+      "voci": []
+    },
+    {
+      "versione": "0.1.1",
+      "data": "2026-06-20",
+      "sintesi": "Correzioni al sistema di aggiornamento automatico.",
+      "voci": []
+    },
+    {
+      "versione": "0.1.0",
+      "data": "2026-06-01",
+      "sintesi": "Prima versione del gestionale PharmaTek.",
+      "voci": []
+    }
+  ]
+}

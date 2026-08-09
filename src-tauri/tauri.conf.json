@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Gestionale PharmaTek Demo",
+  "version": "0.7.0",
+  "identifier": "it.pharmatek.gestionale.demo",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Gestionale PharmaTek Demo",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600,
+        "visible": false
+      },
+      {
+        "label": "spotlight",
+        "url": "index.html?spotlight",
+        "title": "Cerca — PharmaTek",
+        "width": 640,
+        "height": 460,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "center": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/nsis-hooks.nsh",
+        "languages": [
+          "Italian"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Luke3012/Gestionale-PharmaTek/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyQzlBNjgyRkEwRDIzMkYKUldRdkl3MzZncWJKa2x3VVBTU05qdjZ1NGx4UTI4WkFiS0hWTEtsRWE0ZFYxemEvcC9oc0E5OHkK",
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
+  }
+}

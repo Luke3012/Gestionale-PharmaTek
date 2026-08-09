@@ -1,0 +1,56 @@
+# Dipendenze
+node_modules/
+.pnp/
+.pnp.js
+
+# Build frontend
+dist/
+dist-ssr/
+*.local
+
+# Build Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Dati applicativi e di sincronizzazione (NON vanno nel repo)
+PharmaTek-Data/
+*.ndjson
+*.sqlite
+*.sqlite-journal
+*.db
+
+# File Excel di riferimento aziendale (restano fuori dal versionamento)
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+
+# Log e temporanei
+*.log
+.cache/
+.tmp/
+/tmp/pdfs/
+
+# Impostazioni locali di Claude Code (personali, non condivise)
+.claude/settings.local.json
+
+# Piani di sviluppo interni (restano locali, non pubblicati nel repository)
+/docs/plans/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Variabili d'ambiente
+.env
+.env.*
+!.env.example
+
+# Chiavi di firma updater (NON versionare MAI)
+*.key
+*.key.pub
+.tauri/

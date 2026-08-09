@@ -1,0 +1,2124 @@
+/* Token globali + base. La maggior parte dello stile arriva da Mantine + tema. */
+:root {
+  /* Colori (vedi UI-SPEC §3) */
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --border: #e3e8ef;
+  --text: #1d2733;
+  --text-muted: #5b6b7c;
+  --sidebar: #1a1a1a;
+  --sidebar-2: #242424;
+  --sidebar-3: #2a2a2a;
+  --accent: #f4c20d;
+
+  /* Motion (UI-SPEC §12.2) */
+  --dur-xfast: 120ms;
+  --dur-fast: 160ms;
+  --dur-base: 220ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+
+  font-family: Inter, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background-color: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* la pagina non scrolla "tutta": scrollano le aree designate */
+}
+
+/* Finestra Spotlight: trasparente e senza bordi. Lo sfondo lo dà solo la card
+   interna; il resto della finestra deve "sparire" (niente colore di pagina). */
+.spotlight-root,
+.spotlight-root body,
+.spotlight-root #root {
+  background: transparent !important;
+}
+/* Niente scrollbar: i contenuti che "escono" (es. lo swipe di chiusura dei pop-up overlay,
+   che trasla la card oltre il bordo) vengono ritagliati dal bordo finestra, senza barre. */
+.spotlight-root,
+.spotlight-root body {
+  overflow: hidden;
+}
+/* Il #root resta `visible` così l'ombra delle card non viene tagliata (sta dentro la finestra). */
+.spotlight-root #root {
+  overflow: visible;
+}
+
+/* Numeri tabulari in importi/tabelle */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-menu-contestuale-testo {
+  position: fixed;
+  z-index: 2147483647;
+  width: 168px;
+  background: var(--surface);
+}
+
+.pt-menu-contestuale-azione {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pt-menu-contestuale-azione:hover:not(:disabled) {
+  background: var(--mantine-color-gray-1);
+}
+
+.pt-menu-contestuale-azione:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+/* Scrollbar discrete */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cfd6df;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b6bfca;
+  background-clip: content-box;
+}
+
+/* Drag region opzionale per titolo finestra (Tauri) */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+.spin {
+  animation: pt-spin 0.8s linear infinite;
+}
+@keyframes pt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Scuotimento d'attenzione: richiama l'occhio sul pulsante «Nuovo» quando il
+   cliente/medico digitato non è in elenco. Breve e gentile, una volta sola. */
+.pt-shake {
+  animation: pt-shake 0.45s var(--ease-out);
+}
+@keyframes pt-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+
+/* Barra countdown delle toast: scala da piena a zero, pausabile all'hover. */
+@keyframes pt-toast-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Modale funzionalità extra: una piccola hero, luminosa ma coerente con il
+   giallo PharmaTek. Le animazioni di contenuto sono gestite da Framer Motion. */
+.pt-premium-modal {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 255, 255, 0.96));
+  box-shadow:
+    0 28px 80px rgba(20, 26, 33, 0.24),
+    0 8px 24px rgba(20, 26, 33, 0.1);
+}
+
+.pt-premium-modal__header {
+  position: relative;
+  z-index: 3;
+  min-height: 88px;
+  padding: 22px 24px 14px;
+  background: transparent;
+}
+
+.pt-premium-modal__title {
+  flex: 1;
+}
+
+.pt-premium-modal__title-icon {
+  color: #5c4500;
+  background:
+    linear-gradient(145deg, #fff9dd 0%, #ffe889 100%);
+  border: 1px solid rgba(244, 194, 13, 0.22);
+  box-shadow:
+    0 8px 22px rgba(202, 151, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.pt-premium-modal__eyebrow {
+  color: #9a7200;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.pt-premium-modal__heading {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
+
+.pt-premium-modal__close {
+  width: 38px;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--mantine-color-gray-7);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.pt-premium-modal__close:hover {
+  border-color: var(--mantine-color-gray-2);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.pt-premium-modal__body {
+  position: relative;
+  z-index: 1;
+  padding: 10px 32px 34px;
+}
+
+.pt-premium-modal__glow {
+  position: absolute;
+  z-index: -1;
+  top: 44px;
+  left: 50%;
+  width: 390px;
+  height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 220, 79, 0.2) 0%,
+    rgba(255, 236, 158, 0.08) 50%,
+    transparent 73%
+  );
+  filter: blur(2px);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.pt-premium-modal__visual {
+  position: relative;
+  width: 220px;
+  height: 184px;
+  margin: 0 auto 12px;
+  isolation: isolate;
+}
+
+.pt-premium-modal__visual::before {
+  content: "";
+  position: absolute;
+  inset: 20px 18px 10px;
+  z-index: -2;
+  border: 1px solid rgba(244, 194, 13, 0.22);
+  border-radius: 58px;
+  background:
+    radial-gradient(circle at 38% 28%, rgba(255, 255, 255, 0.96), transparent 34%),
+    linear-gradient(145deg, #fffbed 0%, #fff1b8 52%, #ffe59b 100%);
+  box-shadow:
+    0 22px 48px rgba(202, 151, 0, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  transform: rotate(-3deg);
+}
+
+.pt-premium-modal__visual::after {
+  content: "";
+  position: absolute;
+  right: 34px;
+  bottom: 5px;
+  left: 34px;
+  z-index: -3;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(176, 126, 0, 0.2);
+  filter: blur(16px);
+}
+
+.pt-premium-modal__orbit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 1px solid rgba(177, 129, 0, 0.15);
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-12deg);
+}
+
+.pt-premium-modal__orbit--outer {
+  width: 164px;
+  height: 96px;
+}
+
+.pt-premium-modal__orbit--inner {
+  width: 122px;
+  height: 72px;
+  border-style: dashed;
+  opacity: 0.72;
+  transform: translate(-50%, -50%) rotate(21deg);
+}
+
+.pt-premium-modal__plane-wrap {
+  position: absolute;
+  top: 53px;
+  left: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 82px;
+  height: 82px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 28px;
+  color: #222b35;
+  background: linear-gradient(145deg, #ffda43 0%, #f2b909 100%);
+  box-shadow:
+    0 18px 32px rgba(190, 137, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56);
+}
+
+.pt-premium-modal__spark {
+  position: absolute;
+  display: flex;
+  color: #c99100;
+  filter: drop-shadow(0 2px 4px rgba(181, 127, 0, 0.14));
+}
+
+.pt-premium-modal__spark--1 {
+  top: 28px;
+  left: 38px;
+}
+
+.pt-premium-modal__spark--2 {
+  top: 43px;
+  right: 31px;
+}
+
+.pt-premium-modal__spark--3 {
+  right: 43px;
+  bottom: 25px;
+}
+
+.pt-premium-modal__spark--4 {
+  bottom: 32px;
+  left: 45px;
+}
+
+.pt-premium-modal__copy {
+  position: relative;
+  text-align: center;
+}
+
+.pt-premium-modal__message-title {
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1.25;
+}
+
+.pt-premium-modal__message {
+  max-width: 356px;
+  margin: 10px auto 0;
+  color: var(--mantine-color-gray-6);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.pt-premium-modal__accent {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 10px;
+  margin-top: 20px;
+}
+
+.pt-premium-modal__accent span {
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--accent);
+  opacity: 0.34;
+}
+
+.pt-premium-modal__accent span:nth-child(2) {
+  width: 22px;
+  opacity: 0.82;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pt-premium-modal__close {
+    transition: none;
+  }
+}
+
+/* mantine-datatable: handle di resize con area più larga (14px) per afferrarlo
+   facilmente e non cliccare l'header per sbaglio (= sort). Resta invisibile finché
+   non si passa sopra la colonna (regola :hover della libreria) → niente divisori
+   sempre a vista. */
+.mantine-datatable-header-resizable-handle {
+  width: 14px !important;
+}
+/* Il segno tratteggiato del resize è un piccolo grip CENTRATO nell'header: non
+   arriva al bordo inferiore (il "divisore"), così non lo supera/sborda. */
+.mantine-datatable-header-resizable-handle::after {
+  top: 28% !important;
+  bottom: 28% !important;
+  border-right-color: var(--mantine-color-gray-4) !important;
+}
+/* Header tabella: sfondo bianco coerente con lo stile dell'app. Niente selezione
+   del testo cliccando per ordinare o trascinando il bordo per ridimensionare. */
+.mantine-datatable-header {
+  background: var(--surface);
+}
+.mantine-datatable-header th,
+.mantine-datatable-header-resizable-handle {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* Mantine centra il resize handle sul confine: la metà destra viene coperta dal <th>
+   successivo. Lo teniamo interamente dentro la colonna proprietaria e sopra le celle. */
+.mantine-datatable-header-resizable-handle {
+  width: 12px !important;
+  inset-inline-end: 0 !important;
+  right: 0 !important;
+  z-index: 10;
+}
+.mantine-datatable-header-resizable-handle::after {
+  content: "";
+  position: absolute;
+  inset-block: 24%;
+  inset-inline-end: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--mantine-color-accent-6, var(--mantine-color-yellow-6));
+  opacity: 0;
+}
+.mantine-datatable-header-resizable-handle:hover::after,
+.mantine-datatable-header-resizable-handle:active::after {
+  opacity: 1;
+}
+/* La tabella riempie la larghezza disponibile: le colonne si distribuiscono e si
+   restringono per stare nel contenitore (niente scroll orizzontale inutile). Lo
+   scroll appare solo se si allarga davvero una colonna oltre lo spazio.
+
+   Layout AUTO (default di mantine): ogni colonna NON può restringersi sotto il suo
+   contenuto (la larghezza minima è dettata dalla riga più lunga presente in quella colonna),
+   quindi i testi non si sovrappongono mai. Ridimensionando una colonna le altre si
+   rimpiccioliscono fino al loro minimo-contenuto e poi si fermano (oltre, compare lo scroll).
+   IMPORTANTE: per evitare gli "spazi vuoti esagerati" le colonne NON devono avere larghezze
+   fisse gonfiate (vedi colonne.tsx) — con `auto` una width prefissata viene comunque allargata
+   dallo spazio in eccesso. Meglio lasciarle dimensionarsi sul contenuto. */
+.mantine-datatable-table {
+  width: 100%;
+}
+/* FASE 7A — il browser salta layout/paint delle righe fuori dallo schermo: con migliaia
+   di righe il reflow (es. animazione larghezza sidebar, espansione contenuti) ricalcola
+   solo le righe visibili invece di tutte. `contain-intrinsic-size` riserva l'altezza
+   stimata così la scrollbar resta stabile. Zero impatto sul look (è sempre mantine-datatable). */
+.mantine-datatable-table tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
+}
+/* Le colonne ridotte mantengono sempre il contenuto dentro la propria cella: il testo può
+   andare a capo, ma non può disegnarsi sopra la colonna successiva. */
+.pt-tabella-shell .mantine-datatable-table td {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* Stesso comportamento della data del Giornaliero in tutte le tabelle: quando la
+   cella scende sotto 74 px la data si impila senza troncarsi né invadere le colonne. */
+.pt-data-adattiva {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+  container-type: inline-size;
+}
+.pt-data-adattiva-compatta {
+  display: none;
+  line-height: 1;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* Pagamento del Giornaliero: stesso principio di Stato/Linea. Il testo sparisce
+   soltanto quando la colonna non lo contiene più; tooltip e aria-label restano. */
+.pt-pagamento-adattivo {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+  container-type: inline-size;
+}
+.pt-pagamento-adattivo .mantine-Badge-root { max-width: 100%; min-width: 0; }
+@container (max-width: 108px) {
+  .pt-pagamento-adattivo-label { display: none; }
+  .pt-pagamento-adattivo .mantine-Badge-root { padding-inline: 6px; }
+  .pt-pagamento-adattivo .mantine-Badge-section[data-position="left"] { margin-inline-end: 0; }
+}
+@container (max-width: 74px) {
+  .pt-data-adattiva-estesa { display: none; }
+  .pt-data-adattiva-compatta { display: flex; }
+}
+
+.pt-riepilogo-kpi-container {
+  container-type: inline-size;
+}
+
+.pt-riepilogo-kpi-row {
+  display: grid;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.pt-riepilogo-kpi-row[data-con-relazioni="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 50%);
+  column-gap: clamp(32px, 5cqi, 56px);
+}
+
+.pt-riepilogo-kpi-group {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.72fr) repeat(2, minmax(90px, 1fr));
+  align-items: center;
+  gap: clamp(10px, 1.5cqi, 16px);
+  width: 100%;
+  max-width: 370px;
+  min-width: 0;
+}
+
+.pt-riepilogo-kpi {
+  min-width: 0;
+}
+
+.pt-riepilogo-kpi-label-compatta {
+  display: none;
+}
+
+.pt-riepilogo-kpi-valore {
+  overflow: hidden;
+  font-size: clamp(1rem, 3.2cqi, 1.5rem);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pt-riepilogo-relazioni {
+  display: grid;
+  align-self: stretch;
+  gap: clamp(8px, 1.5cqi, 14px);
+  min-width: 0;
+}
+
+.pt-riepilogo-relazione-card {
+  display: flex;
+  align-items: center;
+}
+
+@container (max-width: 760px) {
+  .pt-riepilogo-kpi-row[data-con-relazioni="true"] {
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 50%);
+  }
+
+  .pt-riepilogo-kpi-valore {
+    font-size: 18px;
+  }
+
+  .pt-riepilogo-kpi-group {
+    grid-template-columns: 68px repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    max-width: none;
+  }
+
+  .pt-riepilogo-kpi-label-estesa-adattiva {
+    display: none;
+  }
+
+  .pt-riepilogo-kpi-label-compatta {
+    display: inline;
+  }
+}
+
+@container (max-width: 620px) {
+  .pt-riepilogo-kpi-row[data-con-relazioni="true"] {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 36%);
+    column-gap: 28px;
+  }
+
+  .pt-riepilogo-relazioni {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 6px;
+  }
+
+  .pt-riepilogo-kpi-valore {
+    font-size: 14px;
+  }
+
+  .pt-riepilogo-kpi-group {
+    grid-template-columns: 62px 92px 92px;
+    gap: 8px;
+  }
+
+  .pt-riepilogo-relazione-card {
+    padding-inline: 9px;
+    padding-block: 5px;
+  }
+}
+
+@container (max-width: 520px) {
+  .pt-riepilogo-relazione-icona {
+    display: none;
+  }
+}
+
+/* Tabelle globali: la scrollbar orizzontale vive nel wrapper di pagina, sincronizzata
+   da Tabella.tsx. Le scrollbar interne restano nascoste per non duplicare controlli. */
+.pt-tabella-shell .mantine-ScrollArea-scrollbar[data-orientation="horizontal"] {
+  display: none;
+}
+.pt-tabella-shell .mantine-ScrollArea-viewport::-webkit-scrollbar:horizontal {
+  height: 0;
+}
+/* Forza l'overflow-y su auto per tutte le tabelle. In questo modo la scrollbar verticale
+   compare solo se c'è un effettivo overflow dei dati (quando l'altezza è fissa),
+   mentre resta nascosta se i dati entrano interamente a schermo o se la tabella si espande. */
+.pt-tabella-shell .mantine-ScrollArea-viewport {
+  overflow-y: auto !important;
+}
+/* Durante la cascata iniziale delle righe (che si traslano in basso), nascondiamo
+   la scrollbar per evitare che la temporanea espansione dei contenuti crei un flash
+   visivo della scrollbar verticale interna. */
+.pt-tabella-shell.pt-tabella-animating .mantine-ScrollArea-viewport {
+  overflow-y: hidden !important;
+}
+.pt-tabella-shell.pt-tabella-animating .mantine-ScrollArea-scrollbar[data-orientation="vertical"] {
+  display: none !important;
+}
+
+/* Mantine sfuma per 200 ms lo stato vuoto quando arrivano le righe. Nei Preventivi
+   deve sparire nello stesso frame, senza sovrapporsi alla cascata della tabella. */
+.pt-preventivi-tabella .mantine-datatable-empty-state {
+  transition: none !important;
+}
+.pt-preventivi-tabella .mantine-datatable-empty-state:not([data-active]) {
+  display: none !important;
+}
+
+.pt-tabella-scrollbar {
+  height: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 100;
+  background-color: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.pt-tabella-scrollbar::-webkit-scrollbar {
+  height: 10px;
+}
+
+/* Riga pagamento cliccabile (card ordine): hover evidente per segnalare l'azione. */
+.pt-pagamento-row {
+  border-radius: 8px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 120ms var(--ease-out);
+}
+.pt-pagamento-row:hover {
+  background: var(--mantine-color-gray-1);
+}
+
+/* "Riduci animazioni": azzera transizioni/animazioni CSS ovunque (es. apertura
+   sidebar istantanea). Le animazioni Framer Motion sono già spente da MotionConfig. */
+.riduci-animazioni *,
+.riduci-animazioni *::before,
+.riduci-animazioni *::after {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+/* Flash della riga "appena creata" (FASE 7C): es. una spedizione appena effettuata che
+   compare in elenco. Un breve alone giallo brand che sfuma. Lavora sulle celle (`td`)
+   perché lo sfondo riga in mantine-datatable è sulle celle. */
+.pt-riga-nuova > td {
+  animation: pt-row-flash 2.2s var(--ease-out);
+}
+@keyframes pt-row-flash {
+  0% {
+    background: var(--mantine-color-accent-2, #fbe7a0);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* Deep-link dalla campanella: richiama l'attenzione senza muovere la card.
+   Lampeggia soltanto lo sfondo del riquadro interno, due volte. */
+.pt-comunicazione-evidenziata {
+  animation: pt-comunicazione-evidenziata 700ms ease-in-out 2;
+}
+
+@keyframes pt-comunicazione-evidenziata {
+  0%,
+  100% {
+    background-color: var(--mantine-color-body);
+  }
+  50% {
+    background-color: color-mix(
+      in srgb,
+      var(--mantine-color-yellow-1) 72%,
+      var(--mantine-color-body)
+    );
+  }
+}
+
+/* Spedizioni: mantine-datatable espande dentro una <table>, quindi animare l'altezza
+   del Collapse costringe il browser a ricalcolare la tabella a ogni frame. La riga si
+   apre subito; il pannello interno fa solo transform/opacity, molto più leggero. */
+.pt-spedizione-expanded {
+  animation: pt-expand-panel 170ms var(--ease-out);
+  transform-origin: top center;
+  will-change: transform, opacity;
+}
+
+.pt-search-match {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mantine-color-accent-1, #fff7cc) 68%, transparent);
+  box-shadow: inset 3px 0 0 var(--mantine-color-accent-5, #f4c20d);
+  padding: 4px 6px;
+  margin: -4px -6px;
+}
+
+.pt-search-match-row {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mantine-color-accent-1, #fff7cc) 70%, transparent);
+  box-shadow: inset 3px 0 0 var(--mantine-color-accent-5, #f4c20d);
+}
+
+.pt-search-match-card {
+  box-shadow: inset 3px 0 0 var(--mantine-color-accent-5, #f4c20d);
+  background: color-mix(in srgb, var(--mantine-color-accent-1, #fff7cc) 48%, var(--mantine-color-body));
+}
+
+/* Produzione > In lavorazione: il filtro seleziona il lotto intero, mentre questo
+   richiamo indica gli ordini degli agenti richiesti. La velatura lavanda resta
+   separata dal fondo giallo della ricerca e svanisce dolcemente verso destra. */
+.pt-production-agent-match {
+  position: relative;
+  isolation: isolate;
+}
+
+.pt-production-agent-match::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--mantine-color-violet-2) 22%, transparent) 0%,
+    color-mix(in srgb, var(--mantine-color-violet-1) 9%, transparent) 32%,
+    transparent 62%
+  );
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--mantine-color-violet-5) 52%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--mantine-color-violet-4) 11%, transparent),
+    0 2px 8px color-mix(in srgb, var(--mantine-color-violet-4) 6%, transparent);
+}
+
+.pt-invalid-field-pulse {
+  border-radius: var(--mantine-radius-md);
+  outline: none !important;
+  animation: pt-invalid-field-pulse 1.15s ease-out;
+  will-change: box-shadow, border-color, background-color;
+}
+
+@keyframes pt-invalid-field-pulse {
+  0% {
+    border-color: var(--mantine-color-gray-4);
+    background-color: var(--mantine-color-body);
+    box-shadow: 0 0 0 0 rgba(244, 162, 97, 0);
+  }
+  18% {
+    border-color: var(--mantine-color-orange-5);
+    background-color: color-mix(in srgb, var(--mantine-color-orange-0) 58%, var(--mantine-color-body));
+    box-shadow: 0 0 0 3px rgba(244, 162, 97, 0.22);
+  }
+  46% {
+    border-color: var(--mantine-color-yellow-5);
+    background-color: color-mix(in srgb, var(--mantine-color-yellow-0) 44%, var(--mantine-color-body));
+    box-shadow: 0 0 0 1px rgba(244, 162, 97, 0.08);
+  }
+  72% {
+    border-color: var(--mantine-color-orange-5);
+    background-color: color-mix(in srgb, var(--mantine-color-orange-0) 42%, var(--mantine-color-body));
+    box-shadow: 0 0 0 3px rgba(244, 162, 97, 0.16);
+  }
+  100% {
+    border-color: var(--mantine-color-gray-4);
+    background-color: var(--mantine-color-body);
+    box-shadow: 0 0 0 0 rgba(244, 162, 97, 0);
+  }
+}
+
+.pt-product-field-attention-cell .mantine-Autocomplete-input,
+.pt-product-field-attention-cell input {
+  animation: pt-product-field-attention 900ms ease-in-out 3;
+  border-color: var(--pt-product-attention, var(--mantine-color-blue-5)) !important;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--pt-product-attention-soft, var(--mantine-color-blue-0)) 62%, var(--mantine-color-body)) 0%,
+      var(--mantine-color-body) 72%
+    ) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pt-product-attention, var(--mantine-color-blue-5)) 16%, transparent);
+}
+
+@keyframes pt-product-field-attention {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--pt-product-attention, var(--mantine-color-blue-5)) 12%, transparent);
+  }
+  45% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--pt-product-attention, var(--mantine-color-blue-5)) 22%, transparent);
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--pt-product-attention-soft, var(--mantine-color-blue-0)) 84%, var(--mantine-color-body)) 0%,
+        var(--mantine-color-body) 78%
+      );
+  }
+}
+
+.riduci-animazioni .pt-product-field-attention-cell .mantine-Autocomplete-input,
+.riduci-animazioni .pt-product-field-attention-cell input {
+  animation: none;
+}
+
+@keyframes pt-expand-panel {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+.pt-crea-spedizione-card {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.pt-crea-spedizione-ordine {
+  background: var(--mantine-color-default-hover);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.pt-crea-spedizione-riga-prodotto {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) minmax(116px, 148px);
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+
+@media (max-width: 720px) {
+  .pt-crea-spedizione-riga-prodotto {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .pt-crea-spedizione-riga-prodotto .mantine-TextInput-root {
+    grid-column: 2;
+    width: 100%;
+  }
+}
+
+/* Card KPI dashboard: hover lift (UI-SPEC §12). */
+.pt-kpi-card {
+  transition: transform 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+.pt-kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--mantine-shadow-md);
+}
+
+/* Impostazioni: packing «masonry» delle Sezioni via CSS multi-colonna. Evita le
+   schede sfalsate e i grossi spazi vuoti del grid quando le card hanno altezze
+   diverse: ogni card resta intera (break-inside) e le colonne si riempiono fitte. */
+.pt-impostazioni-masonry {
+  column-gap: 16px;
+}
+.pt-impostazioni-masonry > * {
+  break-inside: avoid;
+  margin-bottom: 16px;
+  display: block;
+  width: 100%;
+}
+.pt-comunicazioni-span {
+  column-span: all;
+}
+
+/* Centro comunicazioni: ogni card usa gli stessi assi. Identità in alto,
+   messaggio sotto e metadati/azioni sul fondo, senza colonne che cambiano
+   posizione in base alla lunghezza del contenuto. */
+.pt-comunicazione-card-layout {
+  display: grid;
+  grid-template-columns: 18px 34px minmax(220px, 1fr) auto;
+  grid-template-areas: "selezione icona contenuto controlli";
+  column-gap: 12px;
+  align-items: center;
+}
+
+.pt-comunicazione-card-selezione {
+  grid-area: selezione;
+  align-self: center;
+}
+
+.pt-comunicazione-card-icona {
+  grid-area: icona;
+  align-self: center;
+}
+
+.pt-comunicazione-card-contenuto {
+  grid-area: contenuto;
+  min-width: 0;
+}
+
+.pt-comunicazione-card-stato-badge {
+  width: 96px;
+  flex: 0 0 96px;
+}
+
+.pt-comunicazione-card-corpo {
+  grid-area: corpo;
+  min-width: 0;
+}
+
+.pt-comunicazione-card-corpo-trigger {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  color: inherit;
+  text-align: left;
+  border-radius: var(--mantine-radius-xs);
+  cursor: pointer;
+}
+
+.pt-comunicazione-card-corpo-trigger:hover {
+  color: var(--mantine-color-yellow-8);
+}
+
+.pt-comunicazione-card-corpo-trigger:focus-visible {
+  outline: 2px solid var(--mantine-color-blue-5);
+  outline-offset: 2px;
+}
+
+.pt-comunicazione-card-controlli {
+  grid-area: controlli;
+  justify-self: end;
+  align-self: stretch;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .pt-comunicazione-card-layout {
+    grid-template-columns: 18px 34px minmax(0, 1fr);
+    grid-template-areas:
+      "selezione icona contenuto"
+      "selezione icona controlli";
+    row-gap: 6px;
+  }
+
+  .pt-comunicazione-card-controlli {
+    justify-self: stretch;
+    align-items: flex-end;
+  }
+}
+
+@media (max-width: 520px) {
+  .pt-comunicazione-card-controlli {
+    row-gap: 4px;
+  }
+}
+
+@media (min-width: 768px) {
+  .pt-impostazioni-masonry {
+    column-count: 2;
+  }
+}
+
+/* Entrata "a cascata" delle PRIME righe di una tabella, una volta sola al caricamento
+   (vedi ui/Tabella.tsx). CSS puro (transform+opacity = composito, leggero): niente
+   framer-motion per riga, niente lag su liste lunghe. Lo stagger lo dà animation-delay
+   per indice, applicato solo alle prime N righe (le altre compaiono subito). */
+@keyframes ptRigaEnter {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.pt-tabella-shell tr.pt-riga-anim {
+  animation: ptRigaEnter 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+/* «Riduci animazioni»: nessuna entrata (oltre al gate JS che non applica la classe). */
+.riduci-animazioni tr.pt-riga-anim {
+  animation: none;
+}
+
+/* Entrata a cascata delle CARD (Produzione): stessa idea delle righe ma per le card, via
+   CSS — NON framer-motion per card (spring JS per ogni card = lag su liste lunghe). */
+.pt-card-anim {
+  animation: ptRigaEnter 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.riduci-animazioni .pt-card-anim {
+  animation: none;
+}
+
+/* Modali/finestra-form: titolo e azioni restano fermi; scrolla solo il contenuto. */
+.mantine-Modal-content:has(.pt-modal-shell) {
+  max-height: min(88dvh, calc(100dvh - 72px));
+  overflow: hidden;
+}
+.mantine-Modal-body:has(> .pt-modal-shell) {
+  overflow: hidden;
+}
+.pt-modal-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(78dvh, calc(100dvh - 150px));
+}
+.pt-modal-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: calc(100dvh - 250px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  padding-bottom: 4px;
+}
+.pt-modal-scroll::-webkit-scrollbar:horizontal {
+  height: 0;
+}
+.pt-modal-shell-table {
+  height: auto;
+  max-height: calc(100dvh - 104px);
+}
+.pt-modal-shell-table > .pt-modal-scroll {
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+.pt-modal-table-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  border-radius: var(--mantine-radius-md);
+}
+.pt-modal-table-scroll .pt-tabella-shell {
+  min-height: min-content;
+}
+.pt-modal-table-scroll .pt-tabella-scrollbar {
+  bottom: 0;
+}
+.pt-modal-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--mantine-color-default-border);
+  background: var(--mantine-color-body);
+}
+.pt-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.pt-document-preview-footer {
+  container-type: inline-size;
+}
+
+.pt-document-preview-actions {
+  width: 100%;
+  min-width: 0;
+}
+
+.pt-document-preview-actions .mantine-Group-root {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.pt-document-preview-actions .mantine-Button-root {
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+@container (max-width: 1050px) {
+  .pt-document-preview-actions[data-affollate],
+  .pt-document-preview-actions[data-affollate] .mantine-Group-root {
+    gap: 5px;
+  }
+
+  .pt-document-preview-actions[data-affollate] .mantine-Button-root {
+    height: 34px;
+    padding-inline: 9px;
+  }
+
+  .pt-document-preview-actions[data-affollate] .mantine-Button-label {
+    font-size: 12px;
+  }
+
+  .pt-document-preview-actions[data-affollate] .mantine-Button-section {
+    margin-inline-end: 5px;
+  }
+}
+
+@container (max-width: 780px) {
+  .pt-document-preview-actions,
+  .pt-document-preview-actions .mantine-Group-root {
+    gap: 6px;
+  }
+
+  .pt-document-preview-actions .mantine-Button-root {
+    height: 30px;
+    padding-inline: 5px;
+  }
+
+  .pt-document-preview-actions .mantine-Button-label {
+    font-size: 10px;
+  }
+
+  .pt-document-preview-actions .mantine-Button-section {
+    margin-inline-end: 3px;
+  }
+
+  .pt-document-preview-actions .mantine-Button-section svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+.pt-preventivo-scelta-origine {
+  width: 100%;
+  min-height: 82px;
+  padding: 13px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--mantine-radius-lg);
+  background: var(--mantine-color-gray-0);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.pt-nuovo-preventivo-ridimensionamento {
+  overflow: hidden !important;
+  scrollbar-width: none;
+}
+
+.pt-nuovo-preventivo-ridimensionamento::-webkit-scrollbar {
+  display: none;
+}
+
+.pt-preventivo-scelta-origine:hover {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-yellow-0) 55%,
+    var(--mantine-color-body)
+  );
+}
+
+.pt-preventivo-scelta-origine[data-selected] {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-yellow-0) 78%,
+    var(--mantine-color-body)
+  );
+}
+
+.pt-preventivo-scelta-origine:focus-visible {
+  outline: 2px solid var(--mantine-color-yellow-6);
+  outline-offset: 2px;
+}
+
+.pt-preventivo-scelta-check {
+  flex: 0 0 auto;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.pt-preventivo-scelta-origine[data-selected]
+  .pt-preventivo-scelta-check {
+  transform: scale(1.06);
+}
+
+.riduci-animazioni .pt-preventivo-scelta-origine,
+.riduci-animazioni .pt-preventivo-scelta-check {
+  transition: none;
+}
+
+@media (max-width: 880px) {
+  .pt-document-preview-grid {
+    grid-template-columns: 1fr !important;
+  }
+.pt-document-preview-editor {
+    border-left: 0 !important;
+    border-top: 1px solid var(--mantine-color-default-border);
+  }
+}
+
+.pt-scheda-inline-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pt-document-preview-page {
+  container-type: inline-size;
+}
+
+.pt-scheda-inline-field {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  pointer-events: auto;
+  resize: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111;
+  padding: 2px 6px;
+  font: 600 clamp(9px, 1.65cqw, 13px)/1.25 Arial, sans-serif;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.pt-scheda-inline-field:hover {
+  border-color: rgba(232, 188, 50, 0.7);
+  background: #fffdf5;
+}
+
+.pt-scheda-inline-field:focus {
+  border-color: #e5b928;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(229, 185, 40, 0.2);
+}
+
+.pt-scheda-inline-field[data-missing="true"] {
+  border-color: rgba(229, 185, 40, 0.65);
+  background: rgba(255, 249, 222, 0.97);
+}
+
+.pt-scheda-inline-field[type="date"][data-empty="true"]:not(:focus)::-webkit-datetime-edit {
+  color: transparent;
+}
+
+.pt-scheda-inline-check {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.pt-scheda-inline-check:hover,
+.pt-scheda-inline-check:focus-visible {
+  outline: none;
+  background: rgba(229, 185, 40, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(229, 185, 40, 0.65);
+}
+
+@media (max-height: 760px) {
+  .mantine-Modal-content:has(.pt-modal-shell) {
+    max-height: calc(100dvh - 48px);
+  }
+  .pt-modal-shell {
+    max-height: calc(100dvh - 104px);
+  }
+  .pt-modal-scroll {
+    max-height: calc(100dvh - 204px);
+  }
+}
+
+.mantine-Modal-content:has(.pt-modal-shell-table) {
+  max-height: calc(100dvh - 40px);
+}
+.pt-modal-shell-table {
+  max-height: calc(100dvh - 104px);
+}
+.pt-modal-shell-table > .pt-modal-scroll {
+  max-height: none;
+}
+
+.pt-window-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.pt-window-form > .pt-modal-shell {
+  flex: 1 1 auto;
+  max-height: none;
+}
+.pt-window-form > .pt-modal-shell > .pt-modal-scroll {
+  flex: 1 1 0;
+  max-height: none;
+}
+.pt-window-form .pt-modal-footer {
+  background: transparent;
+}
+.pt-payment-window-form {
+  container-type: inline-size;
+}
+.pt-payment-window-form .pt-modal-scroll {
+  overflow-x: hidden;
+}
+
+@container (max-width: 440px) {
+  .pt-payment-window-form .pt-payment-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pt-payment-window-form .pt-payment-form-row > * {
+    width: 100%;
+    max-width: 100%;
+  }
+  .pt-payment-window-form .pt-modal-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+  .pt-payment-window-form .pt-modal-actions {
+    width: 100%;
+  }
+  .pt-payment-window-form .pt-modal-actions > button {
+    flex: 1 1 0;
+  }
+  .pt-payment-window-form .pt-modal-footer > button {
+    width: 100%;
+  }
+}
+
+@media (max-height: 520px) {
+  .pt-payment-window-header {
+    padding: 10px 12px !important;
+  }
+  .pt-payment-window-form {
+    padding: 12px !important;
+  }
+}
+
+.pt-dialog-choice {
+  display: block;
+  width: 100%;
+  border-radius: var(--mantine-radius-md);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.pt-dialog-choice:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--mantine-shadow-sm);
+}
+
+.pt-dialog-choice .pt-dialog-card {
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.pt-dialog-choice:hover .pt-dialog-card {
+  background-color: var(--mantine-color-gray-0);
+  border-color: var(--mantine-color-gray-4);
+}
+
+.pt-dialog-choice:focus-visible {
+  outline: 2px solid var(--mantine-color-blue-5);
+  outline-offset: 2px;
+}
+
+/* Mantine 9 assegna minimi intrinseci più larghi ai contenuti con badge e bottoni.
+   Le spedizioni effettuate devono invece restare sempre dentro la pagina. */
+.pt-spedizioni-effettuate .mantine-datatable-table {
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed !important;
+}
+
+.pt-spedizioni-effettuate .mantine-datatable-table th,
+.pt-spedizioni-effettuate .mantine-datatable-table td {
+  min-width: 0 !important;
+  overflow: hidden;
+}
+
+.pt-spedizioni-effettuate .mantine-ScrollArea-viewport {
+  overflow-x: hidden !important;
+}
+
+/* Quando la colonna non contiene più l'etichetta, il badge mantiene la sola icona,
+   mentre tooltip e aria-label conservano il significato completo. */
+.pt-badge-adattivo {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.pt-badge-adattivo .mantine-Badge-root {
+  max-width: 100%;
+  min-width: 0;
+}
+
+@container (max-width: 118px) {
+  .pt-badge-adattivo .pt-badge-adattivo-label {
+    display: none;
+  }
+
+  .pt-badge-adattivo .mantine-Badge-root {
+    padding-inline: 6px;
+  }
+
+  .pt-badge-adattivo .mantine-Badge-section[data-position="left"] {
+    margin-inline-end: 0;
+  }
+}
+
+/* Le azioni rimangono su una riga: se lo spazio scarseggia scompare soltanto il
+   testo del bottone, non l'icona né il comando. */
+.pt-cella-azioni-adattive {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+/* Toolbar di Produzione/Spedizioni: su view larghe resta una riga sola e il gruppo
+   filtri è realmente ancorato a destra; soltanto sotto la soglia passa a capo. */
+.pt-spedizioni-switch-label {
+  display: block;
+  max-width: clamp(72px, 18vw, 340px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pt-spedizioni-da-spedire-toolbar .mantine-Switch-root,
+.pt-spedizioni-da-spedire-toolbar .mantine-Switch-body,
+.pt-spedizioni-da-spedire-toolbar .mantine-Switch-labelWrapper {
+  min-width: 0;
+}
+.pt-spedizioni-da-spedire-toolbar .mantine-Switch-root {
+  flex: 0 1 auto;
+}
+
+/* Effettuate usa lo spazio REALE del proprio contenitore: schede e filtri stanno
+   affiancati finché i controlli riescono a restringersi; sotto 760px i due gruppi
+   passano su righe separate senza dipendere da viewport, sidebar o scaling OS. */
+.pt-spedizioni-toolbar-effettuate {
+  display: grid !important;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  container-type: inline-size;
+  container-name: sped-toolbar;
+}
+
+/* “Alla consegna” contiene un solo badge: su colonne strette cresce in altezza e
+   manda il testo a capo, invece di troncarlo o creare più elementi separati. */
+.pt-badge-multiriga.mantine-Badge-root {
+  width: fit-content;
+  max-width: 100%;
+  height: auto;
+  min-height: 22px;
+  padding-block: 4px;
+}
+.pt-badge-multiriga .mantine-Badge-label {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.15;
+  text-align: center;
+}
+
+/* Azioni contestuali in alto: ricevono spazio generoso e uniforme; quando una
+   singola azione scende sotto 180px conserva l'icona e affida il testo al tooltip. */
+.pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap {
+  flex: 1 1 230px;
+  min-width: 48px;
+  max-width: 300px;
+  container-type: inline-size;
+}
+.pt-pagina-azioni:not(.pt-pagina-azioni-sticky) .pt-spedizioni-azioni-header {
+  width: 100% !important;
+  max-width: 100%;
+}
+.pt-pagina-azioni-sticky .pt-spedizioni-azioni-header {
+  width: 100% !important;
+  max-width: 100%;
+}
+/* Il singolo “Crea spedizione” resta ancorato a destra, ma durante lo sticky non
+   deve ereditare la pillola larga pensata per i gruppi di azioni multiple. */
+.pt-pagina-azioni-pill:has(.pt-spedizioni-crea-header) {
+  width: fit-content !important;
+  max-width: 100% !important;
+}
+/* La bollettazione aspetta la fine dell'entrata iniziale e, tornando dallo sticky,
+   ricompare soltanto quando il blocchetto ha concluso il rientro nell'header. */
+.pt-pagina-azioni .pt-spedizioni-crea-header > .pt-bollettazione-action {
+  display: none;
+}
+.pt-pagina-azioni:not(.pt-pagina-azioni-sticky).pt-pagina-azioni-assestate
+  .pt-spedizioni-crea-header
+  > .pt-bollettazione-action {
+  display: inline-flex;
+}
+/* Soltanto sulle view estreme i quattro pulsanti hanno già raggiunto il massimo:
+   oltre quel punto la pillola smette di crescere e segue il contenuto effettivo. */
+@media (min-width: 1800px) {
+  .pt-pagina-azioni-pill:has(.pt-spedizioni-azioni-header) {
+    width: min(100%, 1160px) !important;
+  }
+}
+.pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .pt-azione-adattiva {
+  width: 100%;
+  justify-content: center;
+}
+.pt-azione-adattiva-label-compatta {
+  display: none;
+}
+
+.pt-bollettazione-file-errors {
+  border: 1px solid var(--mantine-color-orange-4);
+  border-radius: var(--mantine-radius-md);
+  background: color-mix(in srgb, var(--mantine-color-orange-1) 72%, transparent);
+}
+
+.pt-bollettazione-modal-content {
+  width: min(1540px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px) !important;
+}
+.pt-bollettazione-modal-body {
+  overflow: hidden;
+}
+.pt-bollettazione-auto-height {
+  width: 100%;
+  overflow: hidden;
+}
+.pt-bollettazione-shell {
+  max-height: calc(100dvh - 132px);
+  container: bollettazione-shell / inline-size;
+}
+
+.pt-bollettazione-status {
+  transition:
+    background-color 0.13s ease,
+    border-color 0.13s ease,
+    color 0.13s ease;
+}
+.pt-bollettazione-status .mantine-Button-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+  overflow: visible;
+}
+.pt-bollettazione-status-label {
+  min-width: 0;
+  text-align: left;
+}
+.pt-bollettazione-status-count {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.pt-bollettazione-row {
+  border: 1px solid var(--mantine-color-default-border);
+  border-left: 3px solid var(--mantine-color-gray-5);
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-body);
+  transition:
+    border-color 0.13s ease,
+    background-color 0.13s ease;
+}
+.pt-bollettazione-row[data-status="pronto"] {
+  border-left-color: var(--mantine-color-teal-6);
+}
+.pt-bollettazione-row[data-status="da_controllare"] {
+  border-left-color: var(--mantine-color-orange-6);
+}
+.pt-bollettazione-row[data-status="non_trovato"] {
+  border-left-color: var(--mantine-color-red-6);
+}
+.pt-bollettazione-match {
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-default-hover);
+}
+.pt-bollettazione-conflict {
+  border: 1px solid var(--mantine-color-orange-3);
+  border-radius: var(--mantine-radius-sm);
+  background: color-mix(in srgb, var(--mantine-color-orange-0) 65%, transparent);
+}
+.pt-bollettazione-date {
+  grid-area: date;
+  width: 180px;
+  min-width: 180px;
+}
+.pt-bollettazione-footer {
+  display: grid;
+  grid-template-areas: "summary date actions";
+  grid-template-columns: minmax(120px, 1fr) 180px max-content;
+  align-items: end;
+  column-gap: 18px;
+  row-gap: 12px;
+  padding: 14px 0 4px;
+  margin-top: 14px;
+}
+.pt-bollettazione-footer-summary {
+  grid-area: summary;
+  min-width: 108px;
+  padding-bottom: 10px;
+}
+.pt-bollettazione-footer-actions {
+  grid-area: actions;
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  justify-content: end;
+  align-items: end;
+}
+.pt-bollettazione-footer-actions .mantine-Button-root {
+  white-space: nowrap;
+}
+
+@container bollettazione-shell (max-width: 1040px) {
+  .pt-bollettazione-footer {
+    grid-template-areas:
+      "summary date"
+      "actions actions";
+    grid-template-columns: max-content 1fr;
+    align-items: end;
+  }
+  .pt-bollettazione-date {
+    justify-self: start;
+  }
+  .pt-bollettazione-footer-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .pt-spedizioni-crea-header {
+    gap: 6px;
+  }
+  .pt-spedizioni-crea-header
+    > .pt-bollettazione-action
+    .mantine-Button-label {
+    display: none;
+  }
+}
+
+@container bollettazione-shell (max-width: 720px) {
+  .pt-bollettazione-footer {
+    grid-template-areas:
+      "summary"
+      "date"
+      "actions";
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .pt-bollettazione-footer-summary,
+  .pt-bollettazione-date {
+    width: 100%;
+    min-width: 0;
+    padding-bottom: 0;
+  }
+  .pt-bollettazione-footer-actions {
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+  .pt-bollettazione-footer-actions .mantine-Button-root {
+    width: 100%;
+  }
+  .pt-bollettazione-footer-primary {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Fascia compatta: mantiene sempre almeno il nome significativo del comando. */
+@container (max-width: 140px) {
+  .pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .pt-azione-adattiva-label {
+    display: none;
+  }
+  .pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .pt-azione-adattiva-label-compatta {
+    display: inline;
+  }
+  .pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .pt-azione-adattiva {
+    padding-inline: 12px;
+  }
+}
+
+/* Sola icona esclusivamente quando non entra neppure un nome breve. */
+@container (max-width: 72px) {
+  .pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .pt-azione-adattiva-label-compatta {
+    display: none;
+  }
+  .pt-spedizioni-azioni-header > .pt-azione-adattiva-wrap .mantine-Button-section[data-position="left"] {
+    margin-inline-end: 0;
+  }
+}
+
+@container sped-toolbar (max-width: 760px) {
+  .pt-spedizioni-toolbar-effettuate > .pt-toolbar-responsive-principale,
+  .pt-spedizioni-toolbar-effettuate > .pt-toolbar-responsive-controls {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .pt-toolbar-responsive-principale {
+    flex-wrap: wrap !important;
+    flex-basis: 100% !important;
+  }
+}
+
+@container (max-width: 145px) {
+  .pt-cella-azioni-adattive .pt-azione-adattiva-label {
+    display: none;
+  }
+
+  .pt-cella-azioni-adattive .pt-azione-adattiva {
+    padding-inline: 8px;
+  }
+
+  .pt-cella-azioni-adattive .pt-azione-adattiva .mantine-Button-section[data-position="left"] {
+    margin-inline-end: 0;
+  }
+}
+
+@container (max-width: 1100px) {
+  .pt-lotto-produzione .pt-azioni-produzione .pt-azione-adattiva-label {
+    display: none;
+  }
+
+  .pt-lotto-produzione .pt-azioni-produzione .pt-azione-adattiva {
+    padding-inline: 8px;
+  }
+
+  .pt-lotto-produzione .pt-azioni-produzione .pt-azione-adattiva .mantine-Button-section[data-position="left"] {
+    margin-inline-end: 0;
+  }
+}
+.pt-riepilogo-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.pt-riepilogo-link:hover,
+.pt-riepilogo-link:focus-visible {
+  color: var(--mantine-color-accent-7);
+  text-decoration: underline;
+}
+
+/* Replica ActionIcon variant="subtle" color="gray" size="lg" della topbar. */
+.pt-topbar-communication-action {
+  background: transparent !important;
+  border-color: transparent !important;
+  border-radius: var(--mantine-radius-default) !important;
+  color: var(--mantine-color-gray-light-color) !important;
+  cursor: pointer !important;
+  height: 34px !important;
+  line-height: 1 !important;
+  min-height: 34px !important;
+  min-width: 34px !important;
+  opacity: 1 !important;
+  transform: none !important;
+  width: 34px !important;
+}
+
+.pt-topbar-communication-action:hover {
+  background: var(--mantine-color-gray-light-hover) !important;
+  color: var(--mantine-color-gray-light-color) !important;
+}
+
+.pt-topbar-communication-action[data-premium-locked]
+  .pt-premium-action-main-icon {
+  opacity: 1;
+  transition: opacity 140ms ease;
+}
+
+.pt-topbar-communication-action .pt-premium-action-lock {
+  background: transparent !important;
+  bottom: 0;
+  color: var(--mantine-color-yellow-7) !important;
+  height: 100% !important;
+  inset: 0;
+  opacity: 0 !important;
+  right: 0;
+  top: 0 !important;
+  transition: opacity 140ms ease;
+  width: 100% !important;
+}
+
+.pt-topbar-communication-action .pt-premium-action-lock svg {
+  height: 18px;
+  width: 18px;
+}
+
+.pt-topbar-communication-action[data-premium-locked]:hover
+  .pt-premium-action-main-icon {
+  opacity: 0;
+}
+
+.pt-topbar-communication-action[data-premium-locked]:hover
+  .pt-premium-action-lock {
+  opacity: 1 !important;
+}
+
+/* Crediti: le azioni perdono progressivamente testo prima di poter collidere. */
+.pt-crediti-toolbar {
+  container-name: crediti-toolbar;
+  container-type: inline-size;
+  min-width: 0;
+  width: 100%;
+}
+
+.pt-crediti-toolbar > * {
+  min-width: 0;
+}
+
+.pt-crediti-ricerca {
+  min-width: 120px;
+}
+
+.pt-crediti-filtri,
+.pt-crediti-sollecita,
+.pt-crediti-toolbar > .pt-azione-adattiva-wrap,
+.pt-crediti-toolbar > .pt-colonne-adattive {
+  flex: 0 1 auto;
+}
+
+.pt-crediti-label-compatta {
+  display: none;
+}
+
+@container crediti-toolbar (max-width: 960px) {
+  .pt-crediti-ricerca {
+    max-width: none !important;
+  }
+
+  .pt-crediti-label-estesa,
+  .pt-crediti-toolbar
+    > .pt-azione-adattiva-wrap
+    .pt-azione-adattiva-label {
+    display: none;
+  }
+
+  .pt-crediti-label-compatta,
+  .pt-crediti-toolbar
+    > .pt-azione-adattiva-wrap
+    .pt-azione-adattiva-label-compatta {
+    display: inline;
+  }
+}
+
+@container crediti-toolbar (max-width: 680px) {
+  .pt-crediti-label-compatta,
+  .pt-crediti-toolbar
+    > .pt-azione-adattiva-wrap
+    .pt-azione-adattiva-label-compatta,
+  .pt-colonne-adattive-label {
+    display: none;
+  }
+
+  .pt-crediti-sollecita,
+  .pt-crediti-toolbar > .pt-azione-adattiva-wrap .pt-azione-adattiva,
+  .pt-crediti-toolbar > .pt-colonne-adattive {
+    min-width: 36px;
+    padding-inline: 9px;
+  }
+
+  .pt-crediti-sollecita .mantine-Button-section[data-position="left"],
+  .pt-crediti-toolbar
+    > .pt-azione-adattiva-wrap
+    .mantine-Button-section[data-position="left"],
+  .pt-crediti-toolbar
+    > .pt-colonne-adattive
+    .mantine-Button-section[data-position="left"] {
+    margin-inline-end: 0;
+  }
+
+}
+
+/* Una preparazione è una sola unità visiva: campi principali e dettagli tecnici
+   restano nella stessa scheda, senza righe di tabella che sembrano record distinti. */
+.pt-product-card {
+  border-left: 3px solid var(--mantine-color-yellow-5) !important;
+  overflow: hidden;
+}
+
+/* Le finestre ordine/preventivo possono contenere molte schede molto ricche.
+   Come per le tabelle, il WebView mantiene spazio e scrollbar stabili ma evita
+   layout e paint delle schede lontane dal viewport. */
+.pt-product-card-shell[data-lista-estesa] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 190px;
+}
+
+/* Le azioni suggerite non influenzano il layout delle schede vicine. Nelle liste
+   brevi il browser può inoltre saltare il paint delle righe sotto il viewport;
+   quelle lunghe vengono virtualizzate dal componente condiviso. */
+.pt-suggerimento-card-shell {
+  contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 58px;
+}
+
+.pt-suggerimenti-vuoto {
+  background: color-mix(in srgb, var(--surface) 96%, var(--mantine-color-gray-1));
+  border-color: color-mix(in srgb, var(--mantine-color-default-border) 84%, transparent);
+}
+
+.pt-galaxy-scan-button {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid color-mix(in srgb, var(--mantine-color-violet-4) 45%, transparent);
+  background: linear-gradient(
+    115deg,
+    color-mix(in srgb, var(--mantine-color-violet-1) 82%, var(--surface)),
+    color-mix(in srgb, var(--mantine-color-blue-1) 68%, var(--surface)),
+    color-mix(in srgb, var(--mantine-color-violet-1) 82%, var(--surface))
+  );
+  background-size: 220% 100%;
+  color: var(--mantine-color-violet-8);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--mantine-color-violet-5) 13%, transparent);
+}
+
+.pt-galaxy-scan-button::before {
+  content: "";
+  position: absolute;
+  inset: -80% -25%;
+  z-index: -1;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 24% 35%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2px),
+    radial-gradient(circle at 68% 62%, rgba(255, 255, 255, 0.8) 0 1.2px, transparent 2.2px),
+    radial-gradient(circle at 82% 28%, rgba(255, 255, 255, 0.9) 0 0.8px, transparent 1.8px),
+    conic-gradient(from 25deg, transparent, rgba(133, 92, 246, 0.24), transparent 44%);
+  transform: rotate(0deg);
+}
+
+.pt-galaxy-scan-button[data-scanning="true"] {
+  animation: pt-galaxy-gradient 1.3s ease-in-out infinite;
+}
+
+.pt-galaxy-scan-button[data-scanning="true"]::before {
+  opacity: 1;
+  animation: pt-galaxy-cloud 1.65s linear infinite;
+}
+
+.pt-galaxy-scan-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+
+.pt-galaxy-scan-icon b {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--mantine-color-violet-5);
+  box-shadow: 0 0 7px currentColor;
+  opacity: 0;
+}
+
+.pt-galaxy-scan-icon b { bottom: 0; right: 0; }
+
+[data-scanning="true"] .pt-galaxy-scan-icon > svg {
+  animation: pt-galaxy-star 1.05s ease-in-out infinite;
+}
+
+[data-scanning="true"] .pt-galaxy-scan-icon b {
+  opacity: 1;
+  animation: pt-galaxy-orbit 0.95s ease-in-out infinite alternate;
+}
+
+[data-scanning="true"] .pt-galaxy-scan-icon b { animation-delay: -0.45s; }
+
+@keyframes pt-galaxy-gradient {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes pt-galaxy-cloud {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pt-galaxy-star {
+  0%, 100% { transform: rotate(0deg) scale(0.9); filter: drop-shadow(0 0 2px rgba(126, 87, 194, 0.35)); }
+  50% { transform: rotate(135deg) scale(1.18); filter: drop-shadow(0 0 6px rgba(92, 124, 250, 0.72)); }
+}
+
+@keyframes pt-galaxy-orbit {
+  from { transform: translate(-1px, 1px) scale(0.75); }
+  to { transform: translate(5px, -4px) scale(1.15); }
+}
+
+.pt-galaxy-scan-button[data-reduced="true"],
+.pt-galaxy-scan-button[data-reduced="true"]::before,
+.pt-galaxy-scan-button[data-reduced="true"] .pt-galaxy-scan-icon > svg,
+.pt-galaxy-scan-button[data-reduced="true"] .pt-galaxy-scan-icon b {
+  animation: none !important;
+}
+
+.pt-product-card-header {
+  background: color-mix(
+    in srgb,
+    var(--mantine-color-yellow-light) 48%,
+    transparent
+  );
+  border-bottom: 1px solid var(--border);
+}
+
+.pt-product-main-grid {
+  align-items: end;
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  grid-template-columns:
+    minmax(260px, 2.2fr)
+    minmax(90px, 0.45fr)
+    minmax(150px, 0.75fr)
+    minmax(210px, 1.4fr);
+}
+
+.pt-product-main-grid[data-diagnostica] {
+  grid-template-columns:
+    minmax(300px, 2fr)
+    minmax(100px, 0.45fr)
+    minmax(170px, 0.8fr);
+}
+
+.pt-product-main-grid[data-immunoterapia] {
+  grid-template-columns:
+    minmax(300px, 2.2fr)
+    minmax(150px, 0.75fr)
+    minmax(210px, 1.4fr);
+}
+
+.pt-product-main-grid > * {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .pt-product-main-grid,
+  .pt-product-main-grid[data-diagnostica],
+  .pt-product-main-grid[data-immunoterapia] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pt-product-main-grid > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 620px) {
+  .pt-product-main-grid,
+  .pt-product-main-grid[data-diagnostica],
+  .pt-product-main-grid[data-immunoterapia] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pt-product-main-grid > :first-child {
+    grid-column: auto;
+  }
+}
