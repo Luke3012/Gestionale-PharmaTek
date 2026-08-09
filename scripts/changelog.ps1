@@ -7,7 +7,7 @@
   sull'editor. Lì puoi aggiungere versioni, sintesi e voci per categoria (Novità /
   Correzioni / Altro) e salvare: scrive src/features/changelog/changelog.json e
   rigenera docs/CHANGELOG.md. Quel file alimenta il pannello «Novità» in-app, lo
-  storico nella finestra Info e le note dell'updater (scripts/release.ps1).
+  storico nella finestra Info e le note mostrate dall'updater.
   Chiudi questa finestra (o Ctrl+C) per fermare l'editor.
 #>
 $ErrorActionPreference = 'Stop'

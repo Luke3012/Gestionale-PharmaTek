@@ -163,7 +163,7 @@ export function useAggiornamenti() {
       if (trovato.versione === versioneAvvisata) return; // già avvisato per questa versione
       if (!prenotaAvvisoAggiornamento(trovato.versione)) return;
       versioneAvvisata = trovato.versione;
-      // `note` arriva dal manifest (sintesi della versione, impostata da release.ps1):
+      // `note` arriva dal manifest pubblico (sintesi della versione):
       // se c'è, la usiamo come anteprima; altrimenti un messaggio generico.
       const sintesi = trovato.note?.trim();
       toast.info(sintesi || `È disponibile la versione ${trovato.versione}.`, {

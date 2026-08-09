@@ -2,7 +2,7 @@
 // versione, dalla più recente alla prima). Lo stesso file alimenta:
 //   • il pannello «Novità» mostrato all'avvio dopo un aggiornamento (NovitaPanel);
 //   • lo storico nella finestra Info (StoricoChangelog);
-//   • le note dell'updater e della release GitHub (scripts/release.ps1 legge questo file).
+//   • le note mostrate dall'updater e nella release GitHub.
 // Si modifica facilmente con l'editor grafico: `scripts/changelog.ps1`.
 import dati from "./changelog.json";
 

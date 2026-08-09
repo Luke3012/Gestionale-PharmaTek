@@ -32,6 +32,9 @@ const patterns = [
 for (const file of walk(root)) {
   const relative = path.relative(root, file).replaceAll("\\", "/");
   const extension = path.extname(file).toLowerCase();
+  if (relative.toLowerCase() === "scripts/release.ps1") {
+    findings.push(`${relative}: script di pubblicazione vietato`);
+  }
   if (forbiddenExtensions.has(extension)) findings.push(`${relative}: tipo di file vietato`);
   if (!textExtensions.has(extension)) continue;
   const buffer = fs.readFileSync(file);
