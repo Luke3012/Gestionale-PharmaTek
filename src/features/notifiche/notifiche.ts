@@ -22,6 +22,7 @@ import {
 } from "@tabler/icons-react";
 import {
   api,
+  inTauri,
   type Comunicazione,
   type Identity,
   type OrdineDto,
@@ -30,10 +31,14 @@ import {
   type SuggerimentoCollegamento,
 } from "../../lib/tauri";
 import { oggiIso } from "../../lib/date";
+import { formattaEuroCentesimi as euroCent } from "../../lib/money";
+export { formattaEuroCentesimi as euroCent } from "../../lib/money";
+import { inviaEventoConConferma, portaFinestraInPrimoPiano } from "../../lib/finestreTauri";
 import { giorniTra, statoScadenza, type CollegatoTipo, type Promemoria } from "../promemoria/promemoria";
 import { DEST_TUTTI, type Messaggio } from "./messaggi";
 
 export type TipoNotifica =
+  | "riepilogo"
   | "sollecito"
   | "promemoria_scadenza"
   | "promemoria_scaduto"
@@ -85,6 +90,7 @@ export interface TipoNotificaDef {
 }
 
 export const TIPO_NOTIFICA: Record<TipoNotifica, TipoNotificaDef> = {
+  riepilogo: { label: "Notifiche", color: "blue", Ico: IconBellRinging },
   sollecito: { label: "Sollecito", color: "red", Ico: IconCoin },
   promemoria_scaduto: { label: "Promemoria scaduto", color: "red", Ico: IconClockExclamation },
   promemoria_scadenza: { label: "Promemoria in scadenza", color: "yellow", Ico: IconBellRinging },
@@ -149,11 +155,6 @@ function dataMs(iso: string): number {
   if (!iso) return 0;
   const t = new Date(iso + "T00:00:00").getTime();
   return Number.isNaN(t) ? 0 : t;
-}
-
-/** «€ 1.234,50» da centesimi interi. */
-export function euroCent(centesimi: number): string {
-  return (centesimi / 100).toLocaleString("it-IT", { style: "currency", currency: "EUR" });
 }
 
 /** «gg/mm/aaaa» da ISO. */
@@ -280,9 +281,14 @@ function derivaMessaggi(messaggi: Messaggio[], userId: string, onboardingTime: n
   return out;
 }
 
-/** Ordina: prima per urgenza, poi i più scaduti (scadenza più vecchia) in cima. */
+/** Ordina i messaggi in cima (più recenti prima), poi le altre notifiche per
+ * urgenza e anzianità. */
 export function ordinaNotifiche(list: Notifica[]): Notifica[] {
   return [...list].sort((a, b) => {
+    const aMessaggio = a.tipo === "messaggio";
+    const bMessaggio = b.tipo === "messaggio";
+    if (aMessaggio !== bMessaggio) return aMessaggio ? -1 : 1;
+    if (aMessaggio && bMessaggio) return b.ts - a.ts;
     const w = PESO_URGENZA[b.urgenza] - PESO_URGENZA[a.urgenza];
     if (w) return w;
     return a.ts - b.ts;
@@ -440,33 +446,33 @@ export async function caricaStati(userId: string): Promise<StatiNotifiche> {
   return { viste, scartate };
 }
 
-/** Segna una notifica come **letta/vista** (click): resta in lista, esce dal badge. */
-export function segnaLetta(notificaId: string, identity?: Identity, syncOverlay = true): Promise<void> {
+function salvaStatoVisto(
+  notificaId: string,
+  identity: Identity | undefined,
+  syncOverlay: boolean,
+  scartata: boolean
+): Promise<void> {
   return tracciaScritturaStato(async () => {
     const userId = await userIdStatoNotifiche(identity);
     await api.recordCreateId(ENTITA_LETTA, chiaveLetta(notificaId, userId), {
       notifica_id: notificaId,
       user_id: userId,
       letta: true,
+      ...(scartata ? { scartata: true } : {}),
       ts: Date.now(),
     });
     if (syncOverlay) await rimuoviDaOverlay([notificaId]);
   });
 }
 
+/** Segna una notifica come **letta/vista** (click): resta in lista, esce dal badge. */
+export function segnaLetta(notificaId: string, identity?: Identity, syncOverlay = true): Promise<void> {
+  return salvaStatoVisto(notificaId, identity, syncOverlay, false);
+}
+
 /** **Scarta** una notifica (dismiss): la toglie dalla lista (e dal badge). */
 export function scarta(notificaId: string, identity?: Identity, syncOverlay = true): Promise<void> {
-  return tracciaScritturaStato(async () => {
-    const userId = await userIdStatoNotifiche(identity);
-    await api.recordCreateId(ENTITA_LETTA, chiaveLetta(notificaId, userId), {
-      notifica_id: notificaId,
-      user_id: userId,
-      letta: true,
-      scartata: true,
-      ts: Date.now(),
-    });
-    if (syncOverlay) await rimuoviDaOverlay([notificaId]);
-  });
+  return salvaStatoVisto(notificaId, identity, syncOverlay, true);
 }
 
 /** Scarta tutte le notifiche date (in parallelo). */
@@ -483,13 +489,18 @@ export async function riattivaNotifica(notificaId: string, identity?: Identity):
   await riattivaNotificaPerUser(notificaId, userId);
 }
 
-async function riattivaNotificaPerUser(notificaId: string, userId: string): Promise<void> {
+async function riattivaNotificaPerUser(
+  notificaId: string,
+  userId: string,
+  origine?: "dashboard",
+): Promise<void> {
   await api.recordCreateId(ENTITA_LETTA, chiaveLetta(notificaId, userId), {
     notifica_id: notificaId,
     user_id: userId,
     letta: false,
     scartata: false,
     ts: prossimoTsRiattivazione(),
+    ...(origine ? { origine_riattivazione: origine } : {}),
   });
 }
 
@@ -504,7 +515,11 @@ export async function riattivaNotifichePerUtenti(notificaIds: string[], userIds:
   const overview = await api.syncOverview();
   const attivi = new Set(overview.devices.map((device) => device.userId).filter(Boolean));
   const utenti = [...new Set(userIds.filter((userId) => !!userId && attivi.has(userId)))];
-  await Promise.all(utenti.flatMap((userId) => ids.map((id) => riattivaNotificaPerUser(id, userId))));
+  await Promise.all(
+    utenti.flatMap((userId) =>
+      ids.map((id) => riattivaNotificaPerUser(id, userId, "dashboard")),
+    ),
+  );
   return utenti.length;
 }
 
@@ -590,4 +605,39 @@ export async function nascondiPopupDaCampanella(): Promise<void> {
   } catch {
     // Best effort: la campanella resta utilizzabile anche se l'overlay non esiste.
   }
+}
+
+/** Evento mirato alla shell principale per aprire il popover della campanella. */
+export const EVENTO_APRI_POPOVER_NOTIFICHE = "pt:apri-popover-notifiche";
+const TIMEOUT_APERTURA_POPOVER_MS = 2_000;
+
+export interface RichiestaAperturaPopoverNotifiche {
+  ack: string;
+}
+
+/** Risveglia la finestra principale e apre la campanella senza cambiare pagina né
+ * segnare automaticamente le notifiche come lette. */
+export async function apriPopoverNotifichePrincipale(): Promise<void> {
+  if (!inTauri) {
+    window.dispatchEvent(new CustomEvent(EVENTO_APRI_POPOVER_NOTIFICHE));
+    return;
+  }
+  const [{ getAllWindows }, { emitTo, listen }] = await Promise.all([
+    import("@tauri-apps/api/window"),
+    import("@tauri-apps/api/event"),
+  ]);
+  const main = (await getAllWindows()).find((finestra) => finestra.label === "main");
+  if (!main) throw new Error("Finestra principale non disponibile.");
+  await portaFinestraInPrimoPiano(main);
+
+  const ack = `pt:apri-popover-notifiche-ack:${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await inviaEventoConConferma({
+    ack,
+    ascolta: (evento, callback) => listen(evento, callback),
+    invia: () => emitTo("main", EVENTO_APRI_POPOVER_NOTIFICHE, {
+      ack,
+    } satisfies RichiestaAperturaPopoverNotifiche),
+    timeoutMs: TIMEOUT_APERTURA_POPOVER_MS,
+    messaggioTimeout: "La finestra principale non ha aperto le notifiche.",
+  });
 }

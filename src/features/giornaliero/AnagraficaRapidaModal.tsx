@@ -3,6 +3,7 @@ import { Box, Button, Modal, Text } from "@mantine/core";
 
 import { FormCampiGrid, type Valori } from "../anagrafiche/FormAnagrafica";
 import type { Opzione, Registro } from "../anagrafiche/registri";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 
 interface AnagraficaRapidaModalProps {
   opened: boolean;
@@ -58,16 +59,14 @@ export function AnagraficaRapidaModal({
             setErrori={setErrori}
           />
         </Box>
-        <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-          <div className="pt-modal-actions">
+        <FooterAzioniModale>
             <Button variant="default" onClick={onClose}>
               Annulla
             </Button>
             <Button color="accent" loading={loading} disabled={!nomeValido} onClick={onSubmit}>
               {editMode ? "Salva" : "Crea e seleziona"}
             </Button>
-          </div>
-        </div>
+        </FooterAzioniModale>
       </Box>
     </Modal>
   );

@@ -31,8 +31,10 @@ import {
 } from "./lib/riallineamentoDati";
 import { segnaMainVisibileOra } from "./lib/autoAggiornamentoBackground";
 import {
+  apriSpotlightDopoAvvio,
   bootstrapSincronizzabile,
   pollingMainAttivo,
+  renderingInizialeNascosto,
   sincronizzaPrimaDelleViste,
 } from "./lib/sincronizzazioneAvvio";
 import { bootstrapConRetry as eseguiBootstrapConRetry } from "./lib/bootstrapRetry";
@@ -46,7 +48,7 @@ import {
 import { ToastProvider } from "./ui/toast/ToastProvider";
 import { DialogProvider } from "./ui/dialog/DialogProvider";
 import { dialog } from "./ui/dialog/store";
-import { toast } from "./ui/toast/store";
+import { destinazioneToastDaRicerca, toast } from "./ui/toast/store";
 import { apriCentroComunicazioni } from "./features/comunicazioni/apriComunicazione";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { CaricamentoSchermo, LogoMark, UnifiedBootScreen } from "./ui/Brand";
@@ -159,6 +161,8 @@ const finestraCampagnaComunicazioni = params.has("campagnaComunicazioni");
 const finestraCestino = params.has("cestino");
 const finestraInfo = params.has("info");
 const finestraOverlay = params.has("overlay");
+const finestraServizioToast =
+  destinazioneToastDaRicerca(window.location.search) === "principale";
 // Barra di ricerca e overlay notifiche sono trasparenti e senza bordi: niente sfondo.
 if (finestraSpotlight || finestraOverlay) document.documentElement.classList.add("spotlight-root");
 
@@ -167,7 +171,17 @@ if (finestraSpotlight || finestraOverlay) document.documentElement.classList.add
 const GEOM_MAIN = { width: 1100, height: 720, minWidth: 900, minHeight: 600 } as const;
 const INTERVALLO_CONTROLLO_PREPARAZIONE_MS = 5_000;
 
-function Schermo({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstrap: string | null }) {
+function Schermo({
+  boot,
+  erroreBootstrap,
+  avvioNascosto,
+  onBootstrapChange,
+}: {
+  boot: Bootstrap | null;
+  erroreBootstrap: string | null;
+  avvioNascosto: boolean;
+  onBootstrapChange: (boot: Bootstrap) => void;
+}) {
   if (finestraSpotlight) return <SpotlightWindow />;
   if (finestraOverlay) return <OverlayWindow />;
   if (finestraRiepilogo) return <RiepilogoWindow />;
@@ -181,7 +195,14 @@ function Schermo({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBoot
   if (finestraInfo) return <InfoWindow />;
   if (finestraPreventivo) return <PreventivoWindow />;
   if (finestraOrdine) return <OrdineWindow />;
-  return <App boot={boot} erroreBootstrap={erroreBootstrap} />;
+  return (
+    <App
+      boot={boot}
+      erroreBootstrap={erroreBootstrap}
+      avvioNascosto={avvioNascosto}
+      onBootstrapChange={onBootstrapChange}
+    />
+  );
 }
 
 /** Registra misura+posizione della finestra principale (montato solo per `main`). */
@@ -224,6 +245,18 @@ function getAvvioSpotlight() {
 async function apriSpotlightDaScorciatoia() {
   const { mostraSpotlight } = await import("./shell/navigazione");
   await mostraSpotlight();
+}
+
+async function mainVisibileOra(): Promise<boolean> {
+  if (!inTauri) return true;
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    return await getCurrentWebviewWindow().isVisible();
+  } catch {
+    // Sul primo mount la decisione usa comunque l'intenzione nativa; sui reload
+    // un errore di lettura non deve introdurre animazioni in una main forse nascosta.
+    return false;
+  }
 }
 
 async function distruggiFinestraCorrenteSecondaria() {
@@ -321,7 +354,10 @@ function Root() {
   const bootDataRef = useRef<Bootstrap | null>(bootData);
   bootDataRef.current = bootData;
   const [errore, setErrore] = useState<string | null>(null);
+  const [erroreRendering, setErroreRendering] = useState(false);
   const [bloccoRemoto, setBloccoRemoto] = useState<RemoteControlStatus | null>(null);
+  const bloccoRemotoRef = useRef<RemoteControlStatus | null>(bloccoRemoto);
+  bloccoRemotoRef.current = bloccoRemoto;
   const [controlloRemoto, setControlloRemoto] = useState<RemoteControlStatus | null>(null);
   const [caricamento, setCaricamento] = useState(inTauri);
   const caricamentoRef = useRef(caricamento);
@@ -332,7 +368,7 @@ function Root() {
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
   const rootAttivoRef = useRef(true);
-  const preservaBootscreenMinimizzatoRef = useRef(inTauri);
+  const [avvioNascosto, setAvvioNascosto] = useState(false);
   const avvisoTrayMostratoRef = useRef(avvisoTrayMostrato);
   avvisoTrayMostratoRef.current = avvisoTrayMostrato;
 
@@ -346,6 +382,14 @@ function Root() {
   const aggiornaCaricamento = (value: boolean) => {
     caricamentoRef.current = value;
     setCaricamento(value);
+  };
+
+  const aggiornaBootData = (value: Bootstrap) => {
+    // I trigger nativi (in particolare `--spotlight`) possono riprendere nella
+    // stessa microtask in cui termina il bootstrap: il ref deve essere autorevole
+    // anche prima del successivo commit React.
+    bootDataRef.current = value;
+    setBootData(value);
   };
 
   useEffect(() => {
@@ -366,6 +410,62 @@ function Root() {
     finestraCestino ||
     finestraInfo ||
     finestraOverlay;
+
+  // Qualunque errore che impedisce alla main di arrivare alla home rende invalida
+  // anche la sessione notifiche: niente overlay sopra lo schermo di indisponibilità.
+  useEffect(() => {
+    if (!inTauri || isFinestraSecondaria || !errore) return;
+    void api.notificheDisattivaSessione().catch(() => {});
+  }, [errore, isFinestraSecondaria]);
+
+  // Unico proprietario frontend della configurazione del rilevatore Rust. Dopo
+  // questa consegna il core resta autonomo anche se la main viene nascosta o il
+  // WebView viene sospeso. Le finestre secondarie non possono riattivarlo.
+  useEffect(() => {
+    if (!inTauri || isFinestraSecondaria || !bootData) return;
+    const identity = bootData.identity;
+    const disponibile =
+      bootData.onboarded &&
+      !!identity &&
+      !bootData.reconnectRequired &&
+      bootData.dataDirStatus === "ok" &&
+      !ripristinoRemotoInCorso(bootData) &&
+      !bloccoRemoto?.disabled &&
+      !errore &&
+      !erroreRendering;
+    if (!disponibile || !identity) {
+      void api.notificheDisattivaSessione().catch(() => {});
+      return;
+    }
+    // Durante un riallineamento conserviamo la configurazione Rust precedente;
+    // al primo caricamento aspettiamo invece che App e dashboard siano disponibili.
+    if (caricamento) return;
+    const onboardingTimeStr = localStorage.getItem("pt.onboardingTime");
+    const onboardingTime = onboardingTimeStr ? Number(onboardingTimeStr) : 0;
+    void api
+      .notificheConfig(
+        identity.userId,
+        suonoNotifica,
+        balloonAttivo,
+        sogliaSolleciti,
+        onboardingTime,
+        notifichePrimoPiano,
+        preferenzeSuggerimenti,
+      )
+      .catch(() => {});
+  }, [
+    balloonAttivo,
+    bloccoRemoto,
+    bootData,
+    caricamento,
+    errore,
+    erroreRendering,
+    isFinestraSecondaria,
+    notifichePrimoPiano,
+    preferenzeSuggerimenti,
+    sogliaSolleciti,
+    suonoNotifica,
+  ]);
 
   useEffect(() => {
     if (!inTauri || isFinestraSecondaria || balloonAttivo) return;
@@ -743,18 +843,6 @@ function Root() {
       return;
     }
 
-    const onboardingTimeStr = localStorage.getItem("pt.onboardingTime");
-    const onboardingTime = onboardingTimeStr ? Number(onboardingTimeStr) : 0;
-    api.notificheConfig(
-      data.identity.userId,
-      suonoNotifica,
-      balloonAttivo,
-      sogliaSolleciti,
-      onboardingTime,
-      notifichePrimoPiano,
-      preferenzeSuggerimenti,
-    ).catch(() => {});
-
     await Promise.all([
       loadApp().catch(() => null),
       preloadDashboard().catch(() => null),
@@ -806,7 +894,7 @@ function Root() {
       });
       data = await riallineaRestore(data);
       if (!rootAttivoRef.current) return;
-      setBootData(data);
+      aggiornaBootData(data);
       await preparaDopoBootstrap(data);
       setBloccoRemoto(null);
     } catch (err) {
@@ -823,10 +911,10 @@ function Root() {
   useEffect(() => {
     if (isFinestraSecondaria || !inTauri) return;
 
-    preservaBootscreenMinimizzatoRef.current = true;
     let attivo = true;
     let unlistenRevealFn: (() => void) | null = null;
     let unlistenDataWipedFn: (() => void) | null = null;
+    let unlistenSpotlightFn: (() => void) | null = null;
     let timerId: ReturnType<typeof setTimeout> | null = null;
     let focusSyncTimer: ReturnType<typeof setTimeout> | null = null;
     let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -958,7 +1046,7 @@ function Root() {
           ) {
             // Un evento tardivo non deve tentare sei ricostruzioni senza cartella o
             // identita'. Rimontiamo invece il corretto flusso onboarding/reconnect.
-            setBootData(statoConsegna);
+            aggiornaBootData(statoConsegna);
             await preparaDopoBootstrap(statoConsegna);
             return;
           }
@@ -967,7 +1055,7 @@ function Root() {
             (!statoConsegna || statoConsegnaRipristino(statoConsegna) !== "ready")
           ) {
             if (statoConsegna) {
-              setBootData(statoConsegna);
+              aggiornaBootData(statoConsegna);
               await preparaDopoBootstrap(statoConsegna);
             }
             return;
@@ -980,7 +1068,7 @@ function Root() {
           });
           const data = await bootstrapConRetry();
           if (!attivo) return;
-          setBootData(data);
+          aggiornaBootData(data);
           await preparaDopoBootstrap(data);
         } catch (err) {
           if (eventoRestore) ripristinoFallitoRef.current = true;
@@ -991,7 +1079,7 @@ function Root() {
           terminaRiallineamentoDati();
           if (attivo) {
             setTestoCaricamento("Carico il gestionale…");
-            if (!preservaBootscreenMinimizzatoRef.current) aggiornaCaricamento(false);
+            aggiornaCaricamento(false);
           }
         }
       }).then((fn) => {
@@ -1052,7 +1140,7 @@ function Root() {
 
     const gestisciRivelazione = async () => {
       if (!attivo || rivelazioneInCorso || ripristinoFallitoRef.current) return;
-      preservaBootscreenMinimizzatoRef.current = false;
+      setAvvioNascosto(false);
       rivelazioneInCorso = true;
       const eraInCaricamento = caricamentoRef.current;
       const eraBloccatoDaPreparazione = ripristinoBloccanteAttivo();
@@ -1123,13 +1211,13 @@ function Root() {
         const data = await riallineaPrimaDelleViste(bootstrapCorrente);
         if (!attivo) return;
         setErrore(null);
-        setBootData(data);
+        aggiornaBootData(data);
         await preparaDopoBootstrap(data);
         if (!attivo) return;
 
         if (eraInCaricamento) {
-          // Primo avvio minimizzato: le viste non sono ancora montate e leggeranno
-          // direttamente la proiezione appena riallineata.
+          // Click durante il bootstrap iniziale: la promise condivisa ha gia'
+          // consegnato alle viste la proiezione riallineata, senza un secondo ingest.
           schedulaFineCaricamento();
         } else if (bootstrapSincronizzabile(data)) {
           // Ritorno nella tray con UI già montata: forza un refresh anche se il watcher
@@ -1156,6 +1244,22 @@ function Root() {
       }
     };
 
+    const apriSpotlightCoordinato = () =>
+      apriSpotlightDopoAvvio({
+        avvioInCorso,
+        bootstrapCorrente: () => bootDataRef.current,
+        aperturaBloccata: () =>
+          !attivo ||
+          caricamentoRef.current ||
+          !!bloccoRemotoRef.current?.disabled ||
+          ripristinoFallitoRef.current ||
+          ripristinoBloccanteAttivo() ||
+          rivelazioneInCorso ||
+          ricostruzioneBootInCorso ||
+          riallineamentoDatiInCorso(),
+        apri: apriSpotlightDaScorciatoia,
+      });
+
     const setupListener = () => {
       import("@tauri-apps/api/event").then(({ listen }) => {
         if (!attivo) return;
@@ -1178,6 +1282,18 @@ function Root() {
               })
               .catch(() => {});
           } else fn();
+        });
+      });
+    };
+
+    const setupSpotlightListener = () => {
+      import("@tauri-apps/api/event").then(({ listen }) => {
+        if (!attivo) return;
+        listen("pt:apri-spotlight", () => {
+          void apriSpotlightCoordinato();
+        }).then((fn) => {
+          if (attivo) unlistenSpotlightFn = fn;
+          else fn();
         });
       });
     };
@@ -1215,16 +1331,17 @@ function Root() {
       const segnalaAttesaSincronizzazione = () => {
         if (attivo) setTestoCaricamento("Attendo la sincronizzazione dei dati...");
       };
-      const [bootstrapIniziale, primoAvvio, minimized] = await Promise.all([
+      const [bootstrapIniziale, primoAvvio, minimized, mainVisibile] = await Promise.all([
         bootstrapConRetry(segnalaAttesaSincronizzazione),
         getPrimoAvvio(),
         api.avvioMinimizzato().catch(() => false),
+        mainVisibileOra(),
       ]);
-      preservaBootscreenMinimizzatoRef.current = primoAvvio && minimized;
+      setAvvioNascosto(renderingInizialeNascosto(primoAvvio, minimized, mainVisibile));
       if (!attivo) return;
       const data = await riallineaPrimaDelleViste(bootstrapIniziale);
       if (!attivo) return;
-      setBootData(data);
+      aggiornaBootData(data);
 
       // Se l'utente è registrato, attiviamo subito notifiche e overlay in background.
       // Il loader di main resta su "Carico il gestionale..."; il testo
@@ -1234,9 +1351,9 @@ function Root() {
       if (!attivo) return;
       avvioCompletatoAlle = Date.now();
 
-      if (!preservaBootscreenMinimizzatoRef.current) {
-        aggiornaCaricamento(false);
-      }
+      // Anche in tray montiamo App/Shell: la finestra nativa resta invisibile, ma
+      // ricerca, cache e viste completano il loro avvio senza un secondo bootstrap.
+      aggiornaCaricamento(false);
     }
 
     // Resta attivo per tutta la vita della main: copre sia il primo avvio nascosto
@@ -1249,10 +1366,14 @@ function Root() {
     pollInterval = window.setInterval(pollIncrementale, 6000);
     const avvioTask = avvia();
     avvioInCorso = avvioTask;
+    setupSpotlightListener();
+    void getAvvioSpotlight().then((spotlightLaunch) => {
+      if (spotlightLaunch && attivo) void apriSpotlightCoordinato();
+    });
     void avvioTask.catch((err) => {
         if (!attivo) return;
         setErrore(String(err));
-        if (!preservaBootscreenMinimizzatoRef.current) aggiornaCaricamento(false);
+        aggiornaCaricamento(false);
       }).finally(() => {
         if (avvioInCorso === avvioTask) avvioInCorso = null;
       });
@@ -1261,6 +1382,7 @@ function Root() {
       attivo = false;
       if (unlistenRevealFn) unlistenRevealFn();
       if (unlistenDataWipedFn) unlistenDataWipedFn();
+      if (unlistenSpotlightFn) unlistenSpotlightFn();
       if (timerId) clearTimeout(timerId);
       if (focusSyncTimer) clearTimeout(focusSyncTimer);
       if (pollInterval) clearInterval(pollInterval);
@@ -1293,7 +1415,7 @@ function Root() {
         if (ripristinoRemotoInCorso(data)) {
           annullaControlloScadenza();
           setErrore(null);
-          setBootData(data);
+          aggiornaBootData(data);
           attivaRipristinoBloccante();
           setTestoCaricamento(
             statoConsegnaRipristino(data) === "waiting"
@@ -1330,9 +1452,9 @@ function Root() {
         terminaRiallineamentoDati();
         setTestoCaricamento("Carico il gestionale…");
         setErrore(null);
-        setBootData(data);
+        aggiornaBootData(data);
         await preparaDopoBootstrap(data);
-        if (attivo && !preservaBootscreenMinimizzatoRef.current) aggiornaCaricamento(false);
+        if (attivo) aggiornaCaricamento(false);
       }, attesaMs);
       controlloScadenzaRestoreRef.current = { restoreId, timer };
     };
@@ -1398,10 +1520,10 @@ function Root() {
           if (!attivo) return;
           if (data) {
             setErrore(null);
-            setBootData(data);
+            aggiornaBootData(data);
             await preparaDopoBootstrap(data);
           }
-          if (attivo && !preservaBootscreenMinimizzatoRef.current) aggiornaCaricamento(false);
+          if (attivo) aggiornaCaricamento(false);
         })
       )
       .then((fn) => {
@@ -1469,53 +1591,6 @@ function Root() {
     };
   }, [isFinestraSecondaria, bootData, bloccoRemoto]);
 
-  useEffect(() => {
-    if (!inTauri || isFinestraSecondaria) return;
-    let attivo = true;
-    let unlistenFn: (() => void) | null = null;
-
-    import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen("pt:apri-spotlight", () => {
-          void api
-            .bootstrap()
-            .then((data) => {
-              if (bootstrapSincronizzabile(data)) {
-                return apriSpotlightDaScorciatoia();
-              }
-            })
-            .catch(() => {});
-        })
-      )
-      .then((fn) => {
-        if (attivo) unlistenFn = fn;
-        else fn();
-      })
-      .catch(() => {});
-
-    getAvvioSpotlight()
-      .then((spotlightLaunch) => {
-        if (!spotlightLaunch || !attivo) return;
-        window.setTimeout(() => {
-          if (!attivo) return;
-          void api
-            .bootstrap()
-            .then((data) => {
-              if (bootstrapSincronizzabile(data)) {
-                return apriSpotlightDaScorciatoia();
-              }
-            })
-            .catch(() => {});
-        }, 120);
-      })
-      .catch(() => {});
-
-    return () => {
-      attivo = false;
-      if (unlistenFn) unlistenFn();
-    };
-  }, [isFinestraSecondaria]);
-
   // Mostra le finestre utente una volta che React ha montato il guscio, eliminando
   // flash bianchi/neri durante l'avvio. Le finestre di servizio (Spotlight/overlay)
   // restano invece sotto controllo dei loro trigger: scorciatoia/notifiche.
@@ -1557,8 +1632,11 @@ function Root() {
   // "Riduci animazioni" deve spegnere anche le transizioni/animazioni CSS (es. apertura
   // sidebar): una classe sul root le azzera (oltre a MotionConfig per Framer Motion).
   useLayoutEffect(() => {
-    document.documentElement.classList.toggle("riduci-animazioni", ridurreAnimazioni);
-  }, [ridurreAnimazioni]);
+    document.documentElement.classList.toggle(
+      "riduci-animazioni",
+      ridurreAnimazioni || avvioNascosto
+    );
+  }, [ridurreAnimazioni, avvioNascosto]);
 
   // Zoom dell'interfaccia. Usiamo lo zoom a livello **webview** (come Ctrl+ del
   // browser) invece del CSS `zoom` sul root: il CSS `zoom` sfasava il posizionamento
@@ -1593,9 +1671,14 @@ function Root() {
   const showLoader = caricamento && !isFinestraSecondaria;
 
   return (
-    <MotionConfig reducedMotion={ridurreAnimazioni ? "always" : "user"}>
+    <MotionConfig reducedMotion={ridurreAnimazioni || avvioNascosto ? "always" : "user"}>
       <PremiumAccessProvider status={controlloRemoto}>
-        <ErrorBoundary>
+        <ErrorBoundary
+          onError={() => {
+            if (!isFinestraSecondaria) setErroreRendering(true);
+          }}
+          onReset={() => setErroreRendering(false)}
+        >
           {bloccoRemoto ? (
             <SchermoBloccoRemoto
               stato={bloccoRemoto}
@@ -1613,15 +1696,21 @@ function Root() {
             fallback
           ) : (
             <Suspense fallback={fallback}>
-              <Schermo boot={bootData} erroreBootstrap={errore} />
+              <Schermo
+                boot={bootData}
+                erroreBootstrap={errore}
+                avvioNascosto={avvioNascosto}
+                onBootstrapChange={aggiornaBootData}
+              />
             </Suspense>
           )}
         </ErrorBoundary>
-        {/* I toast compaiono SOLO nella finestra principale: aprendo un ordine o un
-          promemoria nella loro finestra separata (o in un pannello), il salvataggio non
-          deve far comparire un toast lì dentro. Il feedback resta nella schermata
-          principale dell'app. */}
-        {!bloccoRemoto && !isFinestraSecondaria && <ToastProvider />}
+        {/* Le finestre operative mostrano il feedback nel proprio contesto. Spotlight
+          e l'overlay custom non montano toast: il relativo store inoltra alla main
+          qualsiasi messaggio applicativo eventualmente generato lì. */}
+        {!bloccoRemoto && !finestraServizioToast && (
+          <ToastProvider riceviInoltri={!isFinestraSecondaria} />
+        )}
         {!isFinestraSecondaria && <AggiornamentiMain />}
         {!bloccoRemoto && !isFinestraSecondaria && <RicordaGeometriaMain />}
         {!bloccoRemoto && <DialogProvider />}

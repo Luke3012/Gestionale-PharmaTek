@@ -45,24 +45,23 @@ const origine =
     ? crypto.randomUUID()
     : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-function èFinestraSecondaria(): boolean {
-  if (typeof window === "undefined") return false;
-  const params = new URLSearchParams(window.location.search);
-  return [
-    "ordine",
-    "preventivo",
-    "spotlight",
-    "riepilogo",
-    "pagamento",
-    "promemoria",
-    "notifiche",
-    "comunicazioni",
-    "componiComunicazione",
-    "campagnaComunicazioni",
-    "cestino",
-    "info",
-    "overlay",
-  ].some((chiave) => params.has(chiave));
+export type DestinazioneToast = "locale" | "principale";
+
+/**
+ * Le finestre operative possiedono un provider locale. Spotlight e l'overlay
+ * custom sono invece finestre di servizio: qualsiasi toast applicativo nato lì
+ * viene mostrato dalla main, senza sovrapporsi alla loro UI specializzata.
+ */
+export function destinazioneToastDaRicerca(search: string): DestinazioneToast {
+  const params = new URLSearchParams(search);
+  return params.has("spotlight") || params.has("overlay")
+    ? "principale"
+    : "locale";
+}
+
+function destinazioneToastCorrente(): DestinazioneToast {
+  if (typeof window === "undefined") return "locale";
+  return destinazioneToastDaRicerca(window.location.search);
 }
 
 function inoltraAllaPrincipale(messaggio: MessaggioToastPrincipale): void {
@@ -118,7 +117,7 @@ class ToastStore {
 
   show(item: Omit<ToastItem, "id"> & { id?: string }): string {
     const id = item.id ?? `t${++seq}`;
-    if (èFinestraSecondaria()) {
+    if (destinazioneToastCorrente() === "principale") {
       inoltraAllaPrincipale({
         operazione: "mostra",
         item: itemSerializzabile({ ...item, id }, idPrincipale(id)),
@@ -141,7 +140,7 @@ class ToastStore {
   }
 
   update(id: string, patch: Partial<Omit<ToastItem, "id">>) {
-    if (èFinestraSecondaria()) {
+    if (destinazioneToastCorrente() === "principale") {
       inoltraAllaPrincipale({
         operazione: "aggiorna",
         id: idPrincipale(id),
@@ -154,7 +153,7 @@ class ToastStore {
   }
 
   dismiss(id: string) {
-    if (èFinestraSecondaria()) {
+    if (destinazioneToastCorrente() === "principale") {
       inoltraAllaPrincipale({ operazione: "chiudi", id: idPrincipale(id) });
       return;
     }

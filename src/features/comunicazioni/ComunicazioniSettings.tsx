@@ -23,6 +23,7 @@ import {
 } from "@mantine/core";
 import {
   IconAlertTriangle,
+  IconBrandWhatsapp,
   IconBraces,
   IconChevronDown,
   IconKey,
@@ -40,6 +41,7 @@ import {
   type ModelloComunicazione,
   type ModelloComunicazioneSalvaInput,
   type TipoModelloComunicazione,
+  type WhatsappDiagnostica,
 } from "../../lib/tauri";
 import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
@@ -47,7 +49,7 @@ import { toast } from "../../ui/toast/store";
 const PRESET: ConfigurazioneEmailSalvaInput = {
   nomeMittente: "PharmaTek",
   indirizzoMittente: "",
-  smtpHost: "",
+  smtpHost: "smtp.example.invalid",
   smtpPort: 465,
   smtpSicurezza: "ssl_tls",
   smtpUsername: "",
@@ -55,7 +57,7 @@ const PRESET: ConfigurazioneEmailSalvaInput = {
   replyTo: "",
   firma: "",
   salvaPostaInviata: true,
-  imapHost: "",
+  imapHost: "imap.example.invalid",
   imapPort: 993,
   imapSicurezza: "ssl_tls",
   destinatarioProva: "",
@@ -82,6 +84,19 @@ function formDaConfig(
     destinatarioProva: config.destinatarioProva,
     password: "",
   };
+}
+
+function ContenutoModaleComunicazioni({ children }: { children: React.ReactNode }) {
+  return (
+    <ScrollArea
+      className="pt-modal-scroll"
+      type="auto"
+      scrollbarSize={7}
+      offsetScrollbars
+    >
+      <Stack gap="lg" pr="xs">{children}</Stack>
+    </ScrollArea>
+  );
 }
 
 function CanaleCard({
@@ -134,7 +149,7 @@ function CanaleCard({
   );
 }
 
-export function ComunicazioniSettings() {
+export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   const [config, setConfig] = useState<ConfigurazioneEmail | null>(null);
   const [form, setForm] = useState<ConfigurazioneEmailSalvaInput>(PRESET);
   const [aperto, setAperto] = useState(false);
@@ -144,12 +159,21 @@ export function ComunicazioniSettings() {
   const [errore, setErrore] = useState("");
   const [modelli, setModelli] = useState<ModelloComunicazione[]>([]);
   const [modelliAperti, setModelliAperti] = useState(false);
-  const [modelliCaricando, setModelliCaricando] = useState(false);
+  const [modelliCaricando, setModelliCaricando] = useState(true);
   const [modelloSelezionato, setModelloSelezionato] = useState("");
   const [modelloForm, setModelloForm] =
     useState<ModelloComunicazioneSalvaInput | null>(null);
   const [modelloSalvando, setModelloSalvando] = useState(false);
   const [modelloErrore, setModelloErrore] = useState("");
+  const [whatsappAperto, setWhatsappAperto] = useState(false);
+  const [whatsappNome, setWhatsappNome] = useState("");
+  const [whatsappTelefono, setWhatsappTelefono] = useState("");
+  const [whatsappDiagnostica, setWhatsappDiagnostica] =
+    useState<WhatsappDiagnostica | null>(null);
+  const [whatsappCaricando, setWhatsappCaricando] = useState(false);
+  const [whatsappInvio, setWhatsappInvio] = useState(false);
+  const [whatsappErrore, setWhatsappErrore] = useState("");
+  const [whatsappPronto, setWhatsappPronto] = useState(false);
 
   const carica = useCallback(async () => {
     if (!inTauri) {
@@ -168,9 +192,28 @@ export function ComunicazioniSettings() {
     }
   }, []);
 
+  const caricaModelli = useCallback(async () => {
+    if (!inTauri) {
+      setModelliCaricando(false);
+      return [] as ModelloComunicazione[];
+    }
+    setModelliCaricando(true);
+    try {
+      const lista = await api.modelliComunicazioneLista();
+      setModelli(lista);
+      return lista;
+    } catch (error) {
+      setModelloErrore(String(error));
+      return [] as ModelloComunicazione[];
+    } finally {
+      setModelliCaricando(false);
+    }
+  }, []);
+
   useEffect(() => {
     void carica();
-  }, [carica]);
+    void caricaModelli();
+  }, [carica, caricaModelli]);
 
   const apri = () => {
     setForm(config ? formDaConfig(config) : PRESET);
@@ -215,19 +258,11 @@ export function ComunicazioniSettings() {
 
   const apriModelli = async () => {
     setModelliAperti(true);
-    setModelliCaricando(true);
     setModelloErrore("");
-    try {
-      const lista = await api.modelliComunicazioneLista();
-      setModelli(lista);
-      const corrente =
-        lista.find((modello) => modello.id === modelloSelezionato) ?? lista[0];
-      if (corrente) selezionaModello(corrente);
-    } catch (error) {
-      setModelloErrore(String(error));
-    } finally {
-      setModelliCaricando(false);
-    }
+    const lista = await caricaModelli();
+    const corrente =
+      lista.find((modello) => modello.id === modelloSelezionato) ?? lista[0];
+    if (corrente) selezionaModello(corrente);
   };
 
   const salvaModello = async () => {
@@ -327,6 +362,66 @@ export function ComunicazioniSettings() {
     }
   };
 
+  const caricaDiagnosticaWhatsapp = useCallback(async (rapida = false) => {
+    if (!inTauri) {
+      setWhatsappPronto(true);
+      return;
+    }
+    if (!rapida) setWhatsappCaricando(true);
+    try {
+      setWhatsappDiagnostica(
+        rapida
+          ? await api.whatsappStatoGet()
+          : await api.whatsappDiagnosticaGet(),
+      );
+    } catch (error) {
+      setWhatsappErrore(String(error));
+    } finally {
+      if (!rapida) setWhatsappCaricando(false);
+      setWhatsappPronto(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void caricaDiagnosticaWhatsapp(true);
+  }, [caricaDiagnosticaWhatsapp]);
+
+  useEffect(() => {
+    if (!caricando && !modelliCaricando && whatsappPronto) onReady?.();
+  }, [caricando, modelliCaricando, onReady, whatsappPronto]);
+
+  const apriWhatsapp = () => {
+    setWhatsappErrore("");
+    setWhatsappAperto(true);
+    void caricaDiagnosticaWhatsapp();
+  };
+
+  const verificaWhatsapp = async () => {
+    if (!whatsappNome.trim() || !whatsappTelefono.trim() || whatsappInvio)
+      return;
+    const confermato = await dialog.confirm(
+      "Inviare il collaudo WhatsApp?",
+      `PharmaTek invierà a ${whatsappNome.trim()} un messaggio di prova e un secondo messaggio con un piccolo PDF diagnostico.`,
+      { conferma: "Invia i due messaggi", annulla: "Annulla" },
+    );
+    if (!confermato) return;
+    setWhatsappInvio(true);
+    setWhatsappErrore("");
+    try {
+      const risultato = await api.whatsappVerificaEInviaProva({
+        nome: whatsappNome.trim(),
+        telefono: whatsappTelefono.trim(),
+      });
+      setWhatsappDiagnostica(risultato.diagnostica);
+      toast.success("Collaudo WhatsApp completato: testo e PDF inviati.");
+    } catch (error) {
+      setWhatsappErrore(String(error));
+      await caricaDiagnosticaWhatsapp();
+    } finally {
+      setWhatsappInvio(false);
+    }
+  };
+
   const passwordStato = config?.passwordPresenteLocale ? (
     <Badge color="teal" variant="light">
       Configurata
@@ -336,6 +431,8 @@ export function ComunicazioniSettings() {
       Da configurare
     </Badge>
   );
+  const whatsappAvviso =
+    whatsappErrore || whatsappDiagnostica?.ultimoEsito?.messaggio || "";
 
   return (
     <>
@@ -357,29 +454,74 @@ export function ComunicazioniSettings() {
                 : "Casella Aruba precompilata, da verificare."
             }
             stato={
-              caricando ? (
-                <Badge color="gray">Caricamento</Badge>
-              ) : (
-                passwordStato
-              )
+              passwordStato
             }
             onClick={apri}
             disabled={caricando || !inTauri}
           />
           <CanaleCard
-            icona={<IconTemplate size={21} />}
-            colore="grape"
-            titolo="Modelli"
-            descrizione="Testi condivisi per solleciti, preventivi e spedizioni."
+            icona={<IconBrandWhatsapp size={21} />}
+            colore="green"
+            titolo="WhatsApp"
+            descrizione="Collaudo locale dell'app Windows, del testo e degli allegati."
             stato={
-              <Badge color={modelli.length ? "teal" : "gray"} variant="light">
-                {modelli.length ? `${modelli.length} modelli` : "Condivisi"}
-              </Badge>
+              whatsappDiagnostica?.ultimoEsito?.riuscito ? (
+                <Badge color="teal" variant="light">
+                  Compatibile
+                </Badge>
+              ) : whatsappDiagnostica?.ultimoEsito ? (
+                <Badge color="red" variant="light">
+                  Da verificare
+                </Badge>
+              ) : (
+                <Badge color="gray" variant="light">
+                  Questo PC
+                </Badge>
+              )
             }
-            onClick={() => void apriModelli()}
+            onClick={apriWhatsapp}
             disabled={!inTauri}
+            actionLabel="Verifica su questo PC"
           />
         </SimpleGrid>
+
+        <Divider />
+
+        <Group justify="space-between" align="center" wrap="nowrap" gap="md">
+          <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+            <ThemeIcon variant="light" color="grape" radius="md" size="lg">
+              <IconTemplate size={18} />
+            </ThemeIcon>
+            <Box style={{ minWidth: 0 }}>
+              <Group gap="xs">
+                <Text size="sm" fw={600}>
+                  Modelli di comunicazione
+                </Text>
+                {!modelliCaricando && (
+                  <Badge
+                    color={modelli.length ? "grape" : "gray"}
+                    variant="light"
+                    size="sm"
+                  >
+                    {modelli.length} {modelli.length === 1 ? "modello" : "modelli"}
+                  </Badge>
+                )}
+              </Group>
+              <Text size="xs" c="dimmed" truncate>
+                Testi condivisi per solleciti, preventivi e spedizioni.
+              </Text>
+            </Box>
+          </Group>
+          <Button
+            variant="default"
+            size="xs"
+            leftSection={<IconTemplate size={15} />}
+            disabled={!inTauri || modelliCaricando}
+            onClick={() => void apriModelli()}
+          >
+            Configura
+          </Button>
+        </Group>
       </Stack>
 
       <Modal
@@ -400,13 +542,7 @@ export function ComunicazioniSettings() {
         transitionProps={{ transition: "fade", duration: 180 }}
       >
         <div className="pt-modal-shell">
-          <ScrollArea
-            className="pt-modal-scroll"
-            type="auto"
-            scrollbarSize={7}
-            offsetScrollbars
-          >
-            <Stack gap="lg" pr="xs">
+          <ContenutoModaleComunicazioni>
               {errore && (
                 <Alert color="red" icon={<IconAlertTriangle size={17} />}>
                   <Text size="sm">{errore}</Text>
@@ -471,7 +607,7 @@ export function ComunicazioniSettings() {
                     setForm((value) => ({ ...value, replyToAbilitato }));
                   }}
                   label="Usa un indirizzo “Rispondi a” diverso"
-                  description="Se attivo, le risposte saranno indirizzate a Utente Demo."
+                  description="Se attivo, le risposte saranno indirizzate a Livio."
                 />
                 <TextInput
                   label="Rispondi a"
@@ -632,8 +768,7 @@ export function ComunicazioniSettings() {
                   </SimpleGrid>
                 </Stack>
               </Collapse>
-            </Stack>
-          </ScrollArea>
+          </ContenutoModaleComunicazioni>
 
           <Group
             justify="space-between"
@@ -672,6 +807,176 @@ export function ComunicazioniSettings() {
       </Modal>
 
       <Modal
+        opened={whatsappAperto}
+        onClose={() => {
+          if (!whatsappInvio) setWhatsappAperto(false);
+        }}
+        title={
+          <Group gap="sm">
+            <ThemeIcon variant="light" color="green" radius="md">
+              <IconBrandWhatsapp size={18} />
+            </ThemeIcon>
+            <Text fw={700}>Verifica WhatsApp su questo PC</Text>
+          </Group>
+        }
+        size="lg"
+        centered
+        closeOnClickOutside={!whatsappInvio}
+        closeOnEscape={!whatsappInvio}
+        transitionProps={{ transition: "fade", duration: 180 }}
+      >
+        <div className="pt-modal-shell">
+          <ContenutoModaleComunicazioni>
+              <Stack gap="sm">
+                <Group justify="space-between" align="center">
+                  <Box>
+                    <Text size="sm" fw={700}>
+                      Stato su questo PC
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Installazione e automazione di WhatsApp Desktop
+                    </Text>
+                  </Box>
+                  <Badge
+                    color={
+                      whatsappDiagnostica?.ultimoEsito?.riuscito
+                        ? "teal"
+                        : whatsappDiagnostica?.ultimoEsito
+                          ? "red"
+                          : "gray"
+                    }
+                    variant="light"
+                  >
+                    {whatsappCaricando
+                      ? "Controllo…"
+                      : whatsappDiagnostica?.ultimoEsito?.riuscito
+                        ? "Compatibile"
+                        : whatsappDiagnostica?.ultimoEsito
+                          ? `Errore · ${whatsappDiagnostica.ultimoEsito.fase}`
+                          : "Non collaudato"}
+                  </Badge>
+                </Group>
+
+                <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="xs">
+                  <Box>
+                    <Text size="xs" c="dimmed">
+                      Protocollo locale
+                    </Text>
+                    <Text size="sm" fw={600}>
+                      {whatsappCaricando
+                        ? "Controllo in corso…"
+                        : whatsappDiagnostica?.protocolloRegistrato
+                          ? "Registrato"
+                          : "Non rilevato"}
+                    </Text>
+                  </Box>
+                  <Box>
+                    <Text size="xs" c="dimmed">
+                      Applicazione rilevata
+                    </Text>
+                    <Text size="sm" fw={600} truncate>
+                      {whatsappDiagnostica?.processo || "—"}
+                    </Text>
+                  </Box>
+                  {!!whatsappDiagnostica?.versione && (
+                    <Box>
+                      <Text size="xs" c="dimmed">
+                        Versione
+                      </Text>
+                      <Text size="sm" fw={600}>
+                        {whatsappDiagnostica.versione}
+                      </Text>
+                    </Box>
+                  )}
+                  {!!whatsappDiagnostica?.campioniPrestazioni && (
+                    <Box>
+                      <Text size="xs" c="dimmed">
+                        Tempi della sessione
+                      </Text>
+                      <Text size="sm" fw={600}>
+                        Mediana {whatsappDiagnostica.medianaMs} ms · p95{" "}
+                        {whatsappDiagnostica.percentile95Ms} ms
+                      </Text>
+                    </Box>
+                  )}
+                </SimpleGrid>
+
+                {whatsappAvviso && (
+                  <Alert color="red" variant="light" py="xs">
+                    <Text size="xs">{whatsappAvviso}</Text>
+                  </Alert>
+                )}
+              </Stack>
+
+              <Divider />
+
+              <Stack gap="sm">
+                <Box>
+                  <Text size="sm" fw={700}>
+                    Destinatario del collaudo
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    Verranno inviati realmente un messaggio e un piccolo PDF.
+                    Inserisci il numero con prefisso internazionale oppure un
+                    numero italiano.
+                  </Text>
+                </Box>
+                <SimpleGrid cols={{ base: 1, xs: 2 }}>
+                  <TextInput
+                    label="Nome destinatario"
+                    value={whatsappNome}
+                    disabled={whatsappInvio}
+                    onChange={(event) =>
+                      setWhatsappNome(event.currentTarget.value)
+                    }
+                    required
+                  />
+                  <TextInput
+                    label="Numero WhatsApp"
+                    value={whatsappTelefono}
+                    disabled={whatsappInvio}
+                    onChange={(event) =>
+                      setWhatsappTelefono(event.currentTarget.value)
+                    }
+                    required
+                  />
+                </SimpleGrid>
+              </Stack>
+
+          </ContenutoModaleComunicazioni>
+
+          <Group
+            justify="space-between"
+            mt="lg"
+            pt="md"
+            className="pt-modal-footer"
+          >
+            <Button
+              variant="subtle"
+              color="gray"
+              disabled={whatsappInvio}
+              onClick={() => setWhatsappAperto(false)}
+            >
+              Chiudi
+            </Button>
+            <Button
+              color="green"
+              leftSection={<IconSend size={17} />}
+              loading={whatsappInvio}
+              disabled={
+                whatsappCaricando ||
+                !whatsappNome.trim() ||
+                !whatsappTelefono.trim()
+              }
+              onClick={() => void verificaWhatsapp()}
+            >
+              Verifica e invia prova
+            </Button>
+          </Group>
+        </div>
+      </Modal>
+
+      <Modal
         opened={modelliAperti}
         onClose={() => {
           if (!modelloSalvando) setModelliAperti(false);
@@ -691,13 +996,7 @@ export function ComunicazioniSettings() {
         transitionProps={{ transition: "fade", duration: 180 }}
       >
         <div className="pt-modal-shell">
-          <ScrollArea
-            className="pt-modal-scroll"
-            type="auto"
-            scrollbarSize={7}
-            offsetScrollbars
-          >
-            <Stack gap="lg" pr="xs">
+          <ContenutoModaleComunicazioni>
               {modelloErrore && (
                 <Alert color="red" icon={<IconAlertTriangle size={17} />}>
                   <Text size="sm">{modelloErrore}</Text>
@@ -878,8 +1177,7 @@ export function ComunicazioniSettings() {
                   </Stack>
                 </>
               )}
-            </Stack>
-          </ScrollArea>
+          </ContenutoModaleComunicazioni>
 
           <Group
             justify="space-between"

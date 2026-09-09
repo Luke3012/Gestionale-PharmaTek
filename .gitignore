@@ -50,6 +50,9 @@ desktop.ini
 .env.*
 !.env.example
 
+# Profilo operativo locale (dati aziendali, mai esportato)
+/config/operational-profile.local.json
+
 # Chiavi di firma updater (NON versionare MAI)
 *.key
 *.key.pub

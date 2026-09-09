@@ -4,10 +4,10 @@ import { Box, Tabs } from "@mantine/core";
 import { IconCoin, IconReceiptRefund, IconTruckDelivery, IconWallet } from "@tabler/icons-react";
 import { useDeepLink } from "../../shell/navigazione";
 import { Pagina } from "../../pages/Pagina";
-import { ProvvigioniView } from "./ProvvigioniView";
-import { PagamentiView } from "./PagamentiView";
-import { DistinteView } from "./DistinteView";
-import { RimborsiView } from "./RimborsiView";
+import { ProvvigioniView, type FiltroProvvigioniIniziale } from "./ProvvigioniView";
+import { PagamentiView, type FiltroPagamentiIniziale } from "./PagamentiView";
+import { DistinteView, type FiltroDistinteIniziale } from "./DistinteView";
+import { RimborsiView, type FiltroRimborsiIniziale } from "./RimborsiView";
 import { durataSwitchTabelleMs, useAnimazioniRidotte } from "../../ui/motion";
 
 const TAB_STORAGE = "pt.contabilita.tab";
@@ -40,23 +40,10 @@ export function ContabilitaHub() {
   );
 
   // Filtro iniziale da Spotlight/Dashboard per la sotto-vista di destinazione.
-  const [filtroDistinte, setFiltroDistinte] = useState<{ nonce: number; cerca: string }>();
-  const [filtroCrediti, setFiltroCrediti] = useState<{
-    nonce: number;
-    cerca?: string;
-    stati?: string[];
-    spedito?: "spediti" | "non";
-    conto?: { id?: string; nome?: string };
-    contoIds?: string[];
-    spedizioneLotti?: string[];
-    agenteIds?: string[];
-    medicoIds?: string[];
-    linee?: string[];
-    dal?: string;
-    al?: string;
-  }>();
-  const [filtroProvv, setFiltroProvv] = useState<{ nonce: number; dal?: string; al?: string; agenteId?: string; ordina?: "maturato" | "potenziale" | "nome" } | undefined>();
-  const [filtroRimborsi, setFiltroRimborsi] = useState<{ nonce: number; stati?: string[]; origini?: string[]; dal?: string; al?: string }>();
+  const [filtroDistinte, setFiltroDistinte] = useState<FiltroDistinteIniziale>();
+  const [filtroCrediti, setFiltroCrediti] = useState<FiltroPagamentiIniziale>();
+  const [filtroProvv, setFiltroProvv] = useState<FiltroProvvigioniIniziale & { nonce: number }>();
+  const [filtroRimborsi, setFiltroRimborsi] = useState<FiltroRimborsiIniziale>();
   // Nonce: incrementati da un deep-link «azione» per aprire la modale di creazione
   // (Nuovo rimborso / Nuova distinta) nella vista di destinazione.
   const [apriNuovoRimborso, setApriNuovoRimborso] = useState(0);

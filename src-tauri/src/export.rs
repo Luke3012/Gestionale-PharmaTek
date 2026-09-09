@@ -215,7 +215,7 @@ pub struct RigaLaboratorio {
 /// G=medico, H=paziente, I=valore vendita, J=data prevista, L=formulazione, M=posologia,
 /// N…=allergeni (una colonna per allergene, dinamico). In fondo la **somma di colonna C**
 /// (totale acconti del lotto). FASE 5C.
-pub fn fornitore_xlsx(path: &Path, righe: &[RigaLaboratorio]) -> Result<(), String> {
+pub fn laboratorio_xlsx(path: &Path, righe: &[RigaLaboratorio]) -> Result<(), String> {
     let mut wb = Workbook::new();
     // Importi col simbolo «€» (il valore resta numerico: il € è solo formato), niente decimali
     // superflui come nel file reale (€ 90, € 115, € 270…).

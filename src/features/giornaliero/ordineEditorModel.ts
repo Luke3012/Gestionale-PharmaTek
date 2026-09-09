@@ -1,7 +1,11 @@
-import type { RecordDto } from "../../lib/tauri";
 import { eurToCents } from "../../lib/money";
-import { REGISTRI } from "../anagrafiche/registri";
+import {
+  REGISTRO_CLIENTE as CLIENTE_REG,
+  REGISTRO_MEDICO as MEDICO_REG,
+} from "../anagrafiche/registri";
 import { CATEGORIA_DEFAULT } from "./categoriaOrdine";
+export { opzioniRecordNome as opzioni } from "../../lib/opzioniRecord";
+export { CLIENTE_REG, MEDICO_REG };
 
 export type CampiOrdineRealtime = Record<string, unknown>;
 
@@ -41,22 +45,12 @@ export interface Bozza {
   scadRelGiorni?: number;
 }
 
-export const CLIENTE_REG = REGISTRI.find((registro) => registro.entity === "cliente")!;
-export const MEDICO_REG = REGISTRI.find((registro) => registro.entity === "medico")!;
-
 export function valoriClienteVuoti(): Record<string, string | number> {
   return Object.fromEntries(CLIENTE_REG.campi.map((campo) => [campo.key, ""]));
 }
 
 export function valoriMedicoVuoti(): Record<string, string | number> {
   return Object.fromEntries(MEDICO_REG.campi.map((campo) => [campo.key, campo.defaultValue ?? ""]));
-}
-
-export function opzioni(records: RecordDto[]) {
-  return records.map((record) => ({
-    value: record.id,
-    label: (record.data.nome as string) || "(senza nome)",
-  }));
 }
 
 export function centsDi(euro: number | ""): number {

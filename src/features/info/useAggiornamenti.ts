@@ -17,6 +17,8 @@ import {
 } from "../../updater";
 import { toast } from "../../ui/toast/store";
 import { usePrefs } from "../../lib/prefs";
+import { titoloProgressoAggiornamento } from "../../lib/aggiornamentoUi";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
 
 export function useAggiornamenti() {
   const { balloonAttivo } = usePrefs();
@@ -50,9 +52,9 @@ export function useAggiornamenti() {
     // Evita di ri-avvisare per la stessa versione a ogni controllo.
     let versioneAvvisata: string | null = null;
 
-    async function avvia(
-      versione: string,
-      installa: (onProgress: Parameters<typeof installaAggiornamento>[1]) => Promise<void>
+    async function eseguiInstallazione(
+      installa: (onProgress: NonNullable<Parameters<typeof installaAggiornamento>[1]>) => Promise<unknown>,
+      dopoErrore?: () => void,
     ) {
       if (localStorage.getItem("pt.aggiornando") === "1") return;
       localStorage.setItem("pt.aggiornando", "1");
@@ -63,14 +65,7 @@ export function useAggiornamenti() {
       try {
         await installa((p) => {
           toast.update(id, {
-            titolo:
-              p.fase === "scarico"
-                ? "Scarico l'aggiornamento"
-                : p.fase === "installo"
-                  ? "Installo l'aggiornamento"
-                  : p.fase === "riavvio"
-                    ? "Riavvio in corso"
-                    : "Aggiornamento in corso",
+            titolo: titoloProgressoAggiornamento(p.fase),
             messaggio: p.messaggio,
             progress: p.percentuale,
           });
@@ -85,8 +80,7 @@ export function useAggiornamenti() {
         });
       } catch (e) {
         localStorage.removeItem("pt.aggiornando");
-        dimenticaAvvisoAggiornamento(versione);
-        versioneAvvisata = null;
+        dopoErrore?.();
         toast.update(id, {
           tipo: "error",
           titolo: "Aggiornamento non riuscito",
@@ -97,45 +91,18 @@ export function useAggiornamenti() {
       }
     }
 
-    async function installaUltimaDaToast() {
-      if (localStorage.getItem("pt.aggiornando") === "1") return;
-      localStorage.setItem("pt.aggiornando", "1");
-      const id = toast.loading("Preparo l'aggiornamento...", {
-        titolo: "Aggiornamento in corso",
-        progress: 3,
+    async function avvia(
+      versione: string,
+      installa: (onProgress: NonNullable<Parameters<typeof installaAggiornamento>[1]>) => Promise<void>,
+    ) {
+      await eseguiInstallazione(installa, () => {
+        dimenticaAvvisoAggiornamento(versione);
+        versioneAvvisata = null;
       });
-      try {
-        await installaUltimaVersione((p) => {
-          toast.update(id, {
-            titolo:
-              p.fase === "scarico"
-                ? "Scarico l'aggiornamento"
-                : p.fase === "installo"
-                  ? "Installo l'aggiornamento"
-                  : p.fase === "riavvio"
-                    ? "Riavvio in corso"
-                    : "Aggiornamento in corso",
-            messaggio: p.messaggio,
-            progress: p.percentuale,
-          });
-        });
-        toast.update(id, {
-          tipo: "success",
-          titolo: "Aggiornamento installato",
-          messaggio: "Riavvio il gestionale...",
-          progress: 100,
-          durata: 7000,
-        });
-      } catch (e) {
-        localStorage.removeItem("pt.aggiornando");
-        toast.update(id, {
-          tipo: "error",
-          titolo: "Aggiornamento non riuscito",
-          messaggio: String(e),
-          progress: undefined,
-          durata: 20000,
-        });
-      }
+    }
+
+    async function installaUltimaDaToast() {
+      await eseguiInstallazione(installaUltimaVersione);
     }
 
     function mostraTestDownloadUltima() {
@@ -163,7 +130,7 @@ export function useAggiornamenti() {
       if (trovato.versione === versioneAvvisata) return; // già avvisato per questa versione
       if (!prenotaAvvisoAggiornamento(trovato.versione)) return;
       versioneAvvisata = trovato.versione;
-      // `note` arriva dal manifest pubblico (sintesi della versione):
+      // `note` arriva dal manifest (sintesi della versione, impostata da release.ps1):
       // se c'è, la usiamo come anteprima; altrimenti un messaggio generico.
       const sintesi = trovato.note?.trim();
       toast.info(sintesi || `È disponibile la versione ${trovato.versione}.`, {
@@ -184,23 +151,19 @@ export function useAggiornamenti() {
     // All'avvio (leggero ritardo: non competere col bootstrap iniziale).
     const t0 = window.setTimeout(() => void controlla(), 8000);
     const iv = window.setInterval(() => void controlla(), INTERVALLO_CONTROLLO_AGGIORNAMENTI_MS);
-    let offTest: (() => void) | undefined;
-    import("@tauri-apps/api/event")
+    const disiscriviTest = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen("pt:update-test-main", () => {
           if (attivo) mostraTestDownloadUltima();
         })
-      )
-      .then((off) => {
-        if (attivo) offTest = off;
-        else off();
-      })
-      .catch(() => {});
+      ),
+    );
     return () => {
       attivo = false;
       window.clearTimeout(t0);
       window.clearInterval(iv);
-      offTest?.();
+      disiscriviTest();
     };
   }, [balloonAttivo]);
 }

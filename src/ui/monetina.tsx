@@ -11,33 +11,16 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { IconCheck, IconFlask2, IconPackage } from "@tabler/icons-react";
+import { animazioniRidotteSalvate } from "./motion";
+import { ultimoPuntoPointer } from "./ultimoPuntoPointer";
 
 const EVENTO = "pt:flourish-punto";
 
 export type FlourishTipo = "moneta" | "pacco" | "beuta";
 
-let ultimoClick = { x: 0, y: 0 };
-if (typeof window !== "undefined") {
-  window.addEventListener(
-    "pointerdown",
-    (e) => {
-      ultimoClick = { x: e.clientX, y: e.clientY };
-    },
-    { capture: true, passive: true }
-  );
-}
-
-function animazioniRidotte(): boolean {
-  try {
-    return JSON.parse(localStorage.getItem("pt.ridurreAnimazioni") || "false") === true;
-  } catch {
-    return false;
-  }
-}
-
 function lancia(tipo: FlourishTipo, from?: { x: number; y: number }): boolean {
-  if (typeof window === "undefined" || animazioniRidotte()) return false;
-  window.dispatchEvent(new CustomEvent(EVENTO, { detail: { tipo, ...(from ?? ultimoClick) } }));
+  if (typeof window === "undefined" || animazioniRidotteSalvate()) return false;
+  window.dispatchEvent(new CustomEvent(EVENTO, { detail: { tipo, ...(from ?? ultimoPuntoPointer()) } }));
   return true;
 }
 

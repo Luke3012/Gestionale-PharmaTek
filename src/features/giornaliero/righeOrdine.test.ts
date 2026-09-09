@@ -4,6 +4,7 @@ import {
   adeguaRigheFormATotale,
   azzeraPrezziRigheForm,
   azzeraRigaForm,
+  campiPersistenzaRigaForm,
   nuovaRiga,
   riduciRigheForm,
   mergeRigheOrdineRealtime,
@@ -51,6 +52,45 @@ describe("righe ordine", () => {
 
   it("calcola i totali in centesimi rispettando quantità e arrotondamento", () => {
     expect(totaleRigheForm([riga({ qta: 2, prezzo: 12.345 }), riga({ qta: 1, prezzo: "" })])).toBe(2470);
+  });
+
+  it("traduce una riga libera nei campi persistiti normalizzando testo e prezzo", () => {
+    const allergeni = ["A", "B"];
+    expect(campiPersistenzaRigaForm(riga({
+      prodottoId: "",
+      prodottoNome: "  Prodotto libero  ",
+      qta: 0,
+      prezzo: 12.345,
+      paziente: "  Mario  ",
+      tipoTest: " PRICK ",
+      ml: " 2 ",
+      codice: " C ",
+      formulazione: " F ",
+      posologia: " P ",
+      numero: " N ",
+      allergeni,
+    }))).toEqual({
+      prodotto_id: "",
+      prodotto_nome: "Prodotto libero",
+      qta: 0,
+      prezzo: 1235,
+      paziente: "Mario",
+      tipo_test: "PRICK",
+      ml: "2",
+      codice_laboratorio: "C",
+      formulazione: "F",
+      posologia: "P",
+      numero: "N",
+      allergeni,
+    });
+  });
+
+  it("non persiste il nome duplicato per un prodotto di catalogo", () => {
+    expect(campiPersistenzaRigaForm(riga({
+      prodottoId: "catalogo-1",
+      prodottoNome: "Nome risolto",
+      prezzo: "",
+    }))).toMatchObject({ prodotto_id: "catalogo-1", prodotto_nome: "", prezzo: 0 });
   });
 
   it("azzera tutti i prezzi quando l'ordine diventa omaggio", () => {

@@ -2,22 +2,24 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Autocomplete,
   Box,
-  Button,
   Divider,
   NumberInput,
   Popover,
   Select,
-  Stack,
   Text,
   TextInput,
   Textarea,
 } from "@mantine/core";
 import { motion } from "framer-motion";
 import type { Campo, Opzione, Registro } from "./registri";
-import { cercaPerCAP, cercaPerCitta, type ComuneInfo } from "../../lib/cap-lookup";
+import {
+  cercaCittaSelezionata,
+  type ComuneInfo,
+} from "../../lib/cap-lookup";
 import { CalcolaCFPopover, CFValidationBadge } from "./CalcolaCFPopover";
-import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { useTabSelect } from "../../ui/tabCompleta";
+import { ScelteCapPopover } from "../../ui/ScelteCapPopover";
+import { useScelteCap } from "../../ui/useScelteCap";
 
 export type Valori = Record<string, string | number>;
 
@@ -42,14 +44,10 @@ export function FormCampiGrid({
   setValori: React.Dispatch<React.SetStateAction<Valori>> | ((updater: (s: Valori) => Valori) => void);
   setErrori?: React.Dispatch<React.SetStateAction<Record<string, string>>> | ((updater: (e: Record<string, string>) => Record<string, string>) => void);
 }) {
-  // Stato per suggerimenti città (autocomplete).
-  const [suggerimentiCitta, setSuggerimentiCitta] = useState<string[]>([]);
-
-  // Stato per disambiguazione CAP (popover con opzioni).
-  const [capAmbiguo, setCapAmbiguo] = useState<ComuneInfo[] | null>(null);
-  const [capCittaMultiplo, setCapCittaMultiplo] = useState<ComuneInfo | null>(null);
-  const [capPopoverAperto, setCapPopoverAperto] = useState(false);
-  useCloseOnScroll(capPopoverAperto, setCapPopoverAperto);
+  const {
+    suggerimentiCitta, capAmbiguo, capCittaMultiplo, capPopoverAperto,
+    setCapPopoverAperto, dopoSceltaComune, gestisciCap, suggerisciCitta,
+  } = useScelteCap();
 
   // Set di campi appena auto-compilati (per flash giallo, resettato dopo 500ms).
   const [campiAutoFilled, setCampiAutoFilled] = useState<Set<string>>(new Set());
@@ -87,59 +85,29 @@ export function FormCampiGrid({
       if (autoFillTimerRef.current) clearTimeout(autoFillTimerRef.current);
       autoFillTimerRef.current = setTimeout(() => setCampiAutoFilled(new Set()), 500);
 
-      setCapAmbiguo(null);
-      if (opzioni.mostraCapMultipli && info.cap.length > 1) {
-        setCapCittaMultiplo(info);
-        setCapPopoverAperto(true);
-      } else {
-        setCapCittaMultiplo(null);
-        setCapPopoverAperto(false);
-      }
+      dopoSceltaComune(info, opzioni.mostraCapMultipli);
     },
-    [setValori],
+    [dopoSceltaComune, setValori],
   );
 
   /** Gestisce il cambio del campo CAP: lookup → auto-fill o suggerimenti. */
   const onCAPChange = useCallback(
     (v: string | number) => {
       const cap = String(v);
-      if (cap.length === 5 && /^\d{5}$/.test(cap)) {
-        const ris = cercaPerCAP(cap);
-        if (ris) {
-          if (ris.univoco) {
-            autoFillDaComune(ris.comuni[0], { capSelezionato: cap });
-          } else {
-            // CAP ambiguo → mostra le opzioni.
-            setCapCittaMultiplo(null);
-            setCapAmbiguo(ris.comuni);
-            setCapPopoverAperto(true);
-          }
-        }
-      } else {
-        setCapAmbiguo(null);
-        setCapCittaMultiplo(null);
-        setCapPopoverAperto(false);
-      }
+      gestisciCap(cap, (comune) => autoFillDaComune(comune, { capSelezionato: cap }));
     },
-    [autoFillDaComune],
+    [autoFillDaComune, gestisciCap],
   );
 
   /** Gestisce l'input nel campo città: autocomplete. */
   const onCittaInput = useCallback((query: string) => {
-    if (!query || query.length < 2) {
-      setSuggerimentiCitta([]);
-      return;
-    }
-    const risultati = cercaPerCitta(query, 10);
-    setSuggerimentiCitta(risultati.map((c) => c.nome));
-  }, []);
+    suggerisciCitta(query);
+  }, [suggerisciCitta]);
 
   /** Quando l'utente seleziona un suggerimento città. */
   const onSelectCitta = useCallback(
     (nome: string) => {
-      const info = cercaPerCitta(nome, 1).find(
-        (c) => c.nome.toLowerCase() === nome.toLowerCase(),
-      );
+      const info = cercaCittaSelezionata(nome);
       if (info) {
         autoFillDaComune(info, { mostraCapMultipli: true });
       }
@@ -208,54 +176,13 @@ export function FormCampiGrid({
               <Popover.Target>
                 <Box>{campoNode}</Box>
               </Popover.Target>
-              <Popover.Dropdown
-                p="xs"
-                // Vedi CalcolaCFPopover: l'Escape va confinato al popover (lo chiude Mantine)
-                // senza chiudere il modale ospite. Il Modal salta la chiusura se `event.target`
-                // ha `data-mantine-stop-propagation`, quindi marchiamo l'elemento a fuoco.
-                data-mantine-stop-propagation="true"
-                onFocusCapture={(e) => {
-                  const t = e.target as HTMLElement | null;
-                  t?.setAttribute?.("data-mantine-stop-propagation", "true");
-                }}
-              >
-                <Text size="xs" fw={600} c="dimmed" mb={4}>
-                  {capCittaMultiplo
-                    ? `Più CAP per ${capCittaMultiplo.nome}:`
-                    : "Più comuni per questo CAP:"}
-                </Text>
-                <Stack gap={2}>
-                  {capCittaMultiplo
-                    ? capCittaMultiplo.cap.map((cap) => (
-                        <Button
-                          key={cap}
-                          variant="subtle"
-                          size="xs"
-                          justify="flex-start"
-                          fullWidth
-                          onClick={() =>
-                            autoFillDaComune(capCittaMultiplo, {
-                              capSelezionato: cap,
-                            })
-                          }
-                        >
-                          {cap} — {capCittaMultiplo.nome} ({capCittaMultiplo.sigla})
-                        </Button>
-                      ))
-                    : capAmbiguo?.map((info) => (
-                        <Button
-                          key={info.nome}
-                          variant="subtle"
-                          size="xs"
-                          justify="flex-start"
-                          fullWidth
-                          onClick={() => autoFillDaComune(info)}
-                        >
-                          {info.nome} ({info.sigla}) — {info.regione}
-                        </Button>
-                      ))}
-                </Stack>
-              </Popover.Dropdown>
+              {/* L'Escape resta confinato al popover e non chiude il modale ospite. */}
+              <ScelteCapPopover
+                capCittaMultiplo={capCittaMultiplo}
+                capAmbiguo={capAmbiguo}
+                onScegli={autoFillDaComune}
+                proteggiEscape
+              />
             </Popover>
           ) : (
             campoNode
@@ -458,26 +385,6 @@ export const CampoForm = React.memo(function CampoForm({
         />
       );
     case "cf":
-      if (campo.azione === "calcola-cf" && onUsaCF) {
-        return (
-          <Box>
-            <TextInput
-              {...comune}
-              value={String(valore ?? "")}
-              onChange={(e) => onChange(e.currentTarget.value.toUpperCase())}
-              placeholder={campo.placeholder}
-              maxLength={16}
-              rightSection={
-                <CalcolaCFPopover
-                  nomeRecord={nomeRecord ?? ""}
-                  onUsaCF={onUsaCF}
-                />
-              }
-            />
-            <CFValidationBadge valoreCF={String(valore ?? "")} />
-          </Box>
-        );
-      }
       return (
         <Box>
           <TextInput
@@ -486,6 +393,14 @@ export const CampoForm = React.memo(function CampoForm({
             onChange={(e) => onChange(e.currentTarget.value.toUpperCase())}
             placeholder={campo.placeholder}
             maxLength={16}
+            rightSection={
+              campo.azione === "calcola-cf" && onUsaCF ? (
+                <CalcolaCFPopover
+                  nomeRecord={nomeRecord ?? ""}
+                  onUsaCF={onUsaCF}
+                />
+              ) : undefined
+            }
           />
           <CFValidationBadge valoreCF={String(valore ?? "")} />
         </Box>

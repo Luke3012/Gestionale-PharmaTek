@@ -9,6 +9,7 @@ import {
 import { Box, Modal } from "@mantine/core";
 import { usePrefs } from "../lib/prefs";
 import { inTauri, type Identity, type RecordDto } from "../lib/tauri";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 import { useModalSnapshot } from "../ui/useModalSnapshot";
 import type { EditorTarget } from "../features/giornaliero/OrdineEditor";
 import { apriFinestraOrdine } from "../features/giornaliero/apriFinestra";
@@ -18,8 +19,7 @@ import {
 } from "./apriRiepilogo";
 import type { DeepLink } from "./navigazione";
 import type { ApriOrdineDaRiepilogo } from "./RiepilogoWindow";
-import { AnagraficaEditorModal } from "../features/anagrafiche/AnagraficaEditorModal";
-import { REGISTRI } from "../features/anagrafiche/registri";
+import { RiepilogoEditorCliente } from "./RiepilogoEditorCliente";
 
 const RiepilogoContenuto = lazy(() =>
   import("./RiepilogoWindow").then((m) => ({ default: m.RiepilogoContenuto }))
@@ -27,9 +27,6 @@ const RiepilogoContenuto = lazy(() =>
 const OrdineEditor = lazy(() =>
   import("../features/giornaliero/OrdineEditor").then((m) => ({ default: m.OrdineEditor }))
 );
-const REGISTRO_CLIENTE = REGISTRI.find(
-  (registro) => registro.entity === "cliente",
-)!;
 
 /** Host unico nella finestra principale per richieste provenienti anche da Spotlight/altre webview. */
 export function RiepilogoModalHost({
@@ -71,21 +68,15 @@ export function RiepilogoModalHost({
       return () => window.removeEventListener(EVENTO_APRI_RIEPILOGO, locale);
     }
 
-    let attivo = true;
-    let off: (() => void) | undefined;
-    import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) => listen<RiepilogoTarget>(EVENTO_APRI_RIEPILOGO, (event) => {
         if (event.payload) riceviTarget(event.payload);
-      }))
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
+      })),
+    );
     return () => {
-      attivo = false;
       window.removeEventListener(EVENTO_APRI_RIEPILOGO, locale);
-      off?.();
+      disiscriviTauri();
     };
   }, [riceviTarget]);
 
@@ -185,12 +176,7 @@ export function RiepilogoModalHost({
         />
       </Suspense>
 
-      <AnagraficaEditorModal
-        opened={!!clienteDaModificare}
-        registro={REGISTRO_CLIENTE}
-        record={clienteDaModificare}
-        onClose={() => setClienteDaModificare(null)}
-      />
+      <RiepilogoEditorCliente record={clienteDaModificare} onClose={() => setClienteDaModificare(null)} />
     </>
   );
 }

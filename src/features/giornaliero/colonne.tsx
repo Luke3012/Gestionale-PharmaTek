@@ -1,7 +1,7 @@
 // Colonne configurabili del Giornaliero: definizioni + hook di persistenza
 // (ordine + visibilità) in localStorage. N° e azioni (⋯) restano fissi ai bordi
 // e non sono qui: questo riguarda solo le colonne "dati" in mezzo.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Badge, Group, Stack, Text, Tooltip } from "@mantine/core";
 import {
@@ -27,24 +27,15 @@ import {
   useCompactColumnObserver,
   type LeggiColonnaCompatta,
 } from "../../ui/useCompactColumnObserver";
+import {
+  type DefinizioneColonnaTabella,
+  normalizzaStatoColonne,
+  type StatoColonneConfigurabili,
+  useColonneConfigurabili,
+} from "../../ui/colonneConfigurabili";
 
-export interface ColDef {
-  key: string;
-  label: string;
-  defaultVisible: boolean;
-  /** Allineamento: destra (importi) o centro (Stato/Linea). Default: sinistra. */
-  align?: "right" | "center";
-  render: (o: OrdineDto) => ReactNode;
-  /** Valore per l'ordinamento cliccando l'header (se assente: non ordinabile). */
-  sortAccessor?: (o: OrdineDto) => string | number;
-  /** Come la colonna finisce nell'export Excel (valore grezzo + tipo). */
-  esporta?: MetaExport<OrdineDto>;
-  /** Larghezza di default opzionale. Di norma NON impostata: con table-layout auto la colonna
-   *  si dimensiona sul contenuto (minimo = riga più lunga presente) e prende una quota dello
-   *  spazio in eccesso. Una width fissa qui verrebbe comunque allargata dallo spazio avanzato
-   *  (→ "spazi vuoti"): usarla solo se una colonna deve avere una larghezza di partenza precisa. */
-  width?: number | string;
-}
+/** Definizione della colonna con il metadato aggiuntivo per l'export Excel. */
+export type ColDef = DefinizioneColonnaTabella<OrdineDto> & { esporta?: MetaExport<OrdineDto> };
 
 
 // Colore badge per linea (categoria prodotto). Fonte unica: categoriaDef (registri).
@@ -341,39 +332,27 @@ export function LineeOrdineBadge({ linee }: { linee: string[] }) {
   const { compactLinea: compact } = useContext(DominioCtx);
   if (linee.length === 0) return <Text ta="center">—</Text>;
 
-  const pieno = (
-    <Group gap={4} wrap="nowrap" justify="center">
-      {linee.map((l) => {
-        const cd = categoriaDef(l);
-        return (
-          <Tooltip key={l} label={cd.label} withArrow>
-            <Badge size="sm" variant="light" color={cd.color} leftSection={<cd.Ico size={11} />}>
-              {cd.label}
-            </Badge>
-          </Tooltip>
-        );
-      })}
-    </Group>
-  );
-
-  const soloIcone = (
-    <Group gap={4} wrap="nowrap" justify="center">
-      {linee.map((l) => {
-        const cd = categoriaDef(l);
-        return (
-          <Tooltip key={l} label={cd.label} withArrow>
-            <Badge size="sm" variant="light" color={cd.color} px={6} aria-label={cd.label}>
-              <cd.Ico size={12} style={{ display: "block" }} />
-            </Badge>
-          </Tooltip>
-        );
-      })}
-    </Group>
-  );
-
   return (
     <div data-ptcol="linea" style={wrapStyle}>
-      {compact ? soloIcone : pieno}
+      <Group gap={4} wrap="nowrap" justify="center">
+        {linee.map((l) => {
+          const cd = categoriaDef(l);
+          return (
+            <Tooltip key={l} label={cd.label} withArrow>
+              <Badge
+                size="sm"
+                variant="light"
+                color={cd.color}
+                {...(compact
+                  ? { px: 6, "aria-label": cd.label }
+                  : { leftSection: <cd.Ico size={11} /> })}
+              >
+                {compact ? <cd.Ico size={12} style={{ display: "block" }} /> : cd.label}
+              </Badge>
+            </Tooltip>
+          );
+        })}
+      </Group>
     </div>
   );
 }
@@ -597,96 +576,37 @@ export const COLONNE: ColDef[] = [
   },
 ];
 
-const DEFS = new Map(COLONNE.map((c) => [c.key, c]));
 const STORAGE = "pt.giornaliero.colonne.v7";
 
-interface Salvato {
-  ordine: string[];
-  nascoste: string[];
+type Salvato = StatoColonneConfigurabili;
+
+function normalizzaColonneGiornaliero(salvato?: {
+  ordine?: string[];
+  nascoste?: string[];
+}): Salvato {
+  return normalizzaStatoColonne(COLONNE, salvato);
 }
 
-function predefinito(): Salvato {
-  return {
-    ordine: COLONNE.map((c) => c.key),
-    nascoste: COLONNE.filter((c) => !c.defaultVisible).map((c) => c.key),
-  };
-}
-
-function carica(): Salvato {
-  try {
-    const raw = localStorage.getItem(STORAGE);
-    if (raw) {
-      const s = JSON.parse(raw) as Salvato;
-      const viste = new Set(s.ordine);
-      // Tiene solo chiavi note e accoda eventuali colonne aggiunte in seguito.
-      const ordine = [
-        ...s.ordine.filter((k) => DEFS.has(k)),
-        ...COLONNE.filter((c) => !viste.has(c.key)).map((c) => c.key),
-      ];
-      return { ordine, nascoste: (s.nascoste || []).filter((k) => DEFS.has(k)) };
+function resetColonneGiornaliero(): void {
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith("giornaliero-v3-") && key.endsWith("-columns-width")) {
+      keysToRemove.push(key);
     }
-  } catch {
-    /* fallback ai predefiniti */
   }
-  return predefinito();
-}
-
-export interface VoceColonna {
-  def: ColDef;
-  visibile: boolean;
+  keysToRemove.forEach((key) => {
+    localStorage.removeItem(key);
+  });
+  resetLarghezzeTabella("giornaliero-v4");
+  resetLarghezzeTabella("giornaliero-v5");
 }
 
 export function useColonneGiornaliero() {
-  const [stato, setStato] = useState<Salvato>(carica);
-  useEffect(() => {
-    localStorage.setItem(STORAGE, JSON.stringify(stato));
-  }, [stato]);
-
-  const nascoste = useMemo(() => new Set(stato.nascoste), [stato.nascoste]);
-
-  const visibili = useMemo<ColDef[]>(
-    () =>
-      stato.ordine
-        .map((k) => DEFS.get(k))
-        .filter((c): c is ColDef => !!c && !nascoste.has(c.key)),
-    [stato.ordine, nascoste]
-  );
-
-  const tutte = useMemo<VoceColonna[]>(
-    () =>
-      stato.ordine
-        .map((k) => DEFS.get(k))
-        .filter((c): c is ColDef => !!c)
-        .map((def) => ({ def, visibile: !nascoste.has(def.key) })),
-    [stato.ordine, nascoste]
-  );
-
-  const riordina = useCallback((keys: string[]) => setStato((s) => ({ ...s, ordine: keys })), []);
-  const toggle = useCallback(
-    (key: string) =>
-      setStato((s) => {
-        const n = new Set(s.nascoste);
-        if (n.has(key)) n.delete(key);
-        else n.add(key);
-        return { ...s, nascoste: [...n] };
-      }),
-    []
-  );
-  const reset = useCallback(() => {
-    setStato(predefinito());
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith("giornaliero-v3-") && key.endsWith("-columns-width")) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach((key) => {
-      localStorage.removeItem(key);
-    });
-    resetLarghezzeTabella("giornaliero-v4");
-    resetLarghezzeTabella("giornaliero-v5");
-  }, []);
-
-  return { visibili, tutte, ordineKeys: stato.ordine, riordina, toggle, reset };
+  return useColonneConfigurabili(COLONNE, {
+    storage: STORAGE,
+    normalizza: normalizzaColonneGiornaliero,
+    richiedeOrdineSalvato: true,
+    onReset: resetColonneGiornaliero,
+  });
 }

@@ -12,6 +12,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { setConToggle } from "../../lib/set";
 import {
   Badge,
   Alert,
@@ -28,7 +29,6 @@ import {
   Text,
   TextInput,
   Textarea,
-  LoadingOverlay,
 } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -45,9 +45,10 @@ import { api, inTauri, type Identity, type Pagamento, type Preventivo, type Rata
 import { oggiIso as oggi } from "../../lib/date";
 import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
-import { validaCampo } from "../anagrafiche/registri";
+import { validaCampi } from "../anagrafiche/registri";
 import { categoriaDef } from "../anagrafiche/categorie";
 import { salvaNuovoClienteConControllo } from "../anagrafiche/salvataggioCliente";
+import { preparaCampiAnagraficaCompleti, valoriAnagrafica } from "../anagrafiche/modelloAnagrafica";
 import { ultimoMedicoClienteValido } from "../anagrafiche/medicoCliente";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { suggerimentiDiagnostica, suggerimentiProduzione, type Suggerimenti } from "../produzione/datiProduzione";
@@ -86,7 +87,11 @@ import {
   numeroRateSaldoPredefinito,
   offsetSpedizione,
 } from "../contabilita/rateizzazione";
-import { risolviContoPreferito } from "../contabilita/contoPreferito";
+import {
+  èContoTransito,
+  opzioniContiConTransito,
+  risolviContoPreferito,
+} from "../contabilita/contoPreferito";
 import {
   accontoSuggeritoOrdine,
   PREFERENZE_ACCONTO_PRODOTTI_DEFAULT,
@@ -108,6 +113,7 @@ import {
   azzeraPrezziRigheForm,
   azzeraRigaForm,
   adeguaRigheFormATotale,
+  campiPersistenzaRigaForm,
   firmaRigheOrdineRealtime,
   mergeRigheOrdineRealtime,
   nuovaRiga,
@@ -116,6 +122,8 @@ import {
   totaleRigheForm,
   type RigaForm,
 } from "./righeOrdine";
+import { precompilaMantenimentoRiga } from "./mantenimentoOrdine";
+import { applicaPrezzoAutomaticoRiga } from "./prezziOrdine";
 import {
   CATEGORIA_DEFAULT,
   IconaCategoria,
@@ -145,6 +153,8 @@ import {
 } from "../preventivi/rendererDocumenti";
 import { avviaInvioRapidoPreventivo } from "../preventivi/invioRapidoPreventivo";
 import { apriFinestraPreventivo } from "../preventivi/apriFinestraPreventivo";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { OverlaySalvataggioFinestra } from "../../ui/OverlaySalvataggioFinestra";
 
 export { CATEGORIA_DEFAULT, SelettoreCategoriaNuovoOrdine } from "./categoriaOrdine";
 
@@ -205,6 +215,32 @@ const EVENTI_RIFERIMENTI_ORDINE = [
   "prodotto:salvato",
   "conto:salvato",
 ] as const;
+const CAMPI_PAGAMENTO_LOCALE = {
+  data: "",
+  verificato: false,
+  distintaId: "",
+  contoAccreditoNome: "",
+  note: "",
+} as const;
+
+function richiesteRiferimentiOrdine() {
+  return [
+    api.recordsList("medico"),
+    api.recordsList("cliente"),
+    api.recordsList("prodotto"),
+    api.recordsList("agente"),
+    api.recordsList("conto"),
+  ] as const;
+}
+
+function campiContoLocale(conti: RecordDto[], contoId: string) {
+  const conto = conti.find((record) => record.id === contoId);
+  return {
+    contoId,
+    contoNome: ((conto?.data.nome as string) || ""),
+    contoTipo: ((conto?.data.tipo as string) || ""),
+  };
+}
 
 /** Wrapper modale (nuovi ordini o fallback alla finestra). Resta montato così la
  * modale anima in entrata/uscita; il contenuto resta visibile durante l'uscita. */
@@ -219,7 +255,7 @@ export function OrdineEditor({
   onClose: () => void;
   onSaved: (ordineId?: string) => void;
 }) {
-  const [mostrato, setMostrato] = useState(editor);
+  const [mostrato, clearMostrato] = useModalSnapshot(editor);
   const [nested, setNested] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [preventivoEditorId, setPreventivoEditorId] = useState<string | null>(null);
@@ -238,7 +274,6 @@ export function OrdineEditor({
   );
   useEffect(() => {
     if (editor) {
-      setMostrato(editor);
       setCatTitolo(editor.ordineId === null ? editor.categoria || CATEGORIA_DEFAULT : editor.categoria);
       setDirty(false);
     }
@@ -294,7 +329,7 @@ export function OrdineEditor({
           transition: "fade",
           duration: 200,
           onExited: () => {
-            if (!editor) setMostrato(null);
+            if (!editor) clearMostrato();
           },
         }}
         title={
@@ -896,7 +931,7 @@ export function OrdineForm({
         bs.find((b) => b.tipo === "rata")?.contoId ||
         contoSaldoResolved;
       const contoRateTipo = ((conti.find((c) => c.id === contoRate)?.data.tipo as string) || "");
-      const contoRateSuccessive = ["contrassegno", "assegno"].includes(contoRateTipo)
+      const contoRateSuccessive = èContoTransito(contoRateTipo)
         ? contoSaldoResolved || contoRate
         : contoRate;
       const rateBozze: Bozza[] = rate.map((r, i) => ({
@@ -925,14 +960,13 @@ export function OrdineForm({
     const contoPrimaTipo =
       apertiSaldoRata[0]?.contoTipo || ((conti.find((c) => c.id === contoPrimaRata)?.data.tipo as string) || "");
     const contoSuccessive =
-      ["contrassegno", "assegno"].includes(contoPrimaTipo)
+      èContoTransito(contoPrimaTipo)
         ? contoSaldoResolved || contoPrimaRata
         : contoPrimaRata;
     const ancora = rate[0]?.scadenza;
     const timestamp = Date.now();
     const rateLocali: Pagamento[] = rate.map((r, i) => {
       const contoId = i === 0 ? contoPrimaRata : contoSuccessive;
-      const conto = conti.find((c) => c.id === contoId);
       return {
         id: `__local_pagamento__rata-${timestamp}-${i}`,
         ordineId,
@@ -940,14 +974,8 @@ export function OrdineForm({
         importo: r.importo,
         saldato: false,
         scadenza: r.scadenza,
-        contoId,
-        contoNome: ((conto?.data.nome as string) || ""),
-        contoTipo: ((conto?.data.tipo as string) || ""),
-        data: "",
-        verificato: false,
-        distintaId: "",
-        contoAccreditoNome: "",
-        note: "",
+        ...campiContoLocale(conti, contoId),
+        ...CAMPI_PAGAMENTO_LOCALE,
         scadDaSpedizione: daSpedizione,
         scadRelGiorni: daSpedizione ? giorniTra(ancora, r.scadenza) : 0,
       };
@@ -1019,30 +1047,13 @@ export function OrdineForm({
   // per Keriba si usano i conti predefiniti dell'app, non quelli preferiti.
   const usaPrefMedAg = categoria !== "Keriba";
 
-  // Conto proposto per l'acconto (medico → agente → predefinito acconti/incassi).
-  const contoAccontoResolved = useMemo(
-    () =>
-      risolviContoPreferito({
-        conti,
-        medico: usaPrefMedAg ? medici.find((m) => m.id === medicoId) ?? null : null,
-        agente: usaPrefMedAg ? agenti.find((a) => a.id === agenteId) ?? null : null,
-        tipo: "acconto",
-      }),
-    [conti, medici, agenti, medicoId, agenteId, usaPrefMedAg]
-  );
-
-  // Conto proposto per il saldo/rate (medico → agente → predefinito incassi → banca):
-  // il credito atteso conosce sin da subito dove arriveranno i soldi, non solo al saldo.
-  const contoSaldoResolved = useMemo(
-    () =>
-      risolviContoPreferito({
-        conti,
-        medico: usaPrefMedAg ? medici.find((m) => m.id === medicoId) ?? null : null,
-        agente: usaPrefMedAg ? agenti.find((a) => a.id === agenteId) ?? null : null,
-        tipo: "saldo",
-      }),
-    [conti, medici, agenti, medicoId, agenteId, usaPrefMedAg]
-  );
+  // Conti proposti per acconto e saldo/rate (medico → agente → predefinito → banca).
+  const [contoAccontoResolved, contoSaldoResolved] = useMemo(() => {
+    const medico = usaPrefMedAg ? medici.find((record) => record.id === medicoId) ?? null : null;
+    const agente = usaPrefMedAg ? agenti.find((record) => record.id === agenteId) ?? null : null;
+    const risolvi = (tipo: "acconto" | "saldo") => risolviContoPreferito({ conti, medico, agente, tipo });
+    return [risolvi("acconto"), risolvi("saldo")] as const;
+  }, [conti, medici, agenti, medicoId, agenteId, usaPrefMedAg]);
   const numeroRateSaldoDefault = useMemo(() => {
     const raw = medici.find((m) => m.id === medicoId)?.data.rate_saldo_default;
     return numeroRateSaldoPredefinito(categoria, raw);
@@ -1106,7 +1117,6 @@ export function OrdineForm({
     if (totale > 0) {
       const creaPreview = (tipo: "acconto" | "saldo", importo: number): Pagamento => {
         const cId = tipo === "acconto" ? contoAccontoResolved : contoSaldoResolved;
-        const cObj = conti.find((c) => c.id === cId);
         return {
           id: `__preview_scadenzario__${tipo}`,
           ordineId,
@@ -1114,14 +1124,8 @@ export function OrdineForm({
           importo,
           saldato: false,
           scadenza: tipo === "acconto" ? data : "",
-          contoId: cId,
-          contoNome: (cObj?.data.nome as string) || "",
-          contoTipo: (cObj?.data.tipo as string) || "",
-          data: "",
-          verificato: false,
-          distintaId: "",
-          contoAccreditoNome: "",
-          note: "",
+          ...campiContoLocale(conti, cId),
+          ...CAMPI_PAGAMENTO_LOCALE,
           scadDaSpedizione: tipo === "saldo",
           scadRelGiorni: 0,
         };
@@ -1217,11 +1221,7 @@ export function OrdineForm({
     (async () => {
       try {
         const [m, c, p, a, co, pr] = await Promise.all([
-          api.recordsList("medico"),
-          api.recordsList("cliente"),
-          api.recordsList("prodotto"),
-          api.recordsList("agente"),
-          api.recordsList("conto"),
+          ...richiesteRiferimentiOrdine(),
           api.recordGet("parametri_globali", "prodotti").catch(() => null),
         ]);
         setMedici(m);
@@ -1318,13 +1318,7 @@ export function OrdineForm({
     80
   );
   useRicaricaSuEventi(EVENTI_RIFERIMENTI_ORDINE, async () => {
-    const [m, c, p, a, co] = await Promise.all([
-      api.recordsList("medico"),
-      api.recordsList("cliente"),
-      api.recordsList("prodotto"),
-      api.recordsList("agente"),
-      api.recordsList("conto"),
-    ]);
+    const [m, c, p, a, co] = await Promise.all(richiesteRiferimentiOrdine());
     setMedici(m);
     setClienti(c);
     setProdotti(p);
@@ -1550,7 +1544,6 @@ export function OrdineForm({
     const locali: Pagamento[] = [];
 
     if (accontoC > 0) {
-      const conto = conti.find((c) => c.id === contoAccontoResolved);
       locali.push({
         id: `__local_pagamento__acconto-default-${timestamp}`,
         ordineId,
@@ -1558,14 +1551,8 @@ export function OrdineForm({
         importo: accontoC,
         saldato: false,
         scadenza: data,
-        contoId: contoAccontoResolved,
-        contoNome: (conto?.data.nome as string) || "",
-        contoTipo: (conto?.data.tipo as string) || "",
-        data: "",
-        verificato: false,
-        distintaId: "",
-        contoAccreditoNome: "",
-        note: "",
+        ...campiContoLocale(conti, contoAccontoResolved),
+        ...CAMPI_PAGAMENTO_LOCALE,
         scadDaSpedizione: false,
         scadRelGiorni: 0,
       });
@@ -1573,7 +1560,6 @@ export function OrdineForm({
 
     for (let i = 0; i < rate.length; i += 1) {
       const rata = rate[i];
-      const conto = conti.find((c) => c.id === contoSaldoResolved);
       locali.push({
         id: `__local_pagamento__rata-default-${timestamp}-${i}`,
         ordineId,
@@ -1581,14 +1567,8 @@ export function OrdineForm({
         importo: rata.importo,
         saldato: false,
         scadenza: rata.scadenza,
-        contoId: contoSaldoResolved,
-        contoNome: (conto?.data.nome as string) || "",
-        contoTipo: (conto?.data.tipo as string) || "",
-        data: "",
-        verificato: false,
-        distintaId: "",
-        contoAccreditoNome: "",
-        note: "",
+        ...campiContoLocale(conti, contoSaldoResolved),
+        ...CAMPI_PAGAMENTO_LOCALE,
         scadDaSpedizione: true,
         scadRelGiorni: giorniTra(inizio, rata.scadenza),
       });
@@ -1614,16 +1594,7 @@ export function OrdineForm({
   ]);
 
   // Righe dello scadenzario da mostrare: bozze (nuovo) o preview dei pagamenti reali (esistente).
-  const optionsConti = useMemo(() => {
-    return conti.map((c) => {
-      const t = (c.data.tipo as string) || "";
-      const suffix = ["contrassegno", "assegno"].includes(t) ? " (transito)" : "";
-      return {
-        value: c.id,
-        label: ((c.data.nome as string) || "(conto)") + suffix,
-      };
-    });
-  }, [conti]);
+  const optionsConti = useMemo(() => opzioniContiConTransito(conti), [conti]);
   const nomeConto = (id: string) => (conti.find((c) => c.id === id)?.data.nome as string) || "";
   const righeScad = (
     ordineId
@@ -1832,7 +1803,6 @@ export function OrdineForm({
     const diff = totale - coperto;
     const ultimoReal = ultima ? pagamenti.find((p) => p.id === ultima.id) : undefined;
     const contoId = ultimoReal?.contoId || contoSaldoResolved;
-    const conto = conti.find((c) => c.id === contoId);
     const tipo = ultimoReal?.tipo === "acconto" ? "saldo" : "rata";
     const scadDaSpedizione = ultimoReal?.scadDaSpedizione ?? false;
     const baseScadenza = ultima?.scadenza || data;
@@ -1846,14 +1816,8 @@ export function OrdineForm({
       importo: diff,
       saldato: false,
       scadenza: scadDaSpedizione ? "" : nuovaScadenza,
-      contoId,
-      contoNome: ((conto?.data.nome as string) || ""),
-      contoTipo: ((conto?.data.tipo as string) || ""),
-      data: "",
-      verificato: false,
-      distintaId: "",
-      contoAccreditoNome: "",
-      note: "",
+      ...campiContoLocale(conti, contoId),
+      ...CAMPI_PAGAMENTO_LOCALE,
       scadDaSpedizione,
       scadRelGiorni,
     };
@@ -1966,6 +1930,40 @@ export function OrdineForm({
       rimborsoDaAdeguare,
     });
     if (scelta === null) return null;
+
+    function dilazionaUltimaRata(
+      rata: NonNullable<typeof ultima>,
+      nuovoImporto: number,
+    ) {
+      const nextSospesi = new Set(sospesiAttuali);
+      let nextLocali = [...localiAttuali];
+      const isLocale = localiAttuali.some((pagamento) => pagamento.id === rata.id);
+      if (isLocale) {
+        nextLocali = nextLocali.map((pagamento) =>
+          pagamento.id === rata.id ? { ...pagamento, importo: nuovoImporto } : pagamento
+        );
+      } else {
+        nextSospesi.add(rata.id);
+        const pagamentoReale = pagamenti.find((pagamento) => pagamento.id === rata.id);
+        nextLocali.push({
+          id: `__local_pagamento__adegua-${Date.now()}`,
+          ordineId: ordineId!,
+          tipo: rata.tipo,
+          importo: nuovoImporto,
+          saldato: rata.saldato,
+          scadenza: rata.scadenza || "",
+          contoId: pagamentoReale?.contoId || "",
+          contoNome: pagamentoReale?.contoNome || "",
+          contoTipo: pagamentoReale?.contoTipo || "",
+          ...CAMPI_PAGAMENTO_LOCALE,
+          note: pagamentoReale?.note || "",
+          scadDaSpedizione: pagamentoReale?.scadDaSpedizione ?? false,
+          scadRelGiorni: pagamentoReale?.scadRelGiorni ?? 0,
+        });
+      }
+      return { pagamentiLocali: nextLocali, pagamentiSospesiLocalmente: nextSospesi };
+    }
+
     if (scelta === "rimborso" && rimborsoRichiestoAttuale && rimborsoDaAdeguare) {
       return {
         saltaRiallineamento: true,
@@ -2000,34 +1998,7 @@ export function OrdineForm({
         // applicherà il riallineamento proporzionale a tutte le rate aperte.
         // Creare qui una sostituzione negativa renderebbe invalido il libro mastro.
         if (nuovoImporto <= 0) return { forzaRiallineamento: true };
-        const nextSospesi = new Set(sospesiAttuali);
-        let nextLocali = [...localiAttuali];
-        const isLocale = localiAttuali.some((p) => p.id === ultima.id);
-        if (isLocale) {
-          nextLocali = nextLocali.map((p) => (p.id === ultima.id ? { ...p, importo: nuovoImporto } : p));
-        } else {
-          nextSospesi.add(ultima.id);
-          const pagUltimoReal = pagamenti.find((p) => p.id === ultima.id);
-          nextLocali.push({
-            id: `__local_pagamento__adegua-${Date.now()}`,
-            ordineId: ordineId!,
-            tipo: ultima.tipo,
-            importo: nuovoImporto,
-            saldato: ultima.saldato,
-            scadenza: ultima.scadenza || "",
-            contoId: pagUltimoReal?.contoId || "",
-            contoNome: pagUltimoReal?.contoNome || "",
-            contoTipo: pagUltimoReal?.contoTipo || "",
-            data: "",
-            verificato: false,
-            distintaId: "",
-            contoAccreditoNome: "",
-            note: pagUltimoReal?.note || "",
-            scadDaSpedizione: pagUltimoReal?.scadDaSpedizione ?? false,
-            scadRelGiorni: pagUltimoReal?.scadRelGiorni ?? 0,
-          });
-        }
-        return { pagamentiLocali: nextLocali, pagamentiSospesiLocalmente: nextSospesi };
+        return dilazionaUltimaRata(ultima, nuovoImporto);
       }
       return { righe: adeguaRigheFormATotale(righe, coperto) };
     }
@@ -2035,34 +2006,7 @@ export function OrdineForm({
       if (scelta === "dilaziona" && ultima) {
         const diff = totale - coperto;
         const nuovoImporto = ultima.importo + diff;
-        const nextSospesi = new Set(sospesiAttuali);
-        let nextLocali = [...localiAttuali];
-        const isLocale = localiAttuali.some((p) => p.id === ultima.id);
-        if (isLocale) {
-          nextLocali = nextLocali.map((p) => (p.id === ultima.id ? { ...p, importo: nuovoImporto } : p));
-        } else {
-          nextSospesi.add(ultima.id);
-          const pagUltimoReal = pagamenti.find((p) => p.id === ultima.id);
-          nextLocali.push({
-            id: `__local_pagamento__adegua-${Date.now()}`,
-            ordineId: ordineId!,
-            tipo: ultima.tipo,
-            importo: nuovoImporto,
-            saldato: ultima.saldato,
-            scadenza: ultima.scadenza || "",
-            contoId: pagUltimoReal?.contoId || "",
-            contoNome: pagUltimoReal?.contoNome || "",
-            contoTipo: pagUltimoReal?.contoTipo || "",
-            data: "",
-            verificato: false,
-            distintaId: "",
-            contoAccreditoNome: "",
-            note: pagUltimoReal?.note || "",
-            scadDaSpedizione: pagUltimoReal?.scadDaSpedizione ?? false,
-            scadRelGiorni: pagUltimoReal?.scadRelGiorni ?? 0,
-          });
-        }
-        return { pagamentiLocali: nextLocali, pagamentiSospesiLocalmente: nextSospesi };
+        return dilazionaUltimaRata(ultima, nuovoImporto);
       }
       return { righe: riduciRigheForm(righe, coperto) };
     }
@@ -2157,11 +2101,7 @@ export function OrdineForm({
   // Righe dell'ordine con il pannello «dati di produzione» aperto (chiave riga).
   const [datiProdAperti, setDatiProdAperti] = useState<Set<string>>(new Set());
   const toggleDatiProd = (key: string) =>
-    setDatiProdAperti((s) => {
-      const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
+    setDatiProdAperti((correnti) => setConToggle(correnti, key));
   useEffect(() => {
     if (focus?.sezione !== "prodotti" || caricamento || focusProdottiGestito.current) return;
     focusProdottiGestito.current = true;
@@ -2223,9 +2163,7 @@ export function OrdineForm({
       setRighe((rs) =>
         rs.map((r) => {
           if (r.key !== key || r.prodottoId !== prodottoId) return r;
-          if (opts.soloSeVuoto && prezzoRigaCents(r) > 0) return r;
-          if (!opts.sovrascrivi && prezzoRigaCents(r) > 0) return r;
-          return { ...r, prezzo: prezzo / 100 };
+          return applicaPrezzoAutomaticoRiga(r, prezzo, opts);
         })
       );
     } catch {
@@ -2250,11 +2188,7 @@ export function OrdineForm({
       setRighe((rs) =>
         rs.map((r) => {
           if (r.key !== key || r.prodottoId !== nuovoProdottoId) return r;
-          const attuale = prezzoRigaCents(r);
-          const prezzoVuoto = attuale <= 0;
-          const ancoraAutomatico = vecchio !== null && attuale === vecchio;
-          if (!prezzoVuoto && !ancoraAutomatico) return r;
-          return { ...r, prezzo: nuovo / 100 };
+          return applicaPrezzoAutomaticoRiga(r, nuovo, { prezzoPrecedente: vecchio });
         })
       );
     } catch {
@@ -2287,11 +2221,7 @@ export function OrdineForm({
             if (!ris || richiestePrezzoRef.current.get(r.key) !== ris.token || r.prodottoId !== ris.prodottoId || ris.nuovo === null) {
               return r;
             }
-            const attuale = prezzoRigaCents(r);
-            const prezzoVuoto = attuale <= 0;
-            const ancoraAutomatico = ris.vecchio !== null && attuale === ris.vecchio;
-            if (!prezzoVuoto && !ancoraAutomatico) return r;
-            return { ...r, prezzo: ris.nuovo / 100 };
+            return applicaPrezzoAutomaticoRiga(r, ris.nuovo, { prezzoPrecedente: ris.vecchio });
           })
         );
       })
@@ -2330,61 +2260,17 @@ export function OrdineForm({
     return n ? prodotti.find((p) => ((p.data.nome as string) || "").toLowerCase() === n) : undefined;
   }
 
-  function normalizzaTesto(v: string): string {
-    return v.trim().toLowerCase();
-  }
-
-  function nomeRigaStorica(r: RecordDto): string {
-    const pid = (r.data.prodotto_id as string) || "";
-    return (pid && nomeProdottoById.get(pid)) || (r.data.prodotto_nome as string) || "";
-  }
-
-  function stessoProdottoStorico(target: RigaForm, storica: RecordDto): boolean {
-    const targetId = target.prodottoId;
-    const storicoId = (storica.data.prodotto_id as string) || "";
-    if (targetId && storicoId && targetId === storicoId) return true;
-    return !!target.prodottoNome.trim() && normalizzaTesto(target.prodottoNome) === normalizzaTesto(nomeRigaStorica(storica));
-  }
-
-  function suggerimentoMantenimento(target: RigaForm, clienteTarget = clienteId): Partial<RigaForm> | null {
-    if (!isImmuno || !clienteTarget || (!target.prodottoId && !target.prodottoNome.trim())) return null;
-
-    const ordiniById = new Map(tuttiOrdini.map((o) => [o.id, o]));
-    const candidati = tutteRighe
-      .filter((r) => {
-        if (r.id === target.id) return false;
-        const oid = (r.data.ordine_id as string) || "";
-        if (ordineId && oid === ordineId) return false;
-        const ord = ordiniById.get(oid);
-        if (!ord || ((ord.data.cliente_id as string) || "") !== clienteTarget) return false;
-        if (!stessoProdottoStorico(target, r)) return false;
-        return (
-          !!String(r.data.formulazione ?? "").trim() ||
-          !!String(r.data.posologia ?? "").trim() ||
-          (Array.isArray(r.data.allergeni) && r.data.allergeni.length > 0)
-        );
-      })
-      .map((r) => ({ r, data: ((ordiniById.get((r.data.ordine_id as string) || "")?.data.data as string) || "") }))
-      .sort((a, b) => b.data.localeCompare(a.data));
-
-    const match = candidati[0]?.r;
-    if (!match) return null;
-    return {
-      formulazione: (match.data.formulazione as string) || "",
-      posologia: (match.data.posologia as string) || "",
-      allergeni: Array.isArray(match.data.allergeni) ? (match.data.allergeni as string[]) : [],
-    };
-  }
+  const normalizzaTesto = (valore: string) => valore.trim().toLowerCase();
 
   function applicaMantenimentoSeVuoto(r: RigaForm, clienteTarget = clienteId): RigaForm {
-    const sugg = suggerimentoMantenimento(r, clienteTarget);
-    if (!sugg) return r;
-    return {
-      ...r,
-      formulazione: r.formulazione.trim() ? r.formulazione : sugg.formulazione ?? "",
-      posologia: r.posologia.trim() ? r.posologia : sugg.posologia ?? "",
-      allergeni: r.allergeni.length > 0 ? r.allergeni : sugg.allergeni ?? [],
-    };
+    return precompilaMantenimentoRiga(r, {
+      attivo: isImmuno,
+      clienteId: clienteTarget,
+      ordineId,
+      ordini: tuttiOrdini,
+      righe: tutteRighe,
+      nomiProdotti: nomeProdottoById,
+    });
   }
 
   useEffect(() => {
@@ -2444,7 +2330,7 @@ export function OrdineForm({
     const precedente = righe.find((r) => r.key === key);
     const prodottoCambiato = precedente?.prodottoId !== prodottoId || normalizzaTesto(precedente?.prodottoNome || "") !== normalizzaTesto(nome);
     // Diagnostica: precompila il codice Laboratorio del catalogo (solo se il campo è vuoto).
-    const codiceCat = isDiag ? (prod?.data.codice_fornitore as string) || "" : "";
+    const codiceCat = isDiag ? (prod?.data.codice_laboratorio as string) || "" : "";
     setRighe((rs) =>
       rs.map((r) =>
         r.key === key
@@ -2470,13 +2356,7 @@ export function OrdineForm({
   function apriModificaCliente(id: string) {
     const rec = clienti.find((c) => c.id === id);
     if (!rec) return;
-    const vals: Record<string, string | number> = {};
-    for (const c of CLIENTE_REG.campi) {
-      const v = rec.data[c.key];
-      if (c.tipo === "eur") vals[c.key] = typeof v === "number" ? v / 100 : "";
-      else vals[c.key] = v != null ? String(v) : "";
-    }
-    setNuovoCliVal(vals);
+    setNuovoCliVal(valoriAnagrafica(CLIENTE_REG, rec));
     setNuovoCliErr({});
     setCliEditId(id);
     setNuovoCliApri(true);
@@ -2485,26 +2365,14 @@ export function OrdineForm({
   /** Crea un nuovo cliente o salva le modifiche a quello in `cliEditId`. */
   async function creaCliente() {
     // Stessa validazione dell'anagrafica cliente (campi condivisi).
-    const errs: Record<string, string> = {};
-    for (const c of CLIENTE_REG.campi) {
-      const e = validaCampo(c, nuovoCliVal[c.key]);
-      if (e) errs[c.key] = e;
-    }
+    const errs = validaCampi(CLIENTE_REG.campi, nuovoCliVal);
     if (Object.keys(errs).length > 0) {
       setNuovoCliErr(errs);
       return;
     }
     setCreandoCli(true);
     try {
-      const fields: Record<string, unknown> = {};
-      for (const c of CLIENTE_REG.campi) {
-        const v = nuovoCliVal[c.key];
-        if (c.tipo === "eur") {
-          fields[c.key] = v === "" ? 0 : eurToCents(Number(v));
-        } else {
-          fields[c.key] = String(v ?? "").trim();
-        }
-      }
+      const fields = preparaCampiAnagraficaCompleti(CLIENTE_REG, nuovoCliVal);
       if (cliEditId) {
         await api.recordUpdate("cliente", cliEditId, fields);
         setClienti((cs) =>
@@ -2537,14 +2405,7 @@ export function OrdineForm({
   function apriModificaMedico(id: string) {
     const rec = medici.find((m) => m.id === id);
     if (!rec) return;
-    const vals: Record<string, string | number> = {};
-    for (const c of MEDICO_REG.campi) {
-      const v = rec.data[c.key] ?? c.defaultValue;
-      if (c.tipo === "eur") vals[c.key] = typeof v === "number" ? v / 100 : "";
-      else if (c.tipo === "numero") vals[c.key] = typeof v === "number" ? v : "";
-      else vals[c.key] = v != null ? String(v) : "";
-    }
-    setNuovoMedVal(vals);
+    setNuovoMedVal(valoriAnagrafica(MEDICO_REG, rec));
     setNuovoMedErr({});
     setMedEditId(id);
     setNuovoMedApri(true);
@@ -2552,24 +2413,14 @@ export function OrdineForm({
 
   /** Crea un nuovo medico o salva le modifiche a quello in `medEditId`. */
   async function creaMedico() {
-    const errs: Record<string, string> = {};
-    for (const c of MEDICO_REG.campi) {
-      const e = validaCampo(c, nuovoMedVal[c.key]);
-      if (e) errs[c.key] = e;
-    }
+    const errs = validaCampi(MEDICO_REG.campi, nuovoMedVal);
     if (Object.keys(errs).length > 0) {
       setNuovoMedErr(errs);
       return;
     }
     setCreandoMed(true);
     try {
-      const fields: Record<string, unknown> = {};
-      for (const c of MEDICO_REG.campi) {
-        const v = nuovoMedVal[c.key];
-        if (c.tipo === "eur") fields[c.key] = v === "" ? 0 : eurToCents(Number(v));
-        else if (c.tipo === "numero") fields[c.key] = v === "" ? undefined : Number(v);
-        else fields[c.key] = String(v ?? "").trim();
-      }
+      const fields = preparaCampiAnagraficaCompleti(MEDICO_REG, nuovoMedVal);
       if (medEditId) {
         await api.recordUpdate("medico", medEditId, fields);
         setMedici((ms) =>
@@ -2713,7 +2564,7 @@ export function OrdineForm({
     const scadenzarioDaSvuotare =
       !!ordineId &&
       totale === 0 &&
-      pagamenti.some((p) => !p.saldato && (p.tipo === "acconto" || p.tipo === "saldo" || p.tipo === "rata"));
+      pagamenti.some(pagamentoApertoDaSaldare);
     const deveRiconciliareScadenzario =
       importiOrdineToccati ||
       accontoCents !== accontoIniziale ||
@@ -2841,40 +2692,10 @@ export function OrdineForm({
         baselineRigheRealtimeRef.current.filter((r): r is RigaForm & { id: string } => !!r.id).map((r) => [r.id, r])
       );
       const righeInput = valide.map((r) => {
-        const rf = {
-          prodotto_id: r.prodottoId,
-          // Prodotto di catalogo: nome risolto dal record (gestisce rinomine). Prodotto
-          // libero: si salva il testo digitato qui, usato come nome nelle viste.
-          prodotto_nome: r.prodottoId ? "" : r.prodottoNome.trim(),
-          qta: r.qta || 0,
-          prezzo: r.prezzo === "" ? 0 : Math.round(Number(r.prezzo) * 100),
-          paziente: r.paziente.trim(),
-          // Dati Diagnostica (FASE 5D): facoltativi, salvati sempre (vuoti per le altre linee).
-          tipo_test: r.tipoTest.trim(),
-          ml: r.ml.trim(),
-          codice_fornitore: r.codice.trim(),
-          // Dati di produzione (Immunoterapia, facoltativi): la pagina Produzione li riprende.
-          formulazione: r.formulazione.trim(),
-          posologia: r.posologia.trim(),
-          numero: r.numero.trim(),
-          allergeni: r.allergeni,
-        };
+        const rf = campiPersistenzaRigaForm(r);
         const baselineRiga = r.id ? baselineRigheById.get(r.id) : undefined;
         if (!baselineRiga) return { id: r.id, fields: rf };
-        const persistitaBaseline: Record<string, unknown> = {
-          prodotto_id: baselineRiga.prodottoId,
-          prodotto_nome: baselineRiga.prodottoId ? "" : baselineRiga.prodottoNome.trim(),
-          qta: baselineRiga.qta || 0,
-          prezzo: baselineRiga.prezzo === "" ? 0 : Math.round(Number(baselineRiga.prezzo) * 100),
-          paziente: baselineRiga.paziente.trim(),
-          tipo_test: baselineRiga.tipoTest.trim(),
-          ml: baselineRiga.ml.trim(),
-          codice_fornitore: baselineRiga.codice.trim(),
-          formulazione: baselineRiga.formulazione.trim(),
-          posologia: baselineRiga.posologia.trim(),
-          numero: baselineRiga.numero.trim(),
-          allergeni: baselineRiga.allergeni,
-        };
+        const persistitaBaseline = campiPersistenzaRigaForm(baselineRiga);
         return {
           id: r.id,
           fields: Object.fromEntries(
@@ -3019,15 +2840,27 @@ export function OrdineForm({
     );
   }
 
+  const selettoreMedico = (diagnostica: boolean) => (
+    <Box data-pt-field="medico">
+      <SelectConNuovo
+        label={diagnostica ? "Medico o azienda (cliente e destinatario)" : "Medico"}
+        placeholder={diagnostica ? "Medico oppure ospedale/struttura…" : "Scegli…"}
+        data={opzioni(medici)}
+        value={medicoId}
+        onChange={scegliMedico}
+        entita={diagnostica ? "il medico/azienda" : "il medico"}
+        withAsterisk
+        onModifica={() => apriModificaMedico(medicoId)}
+        modificaTitle="Modifica indirizzo e dati del medico"
+        onNuovo={(nome) => { setNuovoMedVal({ ...valoriMedicoVuoti(), nome }); setNuovoMedErr({}); setMedEditId(null); setNuovoMedApri(true); }}
+      />
+    </Box>
+  );
+
   return (
     <>
       <Box className="pt-modal-shell" style={{ position: "relative" }}>
-        <LoadingOverlay
-          visible={!!dentroFinestra && salvando}
-          zIndex={1400}
-          overlayProps={{ radius: "sm", backgroundOpacity: 0.4 }}
-          loaderProps={{ color: "yellow", type: "bars" }}
-        />
+        <OverlaySalvataggioFinestra visibile={!!dentroFinestra && salvando} />
         <Box className="pt-modal-scroll">
           <Stack gap="sm">
             {stato === "Rifiutato" && (
@@ -3077,20 +2910,7 @@ export function OrdineForm({
         {isDiag ? (
           // Diagnostica: il destinatario È il medico → niente cliente separato.
           <>
-            <Box data-pt-field="medico">
-              <SelectConNuovo
-                label="Medico o azienda (cliente e destinatario)"
-                placeholder="Medico oppure ospedale/struttura…"
-                data={opzioni(medici)}
-                value={medicoId}
-                onChange={scegliMedico}
-                entita="il medico/azienda"
-                withAsterisk
-                onModifica={() => apriModificaMedico(medicoId)}
-                modificaTitle="Modifica indirizzo e dati del medico"
-                onNuovo={(nome) => { setNuovoMedVal({ ...valoriMedicoVuoti(), nome }); setNuovoMedErr({}); setMedEditId(null); setNuovoMedApri(true); }}
-              />
-            </Box>
+            {selettoreMedico(true)}
             <TextInput label="Agente (automatico)" value={agenteNome ?? "—"} readOnly variant="filled" />
           </>
         ) : (
@@ -3110,20 +2930,7 @@ export function OrdineForm({
               />
             </Box>
 
-            <Box data-pt-field="medico">
-              <SelectConNuovo
-                label="Medico"
-                placeholder="Scegli…"
-                data={opzioni(medici)}
-                value={medicoId}
-                onChange={scegliMedico}
-                entita="il medico"
-                withAsterisk
-                onModifica={() => apriModificaMedico(medicoId)}
-                modificaTitle="Modifica indirizzo e dati del medico"
-                onNuovo={(nome) => { setNuovoMedVal({ ...valoriMedicoVuoti(), nome }); setNuovoMedErr({}); setMedEditId(null); setNuovoMedApri(true); }}
-              />
-            </Box>
+            {selettoreMedico(false)}
             <TextInput label="Agente (automatico)" value={agenteNome ?? "—"} readOnly variant="filled" />
           </>
         )}
@@ -3281,6 +3088,7 @@ export function OrdineForm({
             <PremiumAction
               buttonVariant={preventivoEsistente ? "light" : "default"}
               leftSection={<IconFileInvoice size={16} />}
+              disabled={salvando || caricamento}
               lockedPresentation="modal"
               title="Preventivi"
               message="La creazione, l’anteprima e la stampa dei preventivi richiedono un pagamento aggiuntivo."
@@ -3323,6 +3131,7 @@ export function OrdineForm({
               <PremiumAction
                 buttonVariant="default"
                 leftSection={<IconPrinter size={16} />}
+                disabled={salvando || caricamento}
                 lockedPresentation="modal"
                 title="Stampa scheda cliente"
                 message="La compilazione, l’anteprima e la stampa della scheda cliente richiedono un pagamento aggiuntivo."

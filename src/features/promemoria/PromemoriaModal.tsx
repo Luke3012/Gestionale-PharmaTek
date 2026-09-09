@@ -19,7 +19,6 @@ import {
   Textarea,
   TextInput,
   ThemeIcon,
-  LoadingOverlay,
 } from "@mantine/core";
 import { IconBellPlus, IconTrash } from "@tabler/icons-react";
 import { api, type Identity, type OrdineDto, type RecordDto } from "../../lib/tauri";
@@ -28,6 +27,8 @@ import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { catturaOrigineCestino, volaNelCestino, type PuntoVoloCestino } from "../../ui/volaCestino";
 import { focusInvalidField } from "../../ui/focusInvalid";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { OverlaySalvataggioFinestra } from "../../ui/OverlaySalvataggioFinestra";
 import {
   COLLEGATO_META,
   PRIORITA,
@@ -62,10 +63,7 @@ export function PromemoriaModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [mostrato, setMostrato] = useState<PromemoriaTarget | null>(target);
-  useEffect(() => {
-    if (target) setMostrato(target);
-  }, [target]);
+  const [mostrato, clearMostrato] = useModalSnapshot(target);
 
   const isEdit = !!mostrato?.promemoria;
 
@@ -83,7 +81,7 @@ export function PromemoriaModal({
           <Text fw={700}>{isEdit ? "Modifica promemoria" : "Nuovo promemoria"}</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && <PromemoriaForm target={mostrato} identity={identity} onClose={onClose} onSaved={onSaved} />}
     </Modal>
@@ -245,12 +243,7 @@ export function PromemoriaForm({
 
   return (
     <Box className="pt-modal-shell" style={{ position: "relative" }}>
-      <LoadingOverlay
-        visible={!!dentroFinestra && salvando}
-        zIndex={1400}
-        overlayProps={{ radius: "sm", backgroundOpacity: 0.4 }}
-        loaderProps={{ color: "yellow", type: "bars" }}
-      />
+      <OverlaySalvataggioFinestra visibile={!!dentroFinestra && salvando} />
       <Box className="pt-modal-scroll">
         <Stack gap="sm">
           <Box data-pt-field="promemoria-testo">

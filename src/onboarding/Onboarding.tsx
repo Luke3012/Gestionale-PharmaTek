@@ -1,7 +1,7 @@
 // Onboarding primo avvio (UI-SPEC §7.1). Ordine: Cartella → Utente → Avatar →
 // Riepilogo. La cartella viene per prima perché serve ad aprire il registro
 // condiviso e rilevare i nomi utente duplicati "mentre digiti".
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -14,13 +14,11 @@ import {
   TextInput,
   ThemeIcon,
   Tooltip,
-  UnstyledButton,
 } from "@mantine/core";
 import {
   IconCheck,
   IconFolder,
   IconFolderCheck,
-  IconPhoto,
   IconUserPlus,
 } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -35,10 +33,10 @@ import {
 } from "../lib/tauri";
 import { Avatar, aggiornaAvatarCache } from "../ui/Avatar";
 import { LogoMark, Wordmark } from "../ui/Brand";
-import { PRESETS } from "../ui/avatars";
 import { fadeSlide, useAnimazioniRidotte } from "../ui/motion";
 import { toast } from "../ui/toast/store";
-import { cropAvatarTo256 } from "../ui/avatarImage";
+import { useFotoAvatar } from "../ui/useFotoAvatar";
+import { AzioniFotoAvatar, SceltePresetAvatar } from "../ui/ScelteAvatar";
 
 const PASSI = ["Cartella", "Utente", "Avatar", "Riepilogo"];
 
@@ -62,10 +60,8 @@ export function Onboarding({
 
   const [avatarTipo, setAvatarTipo] = useState<AvatarTipo>("iniziali");
   const [avatarPreset, setAvatarPreset] = useState("p1");
-  const [fotoBytes, setFotoBytes] = useState<number[] | null>(null);
-  const [fotoPreview, setFotoPreview] = useState<string | undefined>();
   const [salvando, setSalvando] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const { fotoBytes, fotoPreview, fileRef, caricaFoto } = useFotoAvatar(setAvatarTipo);
 
   const duplicato = useMemo(
     () => users.find((u) => u.nome.trim().toLowerCase() === nome.trim().toLowerCase()),
@@ -101,18 +97,6 @@ export function Onboarding({
       if (duplicato.avatarTipo === "preset") setAvatarPreset(duplicato.avatarValore || "p1");
     } else {
       setUserId(null);
-    }
-  }
-
-  async function caricaFoto(file?: File) {
-    if (!file) return;
-    try {
-      const { bytes, dataUrl } = await cropAvatarTo256(file);
-      setFotoBytes(bytes);
-      setFotoPreview(dataUrl);
-      setAvatarTipo("custom");
-    } catch {
-      toast.error("Immagine non valida.");
     }
   }
 
@@ -213,7 +197,7 @@ export function Onboarding({
                   <Titolo titolo="Chi sei?" sub="Il tuo nome serve a tracciare chi fa cosa nel registro condiviso." />
                   <TextInput
                     label="Nome utente"
-                    placeholder="Es. Utente Demo"
+                    placeholder="Es. Livio"
                     value={nome}
                     onChange={(e) => {
                       setNome(e.currentTarget.value);
@@ -265,47 +249,23 @@ export function Onboarding({
                     />
                   </Group>
                   <Group gap="sm" justify="center">
-                    {PRESETS.map((p) => {
-                      const sel = avatarTipo === "preset" && avatarPreset === p.id;
-                      return (
-                        <UnstyledButton
-                          key={p.id}
-                          onClick={() => {
-                            setAvatarTipo("preset");
-                            setAvatarPreset(p.id);
-                          }}
-                          style={{
-                            display: "inline-flex",
-                            borderRadius: "50%",
-                            padding: 2,
-                            lineHeight: 0,
-                            outline: sel ? "2px solid #F4C20D" : "2px solid transparent",
-                          }}
-                        >
-                          <Avatar nome={nome} tipo="preset" valore={p.id} size={44} />
-                        </UnstyledButton>
-                      );
-                    })}
-                  </Group>
-                  <Group gap="sm">
-                    <Button
-                      variant="default"
-                      leftSection={<IconPhoto size={18} />}
-                      onClick={() => fileRef.current?.click()}
-                    >
-                      Carica una foto
-                    </Button>
-                    <Button variant="subtle" color="gray" onClick={() => setAvatarTipo("iniziali")}>
-                      Usa le iniziali
-                    </Button>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      accept="image/png,image/jpeg"
-                      hidden
-                      onChange={(e) => caricaFoto(e.currentTarget.files?.[0])}
+                    <SceltePresetAvatar
+                      nome={nome}
+                      tipo={avatarTipo}
+                      preset={avatarPreset}
+                      dimensione={44}
+                      onSeleziona={(prossimo) => {
+                        setAvatarTipo("preset");
+                        setAvatarPreset(prossimo);
+                      }}
                     />
                   </Group>
+                  <AzioniFotoAvatar
+                    fileRef={fileRef}
+                    dimensioneIcona={18}
+                    onCarica={caricaFoto}
+                    onIniziali={() => setAvatarTipo("iniziali")}
+                  />
                 </Stack>
               )}
 

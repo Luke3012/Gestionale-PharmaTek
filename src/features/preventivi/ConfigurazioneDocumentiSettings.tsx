@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   Group,
-  Loader,
   Modal,
   NumberInput,
   SimpleGrid,
@@ -26,6 +25,7 @@ import {
   type ConfigurazioneDocumentiSalvaInput,
 } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 
 function inputDaConfig(
   config: ConfigurazioneDocumenti,
@@ -43,7 +43,11 @@ function inputDaConfig(
   };
 }
 
-export function ConfigurazioneDocumentiSettings() {
+export function ConfigurazioneDocumentiSettings({
+  onReady,
+}: {
+  onReady?: () => void;
+}) {
   const [config, setConfig] = useState<ConfigurazioneDocumenti | null>(null);
   const [form, setForm] =
     useState<ConfigurazioneDocumentiSalvaInput | null>(null);
@@ -62,8 +66,9 @@ export function ConfigurazioneDocumentiSettings() {
       setErrore(String(error));
     } finally {
       setCaricando(false);
+      onReady?.();
     }
-  }, []);
+  }, [onReady]);
 
   useEffect(() => {
     void carica();
@@ -105,16 +110,16 @@ export function ConfigurazioneDocumentiSettings() {
             <Text size="xs" c="dimmed" truncate>
               {config
                 ? `${config.denominazione} · ${config.email}`
-                : caricando
-                  ? "Caricamento…"
-                  : "Configurazione non disponibile"}
+                : errore
+                  ? "Configurazione non disponibile"
+                  : "Intestazione aziendale dei documenti"}
             </Text>
           </Box>
         </Group>
         <Button
           variant="default"
           size="xs"
-          leftSection={caricando ? <Loader size={14} /> : <IconPencil size={15} />}
+          leftSection={<IconPencil size={15} />}
           disabled={!config || caricando}
           onClick={() => {
             if (!config) return;
@@ -226,8 +231,7 @@ export function ConfigurazioneDocumentiSettings() {
               </Stack>
             )}
           </Box>
-          <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-            <div className="pt-modal-actions">
+          <FooterAzioniModale>
               <Button
                 variant="default"
                 disabled={salvando}
@@ -242,8 +246,7 @@ export function ConfigurazioneDocumentiSettings() {
               >
                 Salva
               </Button>
-            </div>
-          </div>
+          </FooterAzioniModale>
         </Box>
       </Modal>
     </>

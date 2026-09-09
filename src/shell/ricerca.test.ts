@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Preventivo, Spedizione } from "../lib/tauri";
+import type { Promemoria } from "../features/promemoria/promemoria";
 import { DATI_VUOTI, chiaveBersaglio, costruisciVoci, type DatiRicerca } from "./ricerca";
 
 function spedizione(lotto: string): Spedizione {
@@ -46,6 +47,54 @@ function spedizione(lotto: string): Spedizione {
     pagamenti: [],
   };
 }
+
+function promemoria(): Promemoria {
+  return {
+    id: "prom-1",
+    testo: "Rinnova polizza",
+    scadenza: "2026-12-31",
+    priorita: "alta",
+    ricorrenza: "nessuna",
+    avvisoAnticipato: 0,
+    collegatoTipo: "cliente",
+    collegatoId: "cliente-1",
+    collegatoNome: "Cliente Alfa",
+    serie: "",
+    fatto: false,
+    fattoDa: "",
+    fattoDaNome: "",
+    fattoTs: 0,
+    creatoDa: "utente-1",
+    creatoDaNome: "Anna",
+  };
+}
+
+describe("Spotlight promemoria", () => {
+  const dati: DatiRicerca = { ...DATI_VUOTI, promemoria: [promemoria()] };
+
+  it("mantiene il formato completo nella ricerca smart", () => {
+    const voce = costruisciVoci("promemoria priorità alta aperti", dati)
+      .find((risultato) => risultato.id === "smart-promem-prom-1");
+
+    expect(voce).toMatchObject({
+      label: "Rinnova polizza",
+      sub: "scad. 31/12/2026 · Cliente Alfa · priorità alta",
+      dedupeKey: "promemoria:prom-1",
+      bersaglio: { t: "promemoria_apri", id: "prom-1" },
+    });
+  });
+
+  it("mantiene id e deduplicazione storici nella ricerca libera", () => {
+    const voce = costruisciVoci("Rinnova polizza", dati)
+      .find((risultato) => risultato.id === "promem-prom-1");
+
+    expect(voce).toMatchObject({
+      sub: "scad. 31/12/2026 · Cliente Alfa",
+      dedupeKey: "promemoria_apri",
+      bersaglio: { t: "promemoria_apri", id: "prom-1" },
+    });
+  });
+});
 
 describe("Spotlight crediti per spedizione", () => {
   it("trova una spedizione anche tramite il suo lotto di gruppo", () => {

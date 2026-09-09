@@ -6,6 +6,7 @@ import { OrdineForm } from "./OrdineEditor";
 import { CATEGORIA_DEFAULT, SelettoreCategoriaNuovoOrdine } from "./categoriaOrdine";
 import { coloreLinea } from "./colonne";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
+import { identityDaParametri } from "../../lib/identityParams";
 
 export function OrdineWindow() {
   const params = new URLSearchParams(window.location.search);
@@ -25,19 +26,8 @@ export function OrdineWindow() {
 
   // Identità passata via URL dalla finestra principale (apertura più rapida);
   // fallback a `whoami` se mancante.
-  const uid = params.get("uid");
   const [identity, setIdentity] = useState<Identity | null>(
-    uid
-      ? {
-          userId: uid,
-          nome: params.get("nome") ?? "",
-          deviceId: params.get("dev") ?? "",
-          avatarTipo: "iniziali",
-          avatarValore: "",
-          deviceNome: "",
-          dataDir: "",
-        }
-      : null
+    identityDaParametri(params) ?? null
   );
 
   useEffect(() => {

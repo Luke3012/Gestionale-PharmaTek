@@ -10,6 +10,27 @@ export interface DipendenzeSyncAvvio {
   attendi?: (ms: number) => Promise<void>;
 }
 
+export interface DipendenzeAperturaSpotlight {
+  avvioInCorso: Promise<unknown> | null;
+  bootstrapCorrente: () => Bootstrap | null;
+  aperturaBloccata: () => boolean;
+  apri: () => Promise<void>;
+}
+
+/**
+ * Stabilisce se il primo rendering completo avviene mentre la main deve restare
+ * invisibile. Al primo mount conta l'intenzione nativa (`--minimized` o relaunch
+ * automatico); dopo un reload del WebView conta invece la visibilita' effettiva,
+ * per non riprodurre intro e transizioni quando la main e' ancora nella tray.
+ */
+export function renderingInizialeNascosto(
+  primoMountProcesso: boolean,
+  avvioMinimizzato: boolean,
+  mainVisibile: boolean
+): boolean {
+  return primoMountProcesso ? avvioMinimizzato : !mainVisibile;
+}
+
 /**
  * La proiezione va riallineata prima che le viste inizino le loro prime letture.
  * Configurazioni incomplete, reset, cartelle mancanti e sessioni scollegate devono
@@ -35,6 +56,28 @@ export function pollingMainAttivo(
   hasFocus: boolean
 ): boolean {
   return visibilityState === "visible" && hasFocus;
+}
+
+/**
+ * La scorciatoia desktop/globale non avvia un secondo bootstrap: attende quello
+ * gia' coordinato da Root e apre Spotlight soltanto se lo stato risultante e'
+ * utilizzabile e nessun restore/reset/blocco e' in corso.
+ */
+export async function apriSpotlightDopoAvvio(
+  dipendenze: DipendenzeAperturaSpotlight
+): Promise<boolean> {
+  try {
+    await dipendenze.avvioInCorso;
+  } catch {
+    return false;
+  }
+
+  if (dipendenze.aperturaBloccata()) return false;
+  const data = dipendenze.bootstrapCorrente();
+  if (!data || !bootstrapSincronizzabile(data)) return false;
+
+  await dipendenze.apri();
+  return true;
 }
 
 /**

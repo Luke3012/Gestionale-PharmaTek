@@ -2,38 +2,21 @@
 // (salvate sui record `conto`, condivise da tutti) — non preferenze per-utente.
 // Per ora: conto predefinito incassi (modale "Salda") e conto accrediti corrieri.
 import { useEffect, useMemo, useState } from "react";
-import { ActionIcon, Modal, Select, Stack, Text, Tooltip } from "@mantine/core";
-import { IconSettings } from "@tabler/icons-react";
+import { Modal, Select, Stack, Text } from "@mantine/core";
 import { api, type RecordDto } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
+import { èContoTransito, opzioniConti } from "../contabilita/contoPreferito";
+import { BottonePreferenze, type PreferenzeModalProps } from "./BottonePreferenze";
 
 export function PreferenzeContiButton({ onChanged }: { onChanged?: () => void }) {
-  const [aperto, setAperto] = useState(false);
-  return (
-    <>
-      <Tooltip label="Preferenze conti" withArrow>
-        <ActionIcon variant="default" size="lg" onClick={() => setAperto(true)} aria-label="Preferenze conti">
-          <IconSettings size={18} />
-        </ActionIcon>
-      </Tooltip>
-      <PreferenzeContiModal
-        aperto={aperto}
-        onClose={() => setAperto(false)}
-        onChanged={onChanged}
-      />
-    </>
-  );
+  return <BottonePreferenze etichetta="Preferenze conti" onChanged={onChanged} Modale={PreferenzeContiModal} />;
 }
 
 function PreferenzeContiModal({
   aperto,
   onClose,
   onChanged,
-}: {
-  aperto: boolean;
-  onClose: () => void;
-  onChanged?: () => void;
-}) {
+}: PreferenzeModalProps) {
   const [conti, setConti] = useState<RecordDto[]>([]);
 
   async function carica() {
@@ -51,12 +34,7 @@ function PreferenzeContiModal({
   // Solo conti bancari (i conti di transito Contrassegno/Assegno non sono destinazioni).
   const bancari = useMemo(
     () =>
-      conti
-        .filter((c) => {
-          const t = c.data.tipo as string;
-          return t !== "contrassegno" && t !== "assegno";
-        })
-        .map((c) => ({ value: c.id, label: (c.data.nome as string) || "(conto)" })),
+      opzioniConti(conti.filter((c) => !èContoTransito(c.data.tipo))),
     [conti]
   );
 

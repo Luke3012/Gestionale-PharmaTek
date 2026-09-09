@@ -64,6 +64,7 @@ import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { useDeepLink } from "../../shell/navigazione";
 import { centsToEurStr } from "../../lib/money";
+import { formattaDataLocale } from "../../lib/date";
 import {
   Tabella,
   type DataTableColumn,
@@ -73,6 +74,7 @@ import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
 import { Pagina, usePaginaPronta } from "../../pages/Pagina";
 import { DebouncedInput } from "../../ui/DebouncedInput";
 import { statoDef } from "../giornaliero/stati";
+import { ordinaCopia } from "../../ui/ordinamento";
 import { OrdineEditor } from "../giornaliero/OrdineEditor";
 import { CreaSpedizioneModal, type BozzaRiga } from "./CreaSpedizioneModal";
 import {
@@ -92,6 +94,7 @@ import {
 import { SpeditoFlourish } from "./SpeditoFlourish";
 import { usePrefs } from "../../lib/prefs";
 import { DataAdattiva } from "../../ui/DataAdattiva";
+import { BadgeStatoAdattivo } from "../../ui/BadgeStato";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { PremiumAction } from "../../premium/PremiumAction";
 import {
@@ -102,6 +105,7 @@ import {
   apriCampagnaComunicazioni,
   datiPagamentoComunicazione,
   importoResiduoComunicazione,
+  variabiliNomeDestinatario,
 } from "../comunicazioni/apriComunicazione";
 
 type Vista = "da_spedire" | "effettuate";
@@ -138,6 +142,18 @@ interface Distinta {
   nome: string;
   profilo: string;
   sped: Spedizione[];
+}
+
+function proprietaEsportazioneDistinta(distinta: Distinta) {
+  return {
+    colonneFisse: true,
+    orientamentoFisso: "orizzontale" as const,
+    nomeBase: `Spedizione ${distinta.nome}`.trim(),
+    foglio: `Spedizioni ${distinta.nome}`.trim().slice(0, 31),
+    titolo: `SPEDIZIONI ${distinta.nome.toUpperCase()}`.trim(),
+    colonne: colonneProfilo(distinta.profilo),
+    righe: preparaRigheEsportazione(distinta.sped, distinta.profilo),
+  };
 }
 
 /** Raggruppa spedizioni per corriere → una distinta per corriere (ordinate per nome). */
@@ -235,13 +251,7 @@ function DistintaGruppo({
             }
           : undefined
       }
-      colonneFisse
-      orientamentoFisso="orizzontale"
-      nomeBase={`Spedizione ${d.nome}`.trim()}
-      foglio={`Spedizioni ${d.nome}`.trim().slice(0, 31)}
-      titolo={`SPEDIZIONI ${d.nome.toUpperCase()}`.trim()}
-      colonne={colonneProfilo(d.profilo)}
-      righe={preparaRigheEsportazione(d.sped, d.profilo)}
+      {...proprietaEsportazioneDistinta(d)}
     />
   );
 
@@ -930,17 +940,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
           return g.data;
       }
     };
-    const out = [...gruppi];
-    out.sort((a, b) => {
-      const va = get(a);
-      const vb = get(b);
-      const cmp =
-        typeof va === "number" && typeof vb === "number"
-          ? va - vb
-          : String(va).localeCompare(String(vb), "it", { numeric: true });
-      return sortG.direction === "desc" ? -cmp : cmp;
-    });
-    return out;
+    return ordinaCopia(gruppi, get, sortG.direction);
   }, [gruppi, sortG]);
 
   useEffect(() => {
@@ -1014,9 +1014,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
               .map((spedizione) => spedizione.data)
               .filter(Boolean)
               .map((data) =>
-                new Intl.DateTimeFormat("it-IT").format(
-                  new Date(`${data}T12:00:00`)
-                )
+                formattaDataLocale(new Date(`${data}T12:00:00`))
               )
           ),
         ];
@@ -1046,8 +1044,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             fingerprint: spedizione.comunicazioneFingerprint ?? "",
           })),
           variabili: {
-            nome_cliente: prima.clienteNome,
-            ragione_sociale: prima.clienteNome,
+            ...variabiliNomeDestinatario(prima.clienteNome),
             nome_medico: prima.medicoNome,
             nome_agente: prima.agenteNome,
             riferimento_ordine: ordini.join(", "),
@@ -1295,21 +1292,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         resizable: true,
         render: (o) => {
           const d = statoDef(o.stato);
-          return (
-            <Tooltip label={d.label} withArrow>
-              <Box className="pt-badge-adattivo">
-                <Badge
-                  size="sm"
-                  variant="light"
-                  color={d.color}
-                  leftSection={<d.Ico size={12} />}
-                  aria-label={d.label}
-                >
-                  <span className="pt-badge-adattivo-label">{d.label}</span>
-                </Badge>
-              </Box>
-            </Tooltip>
-          );
+          return <BadgeStatoAdattivo definizione={d} />;
         },
       },
       {
@@ -1553,13 +1536,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             etichetta={`Distinta ${d.nome} (${d.sped.length})`}
             etichettaCompatta={d.nome}
             adattivo
-            colonneFisse
-            orientamentoFisso="orizzontale"
-            nomeBase={`Spedizione ${d.nome}`.trim()}
-            foglio={`Spedizioni ${d.nome}`.trim().slice(0, 31)}
-            titolo={`SPEDIZIONI ${d.nome.toUpperCase()}`.trim()}
-            colonne={colonneProfilo(d.profilo)}
-            righe={preparaRigheEsportazione(d.sped, d.profilo)}
+            {...proprietaEsportazioneDistinta(d)}
           />
         ))}
       </Group>
@@ -1598,16 +1575,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             onApertoChange={(v) => {
               if (!v) setDistintaFlourish(null);
             }}
-            colonneFisse
-            orientamentoFisso="orizzontale"
-            nomeBase={`Spedizione ${distintaFlourish.nome}`.trim()}
-            foglio={`Spedizioni ${distintaFlourish.nome}`.trim().slice(0, 31)}
-            titolo={`SPEDIZIONI ${distintaFlourish.nome.toUpperCase()}`.trim()}
-            colonne={colonneProfilo(distintaFlourish.profilo)}
-            righe={preparaRigheEsportazione(
-              distintaFlourish.sped,
-              distintaFlourish.profilo,
-            )}
+            {...proprietaEsportazioneDistinta(distintaFlourish)}
           />
         )}
         <Group

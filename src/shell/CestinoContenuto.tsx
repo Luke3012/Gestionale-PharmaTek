@@ -19,14 +19,15 @@ import { api, type CestinoItem } from "../lib/tauri";
 import { dialog } from "../ui/dialog/store";
 import { toast } from "../ui/toast/store";
 import { centsToEurStr } from "../lib/money";
+import { formattaDataItaliana, isoLocale } from "../lib/date";
 import { VirtualStack } from "../ui/VirtualStack";
 import { calcolaSogliaVirtualizzazione } from "../ui/virtualizzazione";
 import { useAnimazioniRidotte } from "../ui/motion";
 import { useRicaricaSuEventi } from "../lib/useRicaricaSuEventi";
+import { ricalcolaNotificheSubito } from "../features/notifiche/ricalcolaNotifiche";
 
 const ALTEZZA_RIGA_STIMATA = 58;
 const GAP_RIGHE = 4;
-const EVENTI_NOTIFICHE_DA_RICALCOLARE = ["ordine:salvato", "pagamento:salvato", "promemoria:salvato", "notifica:salvato"];
 const EVENTI_RICARICA_CESTINO = ["pt:dati-modificati", "pt:proiezione-ricostruita"] as const;
 
 const NOMI_ENTITA: Record<string, string> = {
@@ -45,16 +46,6 @@ const NOMI_ENTITA: Record<string, string> = {
   promemoria: "Promemoria",
   preventivo: "Preventivo",
 };
-
-async function ricalcolaNotificheSubito() {
-  try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await Promise.all(EVENTI_NOTIFICHE_DA_RICALCOLARE.map((ev) => emit(ev)));
-  } catch {
-    /* best effort */
-  }
-  await api.notificheCheck().catch(() => {});
-}
 
 function etichetta(it: CestinoItem): string {
   const tipo = NOMI_ENTITA[it.entity] ?? it.entity;
@@ -398,7 +389,7 @@ function RigaCestino({
                   {etichetta(it)}
                 </Text>
                 <Text size="xs" c="dimmed">
-                  {it.deletedMs ? new Date(it.deletedMs).toLocaleDateString("it-IT") : "—"}
+                  {it.deletedMs ? formattaDataItaliana(isoLocale(new Date(it.deletedMs))) : "—"}
                 </Text>
               </Box>
               <Group gap={2} wrap="nowrap" style={{ flexShrink: 0, alignSelf: "center" }}>

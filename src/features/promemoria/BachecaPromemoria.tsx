@@ -845,6 +845,8 @@ function ContatoreBacheca({
   );
 }
 
+function ConfermaUscita() { return <motion.div initial={{ scale: 0 }} animate={{ scale: [0, 1.25, 1] }} transition={{ duration: 0.3 }}><IconCircleCheckFilled size={26} color="var(--mantine-color-green-6)" /></motion.div>; }
+
 /** Wrapper con animazione d'ingresso/uscita (layout) per le righe. */
 function RigaContenitore({ children, uscente: _uscente }: { children: React.ReactNode; uscente: boolean }) {
   const ridotte = useAnimazioniRidotte();
@@ -973,9 +975,7 @@ function RigaPromemoria({
 
         <Group gap={2} wrap="nowrap">
           {uscente ? (
-            <motion.div initial={{ scale: 0 }} animate={{ scale: [0, 1.25, 1] }} transition={{ duration: 0.3 }}>
-              <IconCircleCheckFilled size={26} color="var(--mantine-color-green-6)" />
-            </motion.div>
+            <ConfermaUscita />
           ) : (
             <>
               <Tooltip label="Fatto" withArrow>
@@ -1221,9 +1221,7 @@ function RigaMarcatore({
         </Group>
         <Box onClick={(e) => e.stopPropagation()}>
           {uscente ? (
-            <motion.div initial={{ scale: 0 }} animate={{ scale: [0, 1.25, 1] }} transition={{ duration: 0.3 }}>
-              <IconCircleCheckFilled size={26} color="var(--mantine-color-green-6)" />
-            </motion.div>
+            <ConfermaUscita />
           ) : (
             <Tooltip label="Risolvi (azzera segnalazione)" withArrow>
               <ActionIcon variant="subtle" color="green" onClick={onFatto} aria-label="Risolvi">

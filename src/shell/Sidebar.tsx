@@ -10,6 +10,11 @@ import { MENU } from "./nav";
 import { AnnoModal } from "./AnnoModal";
 import { usePremiumAccess } from "../premium/PremiumAccess";
 
+const animazioneEspansione = () => ({
+  initial: { opacity: 0, width: 0 }, animate: { opacity: 1, width: "auto" },
+  exit: { opacity: 0, width: 0 }, transition: { duration: 0.2, ease: "easeInOut" },
+} as const);
+
 export function Sidebar({ compatto }: { compatto: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -45,10 +50,7 @@ export function Sidebar({ compatto }: { compatto: boolean }) {
           <AnimatePresence>
             {!compatto && (
               <motion.div
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: "auto" }}
-                exit={{ opacity: 0, width: 0 }}
-                transition={{ duration: 0.2, ease: "easeInOut" }}
+                {...animazioneEspansione()}
                 style={{ overflow: "hidden", whiteSpace: "nowrap" }}
               >
                 <Wordmark light />
@@ -102,10 +104,7 @@ export function Sidebar({ compatto }: { compatto: boolean }) {
               <AnimatePresence initial={false}>
                 {!compatto && (
                   <motion.span
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: "auto" }}
-                    exit={{ opacity: 0, width: 0 }}
-                    transition={{ duration: 0.2, ease: "easeInOut" }}
+                    {...animazioneEspansione()}
                     style={{ fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", display: "inline-block" }}
                   >
                     {v.label}
@@ -150,12 +149,9 @@ export function Sidebar({ compatto }: { compatto: boolean }) {
             <IconCalendarMonth size={20} color={compatto ? "#C9CDD2" : "#F4C20D"} style={{ flexShrink: 0, transition: "color var(--dur-xfast)" }} />
             <AnimatePresence initial={false}>
               {!compatto && (
-                <motion.div
-                  initial={{ opacity: 0, width: 0 }}
-                  animate={{ opacity: 1, width: "auto" }}
-                  exit={{ opacity: 0, width: 0 }}
-                  transition={{ duration: 0.2, ease: "easeInOut" }}
-                  style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden" }}
+                  <motion.div
+                    {...animazioneEspansione()}
+                    style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden" }}
                 >
                   <Text size="xs" style={{ color: "#A6ABB2", lineHeight: 1.2 }}>
                     Anno di lavoro

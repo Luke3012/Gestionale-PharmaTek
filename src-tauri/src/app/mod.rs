@@ -52,7 +52,7 @@ mod seeds;
 mod shipping;
 pub(crate) mod suggestions;
 #[cfg(target_os = "windows")]
-mod whatsapp_windows;
+pub(crate) mod whatsapp_windows;
 
 #[allow(unused_imports)]
 pub use bollettazione::*;
@@ -162,6 +162,10 @@ pub struct AppState {
     /// worker, evitando che una pulizia cada nel mezzo di una scrittura atomica.
     document_cache_io: Mutex<()>,
     communication_wake: CommunicationWake,
+    /// `None` finché l'avvio non ha fotografato la coda già presente. Gli ID
+    /// raccolti restano visibili nello stato originario, ma il worker non li
+    /// considera finché l'utente non li rimette esplicitamente in coda.
+    communication_startup_held: Mutex<Option<HashSet<String>>>,
 }
 
 const RETENZIONE_APPLIED_EVENTI: usize = 10_000;

@@ -58,7 +58,7 @@ const preventivo: Preventivo = {
   spedizioneCap: "20100",
   spedizioneProv: "MI",
   spedizioneEmail: "",
-  spedizioneTelefono: ["+39", "333", "1234567"].join(" "),
+  spedizioneTelefono: "+39 333 1234567",
   spedizioneNote: "Chiamare prima della consegna",
   spedizioneCodiceFiscale: "RSSMRA80A01F205X",
   fatturazioneNome: "Rossi Medical S.r.l.",
@@ -71,9 +71,9 @@ const preventivo: Preventivo = {
   medicoId: "medico-1",
   medicoNome: "Dott.ssa Laura Bianchi",
   agenteId: "agente-1",
-  agenteNome: "Utente Demo",
+  agenteNome: "Livio",
   email: "",
-  telefono: "",
+  telefono: "+39 333 1234567",
   numeroPreventivo: "P-2026-0001",
   validitaGiorni: 30,
   condizioniPagamento: "Acconto alla conferma, saldo secondo accordi.",
@@ -105,7 +105,7 @@ const preventivo: Preventivo = {
       contoId: "conto-1",
       contoNome: "Banca PharmaTek",
       contoTipo: "banca",
-      contoIban: "",
+      contoIban: "IBAN-DEMO-NON-VALIDO",
       data: "2026-07-27",
       verificato: true,
       distintaId: "",
@@ -124,7 +124,7 @@ const preventivo: Preventivo = {
       contoId: "conto-1",
       contoNome: "Banca PharmaTek",
       contoTipo: "banca",
-      contoIban: "",
+      contoIban: "IBAN-DEMO-NON-VALIDO",
       data: "",
       verificato: false,
       distintaId: "",
@@ -241,7 +241,7 @@ const scheda: SchedaClienteCampi = {
   dataRicezione: "2026-07-26",
   pazienti: "Mario Rossi",
   infoSpedizione: "Via Roma 1, 20100 Milano (MI)",
-  contatti: `${["+39", "333", "1234567"].join(" ")} · `,
+  contatti: "+39 333 1234567 · ",
   intestatarioNome: "Mario Rossi",
   intestatarioCodiceFiscale: "RSSMRA80A01F205X",
   intestatarioDataNascita: "",
@@ -370,10 +370,10 @@ describe("renderer documenti FASE 12", () => {
     expect(svg).not.toContain("2 FIALE");
     expect(svg).toContain("WhatsApp ");
     expect(svg).toContain("IBAN");
-    expect(svg).not.toContain("IBAN-DEMO-NON-VALIDO");
+    expect(svg).toContain("IBAN-DEMO-NON-VALIDO");
     expect(svg).toContain("SCONTO 10%");
     expect(svg).not.toContain("Dott.ssa Laura Bianchi");
-    expect(svg).not.toContain(">Utente Demo<");
+    expect(svg).not.toContain(">Livio<");
     expect(svg).not.toContain(">Immunoterapia<");
   });
 

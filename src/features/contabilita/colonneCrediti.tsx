@@ -2,8 +2,6 @@
 // + persistenza ordine/visibilità in localStorage, sullo stesso schema del Giornaliero
 // (riusa ColonneMenu). La colonna "azione" (Salda / verifica) resta fissa a destra ed
 // è gestita dalla vista, non qui.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import { Badge, Text } from "@mantine/core";
 import type { PagamentoVista } from "../../lib/tauri";
 import { oggiIso } from "../../lib/date";
@@ -13,17 +11,15 @@ import type { MetaExport } from "../../ui/esporta/EsportaTabella";
 import { resetLarghezzeTabella } from "../../ui/Tabella";
 import { DataAdattiva } from "../../ui/DataAdattiva";
 import { RiepilogoLink } from "../../shell/RiepilogoLink";
+import {
+  type DefinizioneColonnaTabella,
+  normalizzaStatoColonne,
+  type StatoColonneConfigurabili,
+  useColonneConfigurabili,
+} from "../../ui/colonneConfigurabili";
 
-export interface ColDefCr {
-  key: string;
-  label: string;
-  defaultVisible: boolean;
-  align?: "right" | "center";
-  render: (r: PagamentoVista) => ReactNode;
-  sortAccessor?: (r: PagamentoVista) => string | number;
-  /** Come la colonna finisce nell'export Excel (valore grezzo + tipo). */
-  esporta?: MetaExport<PagamentoVista>;
-}
+/** Definizione della colonna con il metadato aggiuntivo per l'export Excel. */
+export type ColDefCr = DefinizioneColonnaTabella<PagamentoVista> & { esporta?: MetaExport<PagamentoVista> };
 
 /** Etichetta testuale dello stato (per l'export Excel). */
 export function statoCreditoLabel(r: PagamentoVista): string {
@@ -154,89 +150,32 @@ export const COLONNE_CREDITI: ColDefCr[] = [
   },
 ];
 
-const DEFS = new Map(COLONNE_CREDITI.map((c) => [c.key, c]));
 const STORAGE = "pt.crediti.colonne.v1";
 const PRIME_DEFAULT = ["ordine", "stato"];
 
-interface Salvato {
-  ordine: string[];
-  nascoste: string[];
+type Salvato = StatoColonneConfigurabili;
+
+function normalizzaColonneCrediti(salvato?: {
+  ordine?: string[];
+  nascoste?: string[];
+}): Salvato {
+  return normalizzaStatoColonne(COLONNE_CREDITI, salvato, {
+    primeDefault: PRIME_DEFAULT,
+    nascondiNuoveOpzionali: true,
+  });
 }
 
-function predefinito(): Salvato {
-  const resto = COLONNE_CREDITI.map((c) => c.key).filter((k) => !PRIME_DEFAULT.includes(k));
-  return {
-    ordine: [...PRIME_DEFAULT, ...resto],
-    nascoste: COLONNE_CREDITI.filter((c) => !c.defaultVisible).map((c) => c.key),
-  };
-}
-
-function carica(): Salvato {
-  try {
-    const raw = localStorage.getItem(STORAGE);
-    if (raw) {
-      const s = JSON.parse(raw) as Salvato;
-      const viste = new Set(s.ordine);
-      // Colonne nuove (aggiunte dopo che l'utente ha salvato): in coda all'ordine e,
-      // se non visibili di default (es. Medico), già nascoste — niente reset delle preferenze.
-      const nuove = COLONNE_CREDITI.filter((c) => !viste.has(c.key));
-      const ordine = [...s.ordine.filter((k) => DEFS.has(k)), ...nuove.map((c) => c.key)];
-      const nascoste = [
-        ...(s.nascoste || []).filter((k) => DEFS.has(k)),
-        ...nuove.filter((c) => !c.defaultVisible).map((c) => c.key),
-      ];
-      return { ordine, nascoste };
-    }
-  } catch {
-    /* fallback */
-  }
-  return predefinito();
-}
-
-export interface VoceColonnaCr {
-  def: ColDefCr;
-  visibile: boolean;
+function resetColonneCrediti(): void {
+  resetLarghezzeTabella("contabilita-crediti");
+  resetLarghezzeTabella("contabilita-crediti-v2");
+  resetLarghezzeTabella("contabilita-crediti-v3");
 }
 
 export function useColonneCrediti() {
-  const [stato, setStato] = useState<Salvato>(carica);
-  useEffect(() => {
-    localStorage.setItem(STORAGE, JSON.stringify(stato));
-  }, [stato]);
-
-  const nascoste = useMemo(() => new Set(stato.nascoste), [stato.nascoste]);
-
-  const visibili = useMemo<ColDefCr[]>(
-    () => stato.ordine.map((k) => DEFS.get(k)).filter((c): c is ColDefCr => !!c && !nascoste.has(c.key)),
-    [stato.ordine, nascoste]
-  );
-
-  const tutte = useMemo<VoceColonnaCr[]>(
-    () =>
-      stato.ordine
-        .map((k) => DEFS.get(k))
-        .filter((c): c is ColDefCr => !!c)
-        .map((def) => ({ def, visibile: !nascoste.has(def.key) })),
-    [stato.ordine, nascoste]
-  );
-
-  const riordina = useCallback((keys: string[]) => setStato((s) => ({ ...s, ordine: keys })), []);
-  const toggle = useCallback(
-    (key: string) =>
-      setStato((s) => {
-        const n = new Set(s.nascoste);
-        if (n.has(key)) n.delete(key);
-        else n.add(key);
-        return { ...s, nascoste: [...n] };
-      }),
-    []
-  );
-  const reset = useCallback(() => {
-    setStato(predefinito());
-    resetLarghezzeTabella("contabilita-crediti");
-    resetLarghezzeTabella("contabilita-crediti-v2");
-    resetLarghezzeTabella("contabilita-crediti-v3");
-  }, []);
-
-  return { visibili, tutte, ordineKeys: stato.ordine, riordina, toggle, reset };
+  return useColonneConfigurabili(COLONNE_CREDITI, {
+    storage: STORAGE,
+    normalizza: normalizzaColonneCrediti,
+    richiedeOrdineSalvato: true,
+    onReset: resetColonneCrediti,
+  });
 }

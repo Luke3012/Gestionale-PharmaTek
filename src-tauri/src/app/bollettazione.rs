@@ -61,6 +61,10 @@ pub struct BollettazioneConflictDto {
     pub label: String,
     pub current: Value,
     pub proposed: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_display: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_display: Option<String>,
     pub blocking: bool,
 }
 
@@ -714,8 +718,12 @@ fn ranked_to_dto(
         (ranked.doctor_score * 100.0).round(),
         (ranked.product_score * 100.0).round()
     );
-    let (proposed_fields, conflicts) =
-        proposed_and_conflicts(reference, normalized, &candidate.current_fields);
+    let (proposed_fields, conflicts) = proposed_and_conflicts(
+        reference,
+        normalized,
+        &candidate.current_fields,
+        &candidate.product_name,
+    );
     BollettazioneMatchDto {
         row_id: candidate.row_id.clone(),
         order_id: candidate.order_id.clone(),
@@ -761,6 +769,7 @@ fn proposed_and_conflicts(
     reference: &str,
     normalized: &TrattamentoNormalizzato,
     current_fields: &Map<String, Value>,
+    current_product_name: &str,
 ) -> (Map<String, Value>, Vec<BollettazioneConflictDto>) {
     let values = [
         ("numero", "Numero lotto", json!(reference)),
@@ -801,6 +810,15 @@ fn proposed_and_conflicts(
                 label: label.to_string(),
                 current: current.clone(),
                 proposed: value.clone(),
+                // Gli ID sono necessari al salvataggio, ma non sono utili a chi
+                // deve scegliere. Mostriamo quindi i nomi prodotto senza alterare
+                // i valori tecnici inviati nella conferma.
+                current_display: (field == "prodotto_id")
+                    .then(|| current_product_name.to_string())
+                    .filter(|name| !name.trim().is_empty()),
+                proposed_display: (field == "prodotto_id")
+                    .then(|| normalized.product_name.clone())
+                    .filter(|name| !name.trim().is_empty()),
                 // È un conflitto fra la riga scelta e il file: l'operatore può
                 // risolverlo esplicitamente in entrambe le direzioni.
                 blocking: false,
@@ -1165,6 +1183,8 @@ impl AppState {
                         label: "Riferimento duplicato".into(),
                         current: json!("Dati diversi nel gruppo"),
                         proposed: json!(row.reference),
+                        current_display: None,
+                        proposed_display: None,
                         // L'operatore può associare una delle occorrenze e deve
                         // saltare le altre; il backend impedisce la doppia conferma.
                         blocking: false,
@@ -1190,6 +1210,8 @@ impl AppState {
                                 label: "Numero lotto".into(),
                                 current: json!("Presente su un'altra riga"),
                                 proposed: json!(row.reference),
+                                current_display: None,
+                                proposed_display: None,
                                 blocking: true,
                             });
                         }
@@ -1201,6 +1223,8 @@ impl AppState {
                             label: "Numero lotto".into(),
                             current: json!("Presente su più righe"),
                             proposed: json!(row.reference),
+                            current_display: None,
+                            proposed_display: None,
                             blocking: true,
                         });
                     }
@@ -1242,6 +1266,8 @@ impl AppState {
                                 label: "Allergeni / ceppi".into(),
                                 current: json!("Massimo 10 valori"),
                                 proposed: json!(normalized.allergens),
+                                current_display: None,
+                                proposed_display: None,
                                 blocking: true,
                             });
                         } else if match_has_conflicts {
@@ -1700,6 +1726,36 @@ mod tests {
     }
 
     #[test]
+    fn conflitto_prodotto_espone_i_nomi_e_non_gli_id_tecnici() {
+        let normalized = TrattamentoNormalizzato {
+            family: "lisato".into(),
+            product_id: "__seed_prod_lisato_batterico_2_fiale__".into(),
+            product_name: "Lisato batterico 2 fiale".into(),
+            formulation: String::new(),
+            dosage: String::new(),
+            allergens: Vec::new(),
+            vials: 2,
+        };
+        let current = fields(&[("prodotto_id", json!("__seed_prod_sublinguale_2_fiale__"))]);
+
+        let (_, conflicts) =
+            proposed_and_conflicts("5081854", &normalized, &current, "Sublinguale 2 fiale");
+        let product = conflicts
+            .iter()
+            .find(|conflict| conflict.field == "prodotto_id")
+            .unwrap();
+
+        assert_eq!(
+            product.current_display.as_deref(),
+            Some("Sublinguale 2 fiale")
+        );
+        assert_eq!(
+            product.proposed_display.as_deref(),
+            Some("Lisato batterico 2 fiale")
+        );
+    }
+
+    #[test]
     fn trattamento_non_confonde_pro_ml_e_fiale_con_posologia() {
         assert_eq!(parse_dosage("BELTAVAC Polimerizado PRO2 1 Vial"), "");
         assert_eq!(
@@ -2042,10 +2098,7 @@ mod tests {
     fn batch_spedizioni_non_lascia_risultati_parziali() {
         let (_app, _data, state) = test_state();
         let order = order_with_rows(&state, 2);
-        let courier = state
-            .record_create("corriere", Map::from_iter([("nome".into(), json!("Corriere Demo 001"))]))
-            .unwrap()
-            .id;
+        let courier = state.records_list("corriere").unwrap()[0].id.clone();
         let rows = vec![
             confirmation(&order, 0, "LOT-A"),
             confirmation(&order, 1, "LOT-B"),

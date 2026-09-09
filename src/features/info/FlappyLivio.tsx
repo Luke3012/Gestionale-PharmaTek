@@ -1,8 +1,8 @@
-// Gioco "Flappy Utente Demo" (FASE 7B). Canvas leggero, niente librerie: barra spaziatrice
-// (o click) per far saltare la faccia di Utente Demo — disegnata OVALE (allungata) così non è
+// Gioco "Flappy Livio" (FASE 7B). Canvas leggero, niente librerie: barra spaziatrice
+// (o click) per far saltare la faccia di Livio — disegnata OVALE (allungata) così non è
 // riconoscibile. Il campo è RESPONSIVO: riempie tutta la finestra (larghezza+altezza) e la
 // fisica si scala sulla dimensione, quindi funziona a qualsiasi misura e si ridimensiona.
-// Cielo con nuvole, intro con Utente Demo da sinistra e ostacoli da destra. Punteggio + record
+// Cielo con nuvole, intro con Livio da sinistra e ostacoli da destra. Punteggio + record
 // (localStorage). Suoni offline. L'uscita (Esc) la gestisce InfoWindow (componente montato
 // solo durante il gioco). Rispetta «Riduci animazioni» (niente intro).
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,8 +18,8 @@ const GAP_FRAC = 0.42; // apertura verticale (frazione dell'altezza)
 const GRAV_FACT = 3.3; // gravità = altezza * fattore (px/s²)
 const JUMP_FACT = 1.0; // spinta del salto = altezza * fattore (px/s)
 const VEL_FACT = 0.46; // scorrimento ostacoli = larghezza * fattore (px/s)
-const RY_FACT = 0.062; // semiasse verticale di Utente Demo = altezza * fattore (ovale)
-const LIVIO_X_FACT = 0.24; // x di Utente Demo = larghezza * fattore
+const RY_FACT = 0.062; // semiasse verticale di Livio = altezza * fattore (ovale)
+const LIVIO_X_FACT = 0.24; // x di Livio = larghezza * fattore
 const COLW_FACT = 0.12; // larghezza colonna = larghezza * fattore
 const SPACING_FACT = 0.62; // distanza tra colonne = larghezza * fattore
 
@@ -43,7 +43,7 @@ interface Stato {
   fase: Fase;
   y: number;
   v: number;
-  x: number; // x corrente di Utente Demo (per l'intro che entra da sinistra)
+  x: number; // x corrente di Livio (per l'intro che entra da sinistra)
   rot: number;
   colonne: Colonna[];
   nuvole: Nuvola[];
@@ -275,7 +275,7 @@ export function FlappyLivio() {
         morte();
         return;
       }
-      // Collisioni colonne (Utente Demo approssimato a un cerchio di raggio RAGGIO).
+      // Collisioni colonne (Livio approssimato a un cerchio di raggio RAGGIO).
       for (const c of s.colonne) {
         if (c.x > s.x + RAGGIO || c.x + COLW < s.x - RAGGIO) continue;
         const topBottom = c.gapFrac * H - GAP / 2;
@@ -331,7 +331,7 @@ export function FlappyLivio() {
       ctx.fillStyle = "#F4C20D";
       ctx.fillRect(0, H - suolH, W, 3);
 
-      // Utente Demo (ovale).
+      // Livio (ovale).
       if (s.fase !== "pronto") {
         ctx.save();
         ctx.translate(s.x, s.y);
@@ -449,7 +449,7 @@ export function FlappyLivio() {
                 }}
                 mb="xl"
               >
-                Flappy <span style={{ color: "#F4C20D" }}>Livio</span>
+                Flappy<span style={{ color: "#F4C20D" }}>Livio</span>
               </Text>
               <IconPlayerPlayFilled size={34} color="#1A1A1A" />
               <Text fw={700} mt={6}>

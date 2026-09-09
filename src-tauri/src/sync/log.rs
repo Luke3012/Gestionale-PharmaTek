@@ -293,7 +293,7 @@ mod tests {
         Event::new(
             Hlc::new(1000, n, "PC-A"),
             "PC-A",
-            "Utente Demo",
+            "Livio",
             "order",
             format!("01ORDER{n}"),
             EventBody::Created,

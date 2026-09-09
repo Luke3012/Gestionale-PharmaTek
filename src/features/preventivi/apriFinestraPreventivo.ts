@@ -1,6 +1,7 @@
 import { inTauri, type Identity } from "../../lib/tauri";
 import { opzioniGeometria } from "../../lib/geometriaFinestre";
 import {
+  apriFinestraTauri,
   attendiCreazioneFinestra,
   portaFinestraInPrimoPiano,
   queryIdentita,
@@ -30,6 +31,23 @@ export const GEOM_PREVENTIVO = {
 
 const apertureInCorso = new Map<string, Promise<boolean>>();
 
+async function apriUnaSolaVolta(
+  chiave: string,
+  apri: () => Promise<boolean>,
+): Promise<boolean> {
+  const giaInCorso = apertureInCorso.get(chiave);
+  if (giaInCorso) return giaInCorso;
+  const apertura = apri();
+  apertureInCorso.set(chiave, apertura);
+  try {
+    return await apertura;
+  } finally {
+    if (apertureInCorso.get(chiave) === apertura) {
+      apertureInCorso.delete(chiave);
+    }
+  }
+}
+
 export async function apriFinestraPreventivo(
   ordineId: string | null,
   numero?: string,
@@ -39,12 +57,9 @@ export async function apriFinestraPreventivo(
 ): Promise<boolean> {
   if (!inTauri) return false;
   const chiave = ordineId ?? "new";
-  const giaInCorso = apertureInCorso.get(chiave);
-  if (giaInCorso) return giaInCorso;
-
-  const apertura = (async () => {
+  return apriUnaSolaVolta(chiave, async () => {
     try {
-      const { WebviewWindow, getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       const origineLabel = ritorno ? getCurrentWebviewWindow().label : "";
       const suffissoOrigine = origineLabel
         ? `-da-${origineLabel.replace(/[^a-zA-Z0-9]/g, "").slice(0, 18)}`
@@ -52,45 +67,25 @@ export async function apriFinestraPreventivo(
       const label = ordineId
         ? `preventivo-${ordineId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24)}${suffissoOrigine}`
         : `preventivo-new-${crypto.randomUUID().slice(0, 8)}`;
-      if (ordineId) {
-        const esistente = await WebviewWindow.getByLabel(label);
-        if (esistente) {
-          await portaFinestraInPrimoPiano(esistente);
-          return true;
-        }
-      }
       const ritornoQuery = ritorno
         ? `&ritorno=${ritorno}&ritornoLabel=${encodeURIComponent(origineLabel)}`
         : "";
       const query = `preventivo=${ordineId ?? "new"}&vista=${vista}${
         numero ? `&numero=${encodeURIComponent(numero)}` : ""
       }${ritornoQuery}${queryIdentita(identity)}`;
-      const finestra = new WebviewWindow(label, {
-        url: `index.html?${query}`,
-        title: ordineId
-          ? `Preventivo ${numero ?? ""}`.trim()
-          : "Nuovo preventivo",
-        minWidth: GEOM_PREVENTIVO.minWidth,
-        minHeight: GEOM_PREVENTIVO.minHeight,
-        ...(await opzioniGeometria("preventivo", GEOM_PREVENTIVO)),
-        visible: false,
+      return apriFinestraTauri({
+        label,
+        query,
+        title: ordineId ? `Preventivo ${numero ?? ""}`.trim() : "Nuovo preventivo",
+        chiaveGeometria: "preventivo",
+        geometria: GEOM_PREVENTIVO,
+        riusa: !!ordineId,
+        mostraDopoCreazione: true,
       });
-      if (!(await attendiCreazioneFinestra(finestra))) return false;
-      await portaFinestraInPrimoPiano(finestra);
-      return true;
     } catch {
       return false;
     }
-  })();
-
-  apertureInCorso.set(chiave, apertura);
-  try {
-    return await apertura;
-  } finally {
-    if (apertureInCorso.get(chiave) === apertura) {
-      apertureInCorso.delete(chiave);
-    }
-  }
+  });
 }
 
 /**
@@ -103,11 +98,7 @@ export async function apriFinestraPreventivoDaBozza(
   identity?: Identity,
 ): Promise<boolean> {
   if (!inTauri) return false;
-  const chiave = "draft";
-  const giaInCorso = apertureInCorso.get(chiave);
-  if (giaInCorso) return giaInCorso;
-
-  const apertura = (async () => {
+  return apriUnaSolaVolta("draft", async () => {
     let finestra: InstanceType<
       typeof import("@tauri-apps/api/webviewWindow").WebviewWindow
     > | null = null;
@@ -182,14 +173,5 @@ export async function apriFinestraPreventivoDaBozza(
       if (timer) clearTimeout(timer);
       off.splice(0).forEach((scollega) => scollega());
     }
-  })();
-
-  apertureInCorso.set(chiave, apertura);
-  try {
-    return await apertura;
-  } finally {
-    if (apertureInCorso.get(chiave) === apertura) {
-      apertureInCorso.delete(chiave);
-    }
-  }
+  });
 }

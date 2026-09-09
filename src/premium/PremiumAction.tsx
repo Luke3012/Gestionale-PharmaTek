@@ -84,6 +84,8 @@ export interface PremiumActionProps {
   buttonColor?: string;
   buttonSize?: string;
   showLock?: boolean;
+  /** Disabilita temporaneamente l'azione (per esempio durante un salvataggio). */
+  disabled?: boolean;
 }
 
 /** Modale paywall controllabile per superfici non-button (per esempio le voci
@@ -183,6 +185,7 @@ export function PremiumAction({
   buttonColor,
   buttonSize,
   showLock = true,
+  disabled = false,
 }: PremiumActionProps) {
   const access = usePremiumAccess();
   const reduced = useAnimazioniRidotte();
@@ -195,6 +198,11 @@ export function PremiumAction({
   }, [locked]);
 
   const activate = (event: MouseEvent<HTMLButtonElement>) => {
+    if (disabled) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (locked) {
       event.preventDefault();
       event.stopPropagation();
@@ -251,7 +259,8 @@ export function PremiumAction({
       type="button"
       className={className}
       aria-label={ariaLabel}
-      aria-disabled={locked}
+      aria-disabled={disabled || locked}
+      disabled={disabled}
       data-premium-locked={locked || undefined}
       variant="subtle"
       color="gray"
@@ -261,8 +270,8 @@ export function PremiumAction({
         lockedPresentation === "popover" ? () => setOpened(false) : undefined
       }
       style={{
-        cursor: locked ? "help" : "pointer",
-        opacity: locked ? 0.78 : 1,
+        cursor: disabled ? "not-allowed" : locked ? "help" : "pointer",
+        opacity: disabled || locked ? 0.78 : 1,
         overflow: "visible",
         position: "relative",
         ...style,
@@ -275,7 +284,8 @@ export function PremiumAction({
       type="button"
       className={className}
       aria-label={ariaLabel}
-      aria-disabled={locked}
+      aria-disabled={disabled || locked}
+      disabled={disabled}
       data-premium-locked={locked || undefined}
       variant={buttonVariant}
       color={buttonColor}
@@ -295,7 +305,8 @@ export function PremiumAction({
       type="button"
       className={className}
       aria-label={ariaLabel}
-      aria-disabled={locked}
+      aria-disabled={disabled || locked}
+      disabled={disabled}
       data-premium-locked={locked || undefined}
       onClick={activate}
       onBlur={
@@ -319,8 +330,8 @@ export function PremiumAction({
         font: "inherit",
         fontWeight: 600,
         lineHeight: 1.2,
-        cursor: locked ? "help" : "pointer",
-        opacity: locked ? 0.78 : 1,
+        cursor: disabled ? "not-allowed" : locked ? "help" : "pointer",
+        opacity: disabled || locked ? 0.78 : 1,
         transformOrigin: "center",
         willChange: reduced ? undefined : "transform, opacity",
         position: "relative",

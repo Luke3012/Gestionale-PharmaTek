@@ -13,7 +13,6 @@ import {
   Divider,
   Group,
   Modal,
-  NumberInput,
   SegmentedControl,
   Select,
   Stack,
@@ -24,13 +23,17 @@ import {
 import { IconSearch, IconTruckDelivery } from "@tabler/icons-react";
 import { api, type ContrassegnoAperto, type RecordDto } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
+import { EuroInput } from "../../ui/EuroInput";
 import { oggiIso as oggi } from "../../lib/date";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { focusInvalidField } from "../../ui/focusInvalid";
 import { Tabella, type DataTableColumn } from "../../ui/Tabella";
 import { modalTableHeight } from "../../ui/modalTableHeight";
 import { DataAdattiva } from "../../ui/DataAdattiva";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { opzioniRecordNome } from "../../lib/opzioniRecord";
 import { DebouncedInput } from "../../ui/DebouncedInput";
+import { èContoTransito, opzioniConti } from "./contoPreferito";
 
 export function DistintaModal({
   opened,
@@ -43,10 +46,7 @@ export function DistintaModal({
 }) {
   // Teniamo il contenuto montato durante l'animazione di uscita (smontarlo subito fa
   // "collassare" il modale su un riquadro vuoto mentre si chiude).
-  const [mostrato, setMostrato] = useState(opened);
-  useEffect(() => {
-    if (opened) setMostrato(true);
-  }, [opened]);
+  const [mostrato, clearMostrato] = useModalSnapshot(opened ? true : null);
 
   return (
     <Modal
@@ -62,7 +62,7 @@ export function DistintaModal({
           <Text fw={700}>Nuova distinta corriere</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(false) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && <Form onClose={onClose} onSaved={onSaved} />}
     </Modal>
@@ -274,14 +274,12 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
   }
 
   const datiCorrieri = useMemo(
-    () => corrieri.map((c) => ({ value: c.id, label: (c.data.nome as string) || "(corriere)" })),
+    () => opzioniRecordNome(corrieri, "(corriere)"),
     [corrieri]
   );
   const datiConti = useMemo(
     () =>
-      conti
-        .filter((c) => c.data.tipo !== "contrassegno" && c.data.tipo !== "assegno")
-        .map((c) => ({ value: c.id, label: (c.data.nome as string) || "(conto)" })),
+      opzioniConti(conti.filter((c) => !èContoTransito(c.data.tipo))),
     [conti]
   );
 
@@ -378,7 +376,7 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
 
       <div className="pt-modal-footer">
         <Group gap="lg" align="flex-end">
-          <NumberInput
+          <EuroInput
             label="Importo accreditato"
             description={`Somma spuntati: € ${centsToEurStr(importo)}`}
             value={importoEmesso}
@@ -386,11 +384,6 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
               importoToccato.current = true;
               setImportoEmesso(v === "" ? "" : Number(v));
             }}
-            prefix="€ "
-            decimalScale={2}
-            fixedDecimalScale
-            thousandSeparator="."
-            decimalSeparator=","
             min={0}
             w={200}
           />

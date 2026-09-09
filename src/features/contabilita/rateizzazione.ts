@@ -1,4 +1,10 @@
 import type { RataInput } from "../../lib/tauri";
+import { dataIsoLocale, isoLocale } from "../../lib/date";
+export {
+  aggiungiGiorniDaOggiIso as aggiungiGiorniRate,
+  oggiIso as dataLocaleOggi,
+} from "../../lib/date";
+import { èContoTransito } from "./contoPreferito";
 
 export type CadenzaRate = "mensile" | "giorni";
 
@@ -8,47 +14,24 @@ export function numeroRateSaldoPredefinito(categoria: string, valore: unknown): 
   return Math.min(60, Math.max(1, numero));
 }
 
-export function dataLocaleOggi(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function parseData(iso: string): Date {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
-}
-
-function toIso(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const g = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${g}`;
-}
-
-export function aggiungiGiorniRate(iso: string, giorni: number): string {
-  const d = parseData(iso || dataLocaleOggi());
-  d.setDate(d.getDate() + giorni);
-  return toIso(d);
-}
-
 export function differenzaGiorni(dataIso1: string, dataIso2: string): number {
   if (!dataIso1 || !dataIso2) return 0;
-  const d1 = parseData(dataIso1);
-  const d2 = parseData(dataIso2);
+  const d1 = dataIsoLocale(dataIso1);
+  const d2 = dataIsoLocale(dataIso2);
   return Math.round((d1.getTime() - d2.getTime()) / 86_400_000);
 }
 
 export function offsetSpedizione(contoTipo?: string): number {
-  return contoTipo === "contrassegno" || contoTipo === "assegno" ? 30 : 7;
+  return èContoTransito(contoTipo) ? 30 : 7;
 }
 
 function scadenzaRata(inizio: string, i: number, cadenza: CadenzaRate, giorni: number): string {
   if (!inizio) return "";
-  const base = parseData(inizio);
+  const base = dataIsoLocale(inizio);
   if (cadenza === "mensile") {
-    return toIso(new Date(base.getFullYear(), base.getMonth() + i, base.getDate(), 12, 0, 0));
+    return isoLocale(new Date(base.getFullYear(), base.getMonth() + i, base.getDate(), 12, 0, 0));
   }
-  return toIso(new Date(base.getTime() + i * giorni * 86_400_000));
+  return isoLocale(new Date(base.getTime() + i * giorni * 86_400_000));
 }
 
 export function calcolaRate(

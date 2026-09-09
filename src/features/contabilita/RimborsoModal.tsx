@@ -11,7 +11,6 @@ import {
   Divider,
   Group,
   Modal,
-  NumberInput,
   Select,
   Stack,
   Text,
@@ -21,6 +20,8 @@ import {
 import { IconReceiptRefund, IconTrash } from "@tabler/icons-react";
 import { api, type OrdineDto, type Rimborso, type RecordDto } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
+import { EuroInput } from "../../ui/EuroInput";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { oggiIso as oggi } from "../../lib/date";
 import {
   catturaOrigineCestino,
@@ -31,6 +32,8 @@ import { dialog } from "../../ui/dialog/store";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { origineRimborsoLabel } from "./statiRimborso";
 import { focusInvalidField } from "../../ui/focusInvalid";
+import { opzioniConti } from "./contoPreferito";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 
 export interface RimborsoModalTarget {
   /** Modifica/dettaglio di un rimborso esistente. */
@@ -48,10 +51,7 @@ export function RimborsoModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const [mostrato, setMostrato] = useState<RimborsoModalTarget | null>(target);
-  useEffect(() => {
-    if (target) setMostrato(target);
-  }, [target]);
+  const [mostrato, clearMostrato] = useModalSnapshot(target);
 
   const titolo = mostrato?.rimborso ? "Dettaglio rimborso" : "Nuovo rimborso";
 
@@ -71,7 +71,7 @@ export function RimborsoModal({
           )}
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
       onKeyDown={(e) => {
         if (e.key === "Escape") e.stopPropagation();
       }}
@@ -150,10 +150,7 @@ function Form({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const datiConti = useMemo(
-    () => conti.map((c) => ({ value: c.id, label: (c.data.nome as string) || "(conto)" })),
-    [conti]
-  );
+  const datiConti = useMemo(() => opzioniConti(conti), [conti]);
   const datiOrdini = useMemo(
     () =>
       ordini.map((o) => ({
@@ -300,15 +297,10 @@ function Form({
               onChange={(e) => setDataRichiesta(e.currentTarget.value)}
             />
             <Box data-pt-field="rimborso-importo">
-              <NumberInput
+              <EuroInput
                 label="Importo"
                 value={importo}
                 onChange={(v) => setImporto(v === "" ? "" : Number(v))}
-                prefix="€ "
-                decimalScale={2}
-                fixedDecimalScale
-                thousandSeparator="."
-                decimalSeparator=","
                 min={0}
               />
             </Box>
@@ -392,14 +384,13 @@ export function SegnaEffettuatoModal({
   const [conti, setConti] = useState<RecordDto[]>([]);
   // Mantiene il contenuto durante il fade-out: il parent può azzerare subito
   // `rimborso` senza far collassare il modale prima della fine dell'animazione.
-  const [mostrato, setMostrato] = useState<Rimborso | null>(rimborso);
+  const [mostrato, clearRimborsoMostrato] = useModalSnapshot(rimborso);
   const [data, setData] = useState(oggi());
   const [contoId, setContoId] = useState("");
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     if (!rimborso) return;
-    setMostrato(rimborso);
     setData(oggi());
     api
       .recordsList("conto")
@@ -412,10 +403,7 @@ export function SegnaEffettuatoModal({
       .catch(() => {});
   }, [rimborso]);
 
-  const datiConti = useMemo(
-    () => conti.map((c) => ({ value: c.id, label: (c.data.nome as string) || "(conto)" })),
-    [conti]
-  );
+  const datiConti = useMemo(() => opzioniConti(conti), [conti]);
 
   async function conferma() {
     if (!rimborso) return;
@@ -443,7 +431,7 @@ export function SegnaEffettuatoModal({
       size="sm"
       zIndex={1400}
       title={<Text fw={700}>Segna come effettuato</Text>}
-      transitionProps={{ transition: "fade", duration: 160, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 160, onExited: clearRimborsoMostrato }}
       onKeyDown={(e) => {
         if (e.key === "Escape") e.stopPropagation();
       }}
@@ -475,16 +463,14 @@ export function SegnaEffettuatoModal({
               />
             </Stack>
           </Box>
-          <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-            <div className="pt-modal-actions">
+          <FooterAzioniModale>
               <Button variant="default" onClick={onClose} disabled={salvando}>
                 Annulla
               </Button>
               <Button color="accent" onClick={conferma} loading={salvando}>
                 Conferma
               </Button>
-            </div>
-          </div>
+          </FooterAzioniModale>
         </Box>
       )}
     </Modal>

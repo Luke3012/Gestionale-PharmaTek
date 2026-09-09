@@ -19,14 +19,11 @@ import { apriFinestraPromemoria } from "../promemoria/apriFinestraPromemoria";
 import { ComposerMessaggio, type RispostaA } from "./ComposerMessaggio";
 import { COLORE_URGENZA, TIPO_NOTIFICA, type CollegamentoNotifica, type Notifica } from "./notifiche";
 import { type NotificheState } from "./useNotifiche";
-import { VirtualStack } from "../../ui/VirtualStack";
-import { calcolaSogliaVirtualizzazione } from "../../ui/virtualizzazione";
 import { apriCentroComunicazioniDaNotifica } from "../comunicazioni/apriComunicazione";
 import { vaiAllaPrincipale } from "../../shell/navigazione";
 import { deepLinkSuggerimento } from "../suggerimenti/collegamento";
+import { osservaRidimensionamento } from "../../ui/osservaRidimensionamento";
 
-const ALTEZZA_NOTIFICA_STIMATA = 72;
-const GAP_NOTIFICHE = 4;
 const DURATA_CANCELLA_TUTTE_MS = 220;
 
 function pagamentoIdDaNotifica(n: Notifica): string | undefined {
@@ -130,10 +127,7 @@ export function ListaNotifiche({
       setAltezzaComposer((corrente) => corrente === prossima ? corrente : prossima);
     };
 
-    misura();
-    const observer = new ResizeObserver(misura);
-    observer.observe(composer);
-    return () => observer.disconnect();
+    return osservaRidimensionamento(composer, misura);
   }, [compose, riempi]);
 
   // Richiesta esterna «scrivi a questa persona»: apre il composer indirizzato.
@@ -185,9 +179,9 @@ export function ListaNotifiche({
     }
   }
 
-  const renderRiga = (n: Notifica, virtuale = false) => (
+  const renderRiga = (n: Notifica) => (
     <motion.div
-      key={virtuale ? undefined : n.id}
+      key={n.id}
       // Questo involucro resta fermo sull'asse orizzontale e anima soltanto lo
       // spazio occupato. Lo swipe vive nel figlio, così non può ampliare
       // temporaneamente il viewport e spostare la schermata dietro al popover.
@@ -222,7 +216,7 @@ export function ListaNotifiche({
       style={{ overflow: "hidden", width: "100%" }}
     >
       <motion.div
-        initial={virtuale || ridotte ? false : { opacity: 0, y: 6 }}
+        initial={ridotte ? false : { opacity: 0, y: 6 }}
         animate={
           cancellaTutteInCorso
             ? {
@@ -295,13 +289,6 @@ export function ListaNotifiche({
   const altezzaLista = riempi
     ? altezzaMax
     : `max(120px, min(${altezzaMax}px, calc(100dvh - 116px - ${altezzaComposer}px)))`;
-  const virtualizza =
-    visibili.length >
-    calcolaSogliaVirtualizzazione(
-      altezzaMax,
-      ALTEZZA_NOTIFICA_STIMATA,
-      GAP_NOTIFICHE,
-    );
 
   return (
     <Box
@@ -368,13 +355,9 @@ export function ListaNotifiche({
                   .map((n) => n.id);
                 setCancellaTutteInCorso(true);
                 cancellaTutteTimerRef.current = window.setTimeout(() => {
-                  // Da una lista virtualizzata a zero non resta montato un
-                  // AnimatePresence che possa segnalare il completamento.
                   setMostraVuoto(true);
                   scartaComunicazioniLocali(idsComunicazioni);
                   void scartaTutte(idsCondivisibili);
-                  // Gli aggiornamenti sopra sono ottimistici e sincroni: al frame
-                  // successivo le righe sono già uscite anche dal layout virtuale.
                   window.requestAnimationFrame(() =>
                     setCancellaTutteInCorso(false),
                   );
@@ -413,19 +396,7 @@ export function ListaNotifiche({
           )}
       </AnimatePresence>
 
-      {virtualizza ? (
-        <VirtualStack
-          items={visibili}
-          getKey={(n) => n.id}
-          fill={riempi}
-          maxHeight={altezzaLista}
-          gap={GAP_NOTIFICHE}
-          padding={8}
-          estimateHeight={ALTEZZA_NOTIFICA_STIMATA}
-          overscan={3}
-          renderItem={(n) => renderRiga(n, true)}
-        />
-      ) : riempi ? (
+      {riempi ? (
         <ScrollArea style={{ flex: 1, minHeight: 0 }} type="scroll" scrollbars="y" styles={{ viewport: { overflowX: "hidden" } }}>
           {righeComplete()}
         </ScrollArea>

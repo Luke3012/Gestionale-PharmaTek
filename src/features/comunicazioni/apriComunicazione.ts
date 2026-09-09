@@ -8,10 +8,10 @@ import {
   type TipoModelloComunicazione,
 } from "../../lib/tauri";
 import { centsToEurStr } from "../../lib/money";
-import { oggiIso } from "../../lib/date";
-import { opzioniGeometria } from "../../lib/geometriaFinestre";
+import { formattaDataIsoLocale, oggiIso } from "../../lib/date";
+import { creaIdCasuale } from "../../lib/idCasuale";
 import {
-  attendiCreazioneFinestra,
+  apriFinestraTauri,
   portaFinestraInPrimoPiano,
 } from "../../lib/finestreTauri";
 import {
@@ -44,6 +44,32 @@ export interface ComunicazioneTarget {
   variabili?: Record<string, string>;
 }
 
+/** Alias del nome destinatario usati da tutti i modelli di comunicazione. */
+export function variabiliNomeDestinatario(nome: string) {
+  return { nome_cliente: nome, ragione_sociale: nome };
+}
+
+/** Nome e recapiti derivati da un'anagrafica aggiornata in tempo reale. */
+export function datiDestinatarioDaRecord(
+  record: RecordDto,
+  nomeFallback: string,
+) {
+  const valore = (campo: string) =>
+    typeof record.data[campo] === "string"
+      ? String(record.data[campo]).trim()
+      : "";
+  return {
+    nome:
+      valore("ragione_sociale") ||
+      valore("denominazione") ||
+      valore("nome_completo") ||
+      `${valore("nome")} ${valore("cognome")}`.trim() ||
+      nomeFallback,
+    email: valore("email"),
+    telefono: valore("telefono"),
+  };
+}
+
 export interface CampagnaComunicazioneTarget extends ComunicazioneTarget {
   /** Versioni dei dati usati nell'anteprima: se cambiano, la revisione va rigenerata. */
   snapshot?: Array<{ entita: string; id: string; revision: string }>;
@@ -63,6 +89,16 @@ export const EVENTO_APRI_CAMPAGNA_COMUNICAZIONI =
   "pt:apri-campagna-comunicazioni";
 export const CHIAVE_GEOMETRIA_COMUNICAZIONE = "comunicazione";
 export const CHIAVE_GEOMETRIA_COMUNICAZIONE_BATCH = "comunicazione-batch";
+
+async function portaMainInPrimoPianoSeNecessario(): Promise<void> {
+  const { getAllWindows, getCurrentWindow } =
+    await import("@tauri-apps/api/window");
+  if (getCurrentWindow().label === "main") return;
+  const main = (await getAllWindows()).find(
+    (finestra) => finestra.label === "main",
+  );
+  if (main) await portaFinestraInPrimoPiano(main);
+}
 
 const GEOMETRIA_COMUNICAZIONE = {
   width: 680,
@@ -112,10 +148,7 @@ export interface RiepilogoSollecitoPagamento {
 }
 
 function dataPagamentoIt(dataIso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIso)) return "da concordare";
-  return new Intl.DateTimeFormat("it-IT").format(
-    new Date(`${dataIso}T12:00:00`),
-  );
+  return formattaDataIsoLocale(dataIso, "da concordare");
 }
 
 /**
@@ -294,10 +327,7 @@ export async function apriCentroComunicazioni(
   const richiesta: AperturaCentroComunicazioni = {
     presentazione,
     comunicazioneId,
-    richiestaId:
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    richiestaId: creaIdCasuale(),
   };
   window.dispatchEvent(
     new CustomEvent(EVENTO_APRI_CENTRO_COMUNICAZIONI, {
@@ -328,14 +358,7 @@ export async function apriCentroComunicazioniDaNotifica(
 
   await apriCentroComunicazioni("modale", comunicazioneId);
   if (inTauri) {
-    const { getAllWindows, getCurrentWindow } =
-      await import("@tauri-apps/api/window");
-    if (getCurrentWindow().label !== "main") {
-      const main = (await getAllWindows()).find(
-        (finestra) => finestra.label === "main",
-      );
-      if (main) await portaFinestraInPrimoPiano(main);
-    }
+    await portaMainInPrimoPianoSeNecessario();
   }
   return true;
 }
@@ -346,10 +369,7 @@ export async function apriComunicazione(
   opzioni: OpzioniAperturaComunicazione = {},
 ): Promise<boolean> {
   if (!target.destinatarioId || !target.destinatarioNome) return false;
-  const richiestaId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const richiestaId = creaIdCasuale();
   const richiesta = { ...target, richiestaId };
   const manuale = !target.origineId && !target.tipo;
   if (opzioni.forzaFinestra) {
@@ -368,15 +388,7 @@ export async function apriComunicazione(
   if (inTauri) {
     const { emit } = await import("@tauri-apps/api/event");
     await emit(EVENTO_APRI_COMUNICAZIONE, richiesta);
-    const { getAllWindows, getCurrentWindow } =
-      await import("@tauri-apps/api/window");
-    const corrente = getCurrentWindow();
-    if (corrente.label !== "main") {
-      const main = (await getAllWindows()).find(
-        (finestra) => finestra.label === "main",
-      );
-      if (main) await portaFinestraInPrimoPiano(main);
-    }
+    await portaMainInPrimoPianoSeNecessario();
   }
   return true;
 }
@@ -397,33 +409,16 @@ async function apriFinestraComunicazione(
   target: ComunicazioneTarget,
 ): Promise<boolean> {
   if (!inTauri) return false;
-  try {
-    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-    const suffisso = `${target.destinatarioEntita}-${target.destinatarioId}`
-      .replace(/[^a-zA-Z0-9-]/g, "")
-      .slice(0, 28);
-    const label = `comunicazione-${suffisso}`;
-    const esistente = await WebviewWindow.getByLabel(label);
-    if (esistente) {
-      await portaFinestraInPrimoPiano(esistente);
-      return true;
-    }
-    const payload = encodeURIComponent(JSON.stringify(target));
-    const finestra = new WebviewWindow(label, {
-      url: `index.html?componiComunicazione=1&payload=${payload}`,
-      title: `Comunicazione — ${target.destinatarioNome}`,
-      minWidth: GEOMETRIA_COMUNICAZIONE.minWidth,
-      minHeight: GEOMETRIA_COMUNICAZIONE.minHeight,
-      ...(await opzioniGeometria(
-        CHIAVE_GEOMETRIA_COMUNICAZIONE,
-        GEOMETRIA_COMUNICAZIONE,
-      )),
-      visible: false,
-    });
-    return await attendiCreazioneFinestra(finestra);
-  } catch {
-    return false;
-  }
+  const suffisso = `${target.destinatarioEntita}-${target.destinatarioId}`
+    .replace(/[^a-zA-Z0-9-]/g, "")
+    .slice(0, 28);
+  return apriFinestraTauri({
+    label: `comunicazione-${suffisso}`,
+    query: `componiComunicazione=1&payload=${encodeURIComponent(JSON.stringify(target))}`,
+    title: `Comunicazione — ${target.destinatarioNome}`,
+    chiaveGeometria: CHIAVE_GEOMETRIA_COMUNICAZIONE,
+    geometria: GEOMETRIA_COMUNICAZIONE,
+  });
 }
 
 export async function apriCampagnaComunicazioni(
@@ -436,10 +431,7 @@ export async function apriCampagnaComunicazioni(
   if (!validi.length) return false;
   const richiesta: AperturaCampagnaComunicazioni = {
     targets: validi,
-    richiestaId:
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    richiestaId: creaIdCasuale(),
   };
   if (opzioni.forzaFinestra) {
     return apriFinestraCampagnaComunicazioni(richiesta);
@@ -464,34 +456,20 @@ async function apriFinestraCampagnaComunicazioni(
   richiesta: AperturaCampagnaComunicazioni,
 ): Promise<boolean> {
   if (!inTauri) return false;
-  try {
-    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-    const label = "comunicazione-batch";
-    const esistente = await WebviewWindow.getByLabel(label);
-    if (esistente) {
+  const label = "comunicazione-batch";
+  return apriFinestraTauri({
+    label,
+    query: `campagnaComunicazioni=1&payload=${encodeURIComponent(JSON.stringify(richiesta))}`,
+    title: "Nuova comunicazione",
+    chiaveGeometria: CHIAVE_GEOMETRIA_COMUNICAZIONE_BATCH,
+    geometria: GEOMETRIA_COMUNICAZIONE_BATCH,
+    primaDiRiutilizzare: async () => {
       const { emitTo } = await import("@tauri-apps/api/event");
       await emitTo(
         label,
         EVENTO_APRI_CAMPAGNA_COMUNICAZIONI,
         richiesta,
       );
-      await portaFinestraInPrimoPiano(esistente);
-      return true;
-    }
-    const payload = encodeURIComponent(JSON.stringify(richiesta));
-    const finestra = new WebviewWindow(label, {
-      url: `index.html?campagnaComunicazioni=1&payload=${payload}`,
-      title: "Nuova comunicazione",
-      minWidth: GEOMETRIA_COMUNICAZIONE_BATCH.minWidth,
-      minHeight: GEOMETRIA_COMUNICAZIONE_BATCH.minHeight,
-      ...(await opzioniGeometria(
-        CHIAVE_GEOMETRIA_COMUNICAZIONE_BATCH,
-        GEOMETRIA_COMUNICAZIONE_BATCH,
-      )),
-      visible: false,
-    });
-    return await attendiCreazioneFinestra(finestra);
-  } catch {
-    return false;
-  }
+    },
+  });
 }

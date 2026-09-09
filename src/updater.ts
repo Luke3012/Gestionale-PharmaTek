@@ -3,10 +3,35 @@ import { exit, relaunch } from "@tauri-apps/plugin-process";
 import { api, inTauri } from "./lib/tauri";
 import { installaConRiavvioPreparato } from "./lib/flussoAggiornamento";
 
-// La variante demo usa GitHub Releases pubbliche. Manifest e installer sono
-// scaricati anonimamente: nessuna credenziale viene compilata nel bundle.
-function opzioniManifest() { return undefined; }
-function opzioniAsset() { return undefined; }
+// Il repository delle release è PRIVATO: gli URL pubblici di GitHub
+// (releases/.../download/...) restituiscono 404 in anonimo. Servono richieste autenticate, e
+// poiché un token *fine-grained* è garantito solo su `api.github.com`, usiamo l'API per
+// ENTRACORRIERE_C le risorse (niente raw.githubusercontent):
+//   • manifest  → endpoint Contents API `.../contents/.updater/latest.json` con
+//                 `Accept: application/vnd.github.raw` (restituisce il file grezzo);
+//   • installer → URL API dell'asset (`.../releases/assets/<id>`) con
+//                 `Accept: application/octet-stream` (restituisce i byte).
+// I due `Accept` sono INCOMPATIBILI in un'unica richiesta (un header combinato fa restituire
+// all'asset i metadati JSON invece dei byte), ma `check()` e `downloadAndInstall()` sono due
+// chiamate distinte → passiamo a ciascuna il proprio set di header.
+// Il token (sola lettura del solo repo, Contents:read) è iniettato a build-time in
+// `VITE_DEMO_UPDATER_DISABLED` (vedi scripts/build.ps1) e finisce nel bundle: tienilo a privilegi
+// minimi. Vedi docs/AGGIORNAMENTI.md.
+const TOKEN = ((import.meta.env as Record<string, string | undefined>).VITE_DEMO_UPDATER_DISABLED ?? "").trim();
+
+function conAuth(accept: string) {
+  if (!TOKEN) return undefined;
+  return { headers: { Authorization: `token ${TOKEN}`, Accept: accept } };
+}
+/** Opzioni per `check()`: scarica il manifest dalla Contents API (file grezzo). */
+function opzioniManifest() {
+  return conAuth("application/vnd.github.raw");
+}
+/** Opzioni per `downloadAndInstall()`: scarica l'asset installer (byte). Vanno passate al
+ *  download: gli header del `check()` NON si propagano da soli. */
+function opzioniAsset() {
+  return conAuth("application/octet-stream");
+}
 
 /** Chiave localStorage: versione appena installata, da confermare con un toast al riavvio. */
 export const CHIAVE_AGGIORNAMENTO_APPLICATO = "pt.aggiornamentoApplicato";
@@ -146,12 +171,13 @@ export async function installaUltimaVersione(
   onProgress?: OnProgressoAggiornamento
 ): Promise<string> {
   if (!inTauri) return "";
+  if (!TOKEN) throw new Error("Token updater mancante: impossibile installare da repo privata.");
   onProgress?.({ fase: "preparo", messaggio: "Leggo l'ultima versione disponibile...", percentuale: 3 });
   onProgress?.({ fase: "scarico", messaggio: "Scarico l'aggiornamento...", percentuale: 20 });
   const result = await installaConRiavvioPreparato({
     preparaRiavvio: api.preparaRiavvioVisibile,
     installa: async () => {
-      const installato = await api.installaUltimaVersione("");
+      const installato = await api.installaUltimaVersione(TOKEN);
       onProgress?.({ fase: "installo", messaggio: "Installo l'aggiornamento...", percentuale: 96 });
       preparaRiavvioDopoInstallazione(installato.version, onProgress);
       return installato;

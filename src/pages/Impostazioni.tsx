@@ -24,7 +24,8 @@ import { IconAlertTriangle, IconDeviceFloppy, IconDownload, IconHistory, IconKey
 import { SUONI } from "../features/notifiche/suoni";
 import { riproduciSuono } from "../features/notifiche/suoni";
 import { motion, useAnimationControls, type Variants } from "framer-motion";
-import { api, inTauri, type BackupInfo, type Identity, type OperationLockStatus, type OperationProgress, type RestoreCoordination, type SnapshotInfo } from "../lib/tauri";
+import { api, inTauri, type BackupInfo, type Identity, type OperationProgress, type RestoreCoordination, type SnapshotInfo } from "../lib/tauri";
+import { useOperationLockStatus } from "../lib/useOperationLockStatus";
 import { ZOOM_UI_OPTIONS, usePrefs } from "../lib/prefs";
 import { leggiBaseProduzione, salvaBaseProduzione } from "../features/produzione/numeroProduzione";
 import { OPZIONI_PERIODO } from "../features/dashboard/periodo";
@@ -40,7 +41,7 @@ import { PuliziaDatiBox } from "../features/impostazioni/PuliziaDatiBox";
 import { registraPressioneReset, STATO_SEQUENZA_RESET_INIZIALE } from "../features/impostazioni/sequenzaReset";
 import { ResetProgrammaView } from "../features/impostazioni/ResetProgrammaView";
 import { ComunicazioniSettings } from "../features/comunicazioni/ComunicazioniSettings";
-import { PremiumOnly } from "../premium/PremiumAccess";
+import { PremiumOnly, usePremiumAccess } from "../premium/PremiumAccess";
 import { ConfigurazioneDocumentiSettings } from "../features/preventivi/ConfigurazioneDocumentiSettings";
 
 type RestorePending = {
@@ -105,37 +106,58 @@ async function eseguiConToastProgress<T>({
   }
 }
 
-// Entrata "stile dashboard" (transizione normale): le card entrano scaglionate con
-// slide+fade. Il `y` rispetta «Riduci animazioni» tramite il MotionConfig globale.
+// La pagina esterna aspetta i dati; solo dopo le card entrano a cascata. Il
+// wrapper usato dal masonry resta immobile, quindi il transform non ricalcola
+// le colonne durante la transizione.
 const contenitoreImpostazioni: Variants = {
   hidden: {},
-  visibile: { transition: { staggerChildren: 0.03, delayChildren: 0 } },
+  visibile: { transition: { staggerChildren: 0.03 } },
 };
 const elementoImpostazioni: Variants = {
   hidden: { opacity: 0, y: 18 },
-  visibile: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 360, damping: 28 } },
+  visibile: {
+    opacity: 1,
+    y: 0,
+    transition: { type: "spring", stiffness: 360, damping: 28 },
+  },
 };
 
 function Sezione({ titolo, descrizione, children, className, id, azione }: { titolo: string; descrizione?: string; children: React.ReactNode; className?: string; id?: string; azione?: React.ReactNode }) {
   return (
-    <motion.div variants={elementoImpostazioni} className={className} id={id}>
-      <Card withBorder radius="md" p="lg" style={{ alignSelf: "start" }}>
-        <Group justify="space-between" align="flex-start" wrap="nowrap">
-          <Box style={{ minWidth: 0 }}>
-            <Text fw={700} size="md">
-              {titolo}
-            </Text>
-            {descrizione && (
-              <Text size="xs" c="dimmed" mt={2}>
-                {descrizione}
+    <div className={className} id={id}>
+      <motion.div variants={elementoImpostazioni}>
+        <Card withBorder radius="md" p="lg" style={{ alignSelf: "start" }}>
+          <Group justify="space-between" align="flex-start" wrap="nowrap">
+            <Box style={{ minWidth: 0 }}>
+              <Text fw={700} size="md">
+                {titolo}
               </Text>
-            )}
-          </Box>
-          {azione}
-        </Group>
-        <Box mt="md">{children}</Box>
-      </Card>
-    </motion.div>
+              {descrizione && (
+                <Text size="xs" c="dimmed" mt={2}>
+                  {descrizione}
+                </Text>
+              )}
+            </Box>
+            {azione}
+          </Group>
+          <Box mt="md">{children}</Box>
+        </Card>
+      </motion.div>
+    </div>
+  );
+}
+
+function RigaImpostazione({ titolo, descrizione, children, mt }: {
+  titolo: string; descrizione: string; children: React.ReactNode; mt?: string | number;
+}) {
+  return (
+    <Group mt={mt} justify="space-between" align="center" wrap="nowrap" gap="md">
+      <Box style={{ minWidth: 0 }}>
+        <Text size="sm" fw={600}>{titolo}</Text>
+        <Text size="xs" c="dimmed">{descrizione}</Text>
+      </Box>
+      {children}
+    </Group>
   );
 }
 
@@ -198,10 +220,26 @@ function CestinoReset({
 }
 
 export function Impostazioni({ identity }: { identity: Identity }) {
+  const premium = usePremiumAccess();
   const { anno, ridurreAnimazioni, setRidurreAnimazioni, densitaTabelle, setDensitaTabelle, zoomUI, setZoomUI, ordineFinestra, setOrdineFinestra, cestinoGiorni, setCestinoGiorni, backupAuto, setBackupAuto, dashboardPeriodo, setDashboardPeriodo, filtriModo, setFiltriModo, hotkeyGlobale, setHotkeyGlobale, sogliaSolleciti, setSogliaSolleciti, giorniSollecitoPreventivi, setGiorniSollecitoPreventivi, anticipoPromemoria, setAnticipoPromemoria, balloonAttivo, setBalloonAttivo, notifichePrimoPiano, setNotifichePrimoPiano, suonoNotifica, setSuonoNotifica } = usePrefs();
-  const animazioneIngresso = useAnimationControls();
-  const ingressoAvviatoRef = useRef(false);
   const [resetAperto, setResetAperto] = useState(false);
+  const [comunicazioniPronte, setComunicazioniPronte] = useState(false);
+  const [documentiPronti, setDocumentiPronti] = useState(false);
+  const segnalaComunicazioniPronte = useCallback(
+    () => setComunicazioniPronte(true),
+    [],
+  );
+  const segnalaDocumentiPronti = useCallback(
+    () => setDocumentiPronti(true),
+    [],
+  );
+  // I due pannelli segnalano il completamento del proprio caricamento solo
+  // quando sono montati. Se Premium non è attivo, PremiumOnly non li monta:
+  // non dobbiamo quindi restare in attesa delle loro callback e lasciare la
+  // pagina invisibile dopo un ricaricamento.
+  const impostazioniPronte =
+    premium.loaded &&
+    (!premium.enabled || (comunicazioniPronte && documentiPronti));
   const [resetPassoIniziale, setResetPassoIniziale] = useState<
     "scelta" | "ottimizza"
   >("scelta");
@@ -210,14 +248,6 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   useEffect(() => {
     resetApertoRef.current = resetAperto;
   }, [resetAperto]);
-  useEffect(() => {
-    // L'entrata delle card appartiene al mount della pagina. Un cambio successivo di
-    // MotionConfig (es. «Riduci animazioni») non deve riprodurla come un falso refresh.
-    if (ingressoAvviatoRef.current) return;
-    ingressoAvviatoRef.current = true;
-    if (ridurreAnimazioni) animazioneIngresso.set("visibile");
-    else void animazioneIngresso.start("visibile");
-  }, [animazioneIngresso, ridurreAnimazioni]);
   // N° di produzione iniziale: impostazione CONDIVISA (modello dati), non più per-PC.
   const [numeroProduzioneBase, setNumeroProduzioneBase] = useState(1);
   useEffect(() => {
@@ -225,7 +255,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   }, []);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backuppando, setBackuppando] = useState(false);
-  const [lockStatus, setLockStatus] = useState<OperationLockStatus | null>(null);
+  const [lockStatus] = useOperationLockStatus(inTauri);
   const [autostart, setAutostart] = useState(false);
   const [shortcutRicercaDesktop, setShortcutRicercaDesktop] = useState(false);
   const [shortcutRicercaBusy, setShortcutRicercaBusy] = useState(false);
@@ -288,25 +318,6 @@ export function Impostazioni({ identity }: { identity: Identity }) {
       .catch(() => {});
     return () => {
       attivo = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!inTauri) return;
-    let attivo = true;
-    async function caricaLock() {
-      try {
-        const status = await api.operationLockStatus();
-        if (attivo) setLockStatus(status);
-      } catch {
-        if (attivo) setLockStatus(null);
-      }
-    }
-    void caricaLock();
-    const iv = window.setInterval(() => void caricaLock(), 10_000);
-    return () => {
-      attivo = false;
-      window.clearInterval(iv);
     };
   }, []);
 
@@ -722,13 +733,16 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   }, []);
 
   return (
-    <Pagina titolo="Impostazioni">
+    <Pagina
+      titolo="Impostazioni"
+      caricamento={!impostazioniPronte}
+    >
       <motion.div
         className="pt-impostazioni-masonry"
         style={{ maxWidth: 1100, marginLeft: "auto", marginRight: "auto" }}
         variants={contenitoreImpostazioni}
-        initial={ridurreAnimazioni ? "visibile" : "hidden"}
-        animate={animazioneIngresso}
+        initial="hidden"
+        animate={impostazioniPronte ? "visibile" : "hidden"}
       >
         <PremiumOnly>
           <Sezione
@@ -737,17 +751,14 @@ export function Impostazioni({ identity }: { identity: Identity }) {
             descrizione="Casella mittente e modelli condivisi."
           >
             <Stack gap="lg">
-              <ComunicazioniSettings />
-              <ConfigurazioneDocumentiSettings />
-              <Group justify="space-between" align="center" wrap="nowrap" gap="md">
-                <Box style={{ minWidth: 0 }}>
-                  <Text size="sm" fw={600}>
-                    Sollecita i preventivi
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    Attesa dopo l’ultimo invio riuscito prima di proporre il sollecito.
-                  </Text>
-                </Box>
+              <ComunicazioniSettings onReady={segnalaComunicazioniPronte} />
+              <ConfigurazioneDocumentiSettings
+                onReady={segnalaDocumentiPronti}
+              />
+              <RigaImpostazione
+                titolo="Sollecita i preventivi"
+                descrizione="Attesa dopo l’ultimo invio riuscito prima di proporre il sollecito."
+              >
                 <NumberInput
                   value={giorniSollecitoPreventivi}
                   onChange={(value) =>
@@ -762,7 +773,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
                   w={150}
                   style={{ flexShrink: 0 }}
                 />
-              </Group>
+              </RigaImpostazione>
             </Stack>
           </Sezione>
         </PremiumOnly>
@@ -780,15 +791,10 @@ export function Impostazioni({ identity }: { identity: Identity }) {
 
         <Sezione titolo="Notifiche" descrizione="Campanella, suoni e pop-up.">
           <Stack gap="md">
-            <Group justify="space-between" align="center" wrap="nowrap" gap="md">
-              <Box style={{ minWidth: 0 }}>
-                <Text size="sm" fw={600}>
-                  Sollecita i pagamenti
-                </Text>
-                <Text size="xs" c="dimmed">
-                  Quando mostrare un pagamento scaduto.
-                </Text>
-              </Box>
+            <RigaImpostazione
+              titolo="Sollecita i pagamenti"
+              descrizione="Quando mostrare un pagamento scaduto."
+            >
               <Select
                 data={[
                   { value: "0", label: "Dal giorno stesso" },
@@ -802,17 +808,12 @@ export function Impostazioni({ identity }: { identity: Identity }) {
                 w={180}
                 style={{ flexShrink: 0 }}
               />
-            </Group>
+            </RigaImpostazione>
 
-            <Group justify="space-between" align="center" wrap="nowrap" gap="md">
-              <Box style={{ minWidth: 0 }}>
-                <Text size="sm" fw={600}>
-                  Avviso anticipato promemoria
-                </Text>
-                <Text size="xs" c="dimmed">
-                  Giorni di anticipo proposti nei nuovi promemoria.
-                </Text>
-              </Box>
+            <RigaImpostazione
+              titolo="Avviso anticipato promemoria"
+              descrizione="Giorni di anticipo proposti nei nuovi promemoria."
+            >
               <NumberInput
                 value={anticipoPromemoria}
                 onChange={(v) => setAnticipoPromemoria(typeof v === "number" ? v : 0)}
@@ -823,7 +824,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
                 w={150}
                 style={{ flexShrink: 0 }}
               />
-            </Group>
+            </RigaImpostazione>
 
             <Switch
               checked={balloonAttivo}
@@ -893,15 +894,11 @@ export function Impostazioni({ identity }: { identity: Identity }) {
               </Text>
             </Alert>
           )}
-          <Group mt="md" justify="space-between" align="center" wrap="nowrap" gap="md">
-            <Box style={{ minWidth: 0 }}>
-              <Text size="sm" fw={600}>
-                Backup automatico
-              </Text>
-              <Text size="xs" c="dimmed">
-                Crea backup periodici in background.
-              </Text>
-            </Box>
+          <RigaImpostazione
+            titolo="Backup automatico"
+            descrizione="Crea backup periodici in background."
+            mt="md"
+          >
             <Select
               data={[
                 { value: "0", label: "Mai" },
@@ -919,7 +916,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
               w={150}
               style={{ flexShrink: 0 }}
             />
-          </Group>
+          </RigaImpostazione>
           <Box mt="md">
             <Group justify="space-between" mb="xs">
               <Text size="sm" fw={600}>
@@ -1013,64 +1010,50 @@ export function Impostazioni({ identity }: { identity: Identity }) {
               gap: 16,
             }}
           >
-            <Card
-              withBorder
-              radius="md"
-              p="md"
-              style={{ cursor: "pointer", transition: "border-color 0.2s, background-color 0.2s", background: "var(--mantine-color-body)" }}
-              component={motion.div}
-              whileHover={ridurreAnimazioni ? {} : { scale: 1.02, y: -4, boxShadow: "var(--mantine-shadow-md)" }}
-              whileTap={ridurreAnimazioni ? {} : { scale: 0.98 }}
-              onClick={() => setModalImportAperto(true)}
-            >
-              <Group gap="md" wrap="nowrap" align="flex-start">
-                <ThemeIcon size={44} radius="md" variant="light" color="blue">
-                  <IconDownload size={24} />
-                </ThemeIcon>
-                <Stack gap={4} style={{ minWidth: 0 }}>
-                  <Text fw={700} size="sm">Importa Clienti Storici</Text>
-                  <Text size="xs" c="dimmed">
-                    Importa dai vecchi Excel solo i clienti mancanti.
-                  </Text>
-                </Stack>
-              </Group>
-            </Card>
-
-            <Card
-              withBorder
-              radius="md"
-              p="md"
-              style={{ cursor: "pointer", transition: "border-color 0.2s, background-color 0.2s", background: "var(--mantine-color-body)" }}
-              component={motion.div}
-              whileHover={ridurreAnimazioni ? {} : { scale: 1.02, y: -4, boxShadow: "var(--mantine-shadow-md)" }}
-              whileTap={ridurreAnimazioni ? {} : { scale: 0.98 }}
-              onClick={() => setModalExportAperto(true)}
-            >
-              <Group gap="md" wrap="nowrap" align="flex-start">
-                <ThemeIcon size={44} radius="md" variant="light" color="teal">
-                  <IconUpload size={24} />
-                </ThemeIcon>
-                <Stack gap={4} style={{ minWidth: 0 }}>
-                  <Text fw={700} size="sm">Esporta per Aruba</Text>
-                  <Text size="xs" c="dimmed">
-                    Crea l'Excel Aruba per i nuovi clienti.
-                  </Text>
-                </Stack>
-              </Group>
-            </Card>
+            {[
+              {
+                colore: "blue",
+                icona: <IconDownload size={24} />,
+                titolo: "Importa Clienti Storici",
+                descrizione: "Importa dai vecchi Excel solo i clienti mancanti.",
+                onClick: () => setModalImportAperto(true),
+              },
+              {
+                colore: "teal",
+                icona: <IconUpload size={24} />,
+                titolo: "Esporta per Aruba",
+                descrizione: "Crea l'Excel Aruba per i nuovi clienti.",
+                onClick: () => setModalExportAperto(true),
+              },
+            ].map(({ colore, icona, titolo, descrizione, onClick }) => (
+              <Card
+                key={titolo}
+                withBorder
+                radius="md"
+                p="md"
+                style={{ cursor: "pointer", transition: "border-color 0.2s, background-color 0.2s", background: "var(--mantine-color-body)" }}
+                component={motion.div}
+                whileHover={ridurreAnimazioni ? {} : { scale: 1.02, y: -4, boxShadow: "var(--mantine-shadow-md)" }}
+                whileTap={ridurreAnimazioni ? {} : { scale: 0.98 }}
+                onClick={onClick}
+              >
+                <Group gap="md" wrap="nowrap" align="flex-start">
+                  <ThemeIcon size={44} radius="md" variant="light" color={colore}>{icona}</ThemeIcon>
+                  <Stack gap={4} style={{ minWidth: 0 }}>
+                    <Text fw={700} size="sm">{titolo}</Text>
+                    <Text size="xs" c="dimmed">{descrizione}</Text>
+                  </Stack>
+                </Group>
+              </Card>
+            ))}
           </Box>
         </Sezione>
 
         <Sezione titolo="Produzione" descrizione="Numerazione file Laboratorio.">
-          <Group justify="space-between" align="center" wrap="nowrap" gap="md">
-            <Box style={{ minWidth: 0 }}>
-              <Text size="sm" fw={600}>
-                N° di produzione iniziale
-              </Text>
-              <Text size="xs" c="dimmed">
-                Numero da cui partire. Poi continua da solo.
-              </Text>
-            </Box>
+          <RigaImpostazione
+            titolo="N° di produzione iniziale"
+            descrizione="Numero da cui partire. Poi continua da solo."
+          >
             <NumberInput
               min={1}
               value={numeroProduzioneBase}
@@ -1079,7 +1062,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
               w={120}
               style={{ flexShrink: 0 }}
             />
-          </Group>
+          </RigaImpostazione>
         </Sezione>
 
 

@@ -14,6 +14,7 @@ import { IconCalendar, IconFileSpreadsheet } from "@tabler/icons-react";
 import { api } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { VirtualFlow } from "../../ui/VirtualFlow";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { dataPrevistaDefault } from "./datiProduzione";
 import type { GruppoLotto } from "./tipiProduzione";
 
@@ -58,14 +59,13 @@ export function DataConsegnaPrevistaModal({
   onSave: (valori: Record<string, string>, target: DataConsegnaTarget) => Promise<void> | void;
   onContinueWithoutSave: (target: Extract<DataConsegnaTarget, { modo: "export" }>) => void;
 }) {
-  const [mostrato, setMostrato] = useState<DataConsegnaTarget | null>(target);
+  const [mostrato, clearMostrato] = useModalSnapshot(target);
   const [valori, setValori] = useState<Record<string, string>>({});
   const [comune, setComune] = useState(() => dataPrevistaDefault());
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     if (!target) return;
-    setMostrato(target);
     setValori(inizializzaDateConsegna(target));
     setComune(dataPrevistaDefault());
   }, [target]);
@@ -137,7 +137,7 @@ export function DataConsegnaPrevistaModal({
           <Text fw={700}>Data di consegna prevista</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && (
         <Box className="pt-modal-shell">

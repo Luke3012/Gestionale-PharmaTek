@@ -1,4 +1,4 @@
-// Suoni del gioco "Flappy Utente Demo" (FASE 7B). Bundlati con l'app (generati da
+// Suoni del gioco "Flappy Livio" (FASE 7B). Bundlati con l'app (generati da
 // scripts/gen-sounds.mjs in src/assets/sounds/game/) → offline, niente download.
 // Riprodotti dal webview con un piccolo pool di Audio per non tagliare i suoni
 // ravvicinati (es. salti in rapida successione).

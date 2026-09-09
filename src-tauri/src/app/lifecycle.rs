@@ -60,6 +60,16 @@ impl AppState {
             pending_document_cache: Mutex::new(HashSet::new()),
             document_cache_io: Mutex::new(()),
             communication_wake: CommunicationWake::default(),
+            communication_startup_held: Mutex::new({
+                #[cfg(test)]
+                {
+                    Some(HashSet::new())
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }),
         };
         // Marker e manifest possono arrivare prima dei file del payload. In quella
         // finestra la proiezione è intenzionalmente incompleta: non va usata per

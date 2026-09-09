@@ -23,7 +23,8 @@ import {
 } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
-import { api, type Campi, type ExtractedClient, type OperationLockStatus } from "../../lib/tauri";
+import { api, type Campi, type ExtractedClient } from "../../lib/tauri";
+import { useOperationLockStatus } from "../../lib/useOperationLockStatus";
 import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { usePrefs } from "../../lib/prefs";
@@ -288,7 +289,7 @@ export function ImportAnagraficheModal({
   const [scanProgress, setScanProgress] = useState(0);
   const [importProgress, setImportProgress] = useState(0);
   const [importError, setImportError] = useState<string | null>(null);
-  const [lockStatus, setLockStatus] = useState<OperationLockStatus | null>(null);
+  const [lockStatus, setLockStatus] = useOperationLockStatus(aperto);
 
   // Reset all on open
   useEffect(() => {
@@ -308,25 +309,6 @@ export function ImportAnagraficheModal({
       setFailedCount(0);
       setDedupResult(null);
     }
-  }, [aperto]);
-
-  useEffect(() => {
-    if (!aperto) return;
-    let attivo = true;
-    async function caricaLock() {
-      try {
-        const status = await api.operationLockStatus();
-        if (attivo) setLockStatus(status);
-      } catch {
-        if (attivo) setLockStatus(null);
-      }
-    }
-    void caricaLock();
-    const iv = window.setInterval(() => void caricaLock(), 10_000);
-    return () => {
-      attivo = false;
-      window.clearInterval(iv);
-    };
   }, [aperto]);
 
   // Aggiunge file Excel (multipli) auto-categorizzandoli

@@ -17,6 +17,8 @@ import { IconGift, IconInfoCircle } from "@tabler/icons-react";
 import { api, type OrdineDto, type RecordDto } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { oggiIso as oggi } from "../../lib/date";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 
 interface RigaSost {
   prodottoId: string;
@@ -35,14 +37,10 @@ export function SostituzioneModal({
   onClose: () => void;
   onCreato: () => void;
 }) {
-  const [mostrato, setMostrato] = useState<OrdineDto | null>(ordine);
+  const [mostrato, clearMostrato] = useModalSnapshot(ordine);
   const [righe, setRighe] = useState<RigaSost[]>([]);
   const [caricamento, setCaricamento] = useState(false);
   const [creando, setCreando] = useState(false);
-
-  useEffect(() => {
-    if (ordine) setMostrato(ordine);
-  }, [ordine]);
 
   useEffect(() => {
     if (!ordine) return;
@@ -124,7 +122,7 @@ export function SostituzioneModal({
           <Text fw={700}>Sostituzione prodotto {mostrato ? `— Ordine ${mostrato.numero}` : ""}</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 200, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 200, onExited: clearMostrato }}
     >
       {mostrato && (
         <Box className="pt-modal-shell">
@@ -189,16 +187,14 @@ export function SostituzioneModal({
             </Stack>
           </Box>
 
-          <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-            <div className="pt-modal-actions">
+          <FooterAzioniModale>
               <Button variant="default" onClick={onClose} disabled={creando}>
                 Annulla
               </Button>
               <Button color="accent" leftSection={<IconGift size={16} />} onClick={crea} loading={creando} disabled={!alcuni}>
                 Crea ordine omaggio
               </Button>
-            </div>
-          </div>
+          </FooterAzioniModale>
         </Box>
       )}
     </Modal>

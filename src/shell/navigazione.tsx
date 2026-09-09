@@ -4,6 +4,7 @@
 // navigare la rotta e applicare un eventuale filtro (deep-link).
 import { createContext, useContext } from "react";
 import { inTauri } from "../lib/tauri";
+import { inviaEventoConConferma, portaFinestraInPrimoPiano } from "../lib/finestreTauri";
 
 /** Destinazione dentro la finestra principale + eventuale stato da applicare. */
 export interface DeepLink {
@@ -96,33 +97,17 @@ export async function vaiAllaPrincipale(link: DeepLink): Promise<void> {
   // Prima risvegliamo la main, poi consegniamo il deep-link. L'ack evita che una
   // finestra chiamante si chiuda mentre WebView2 e' ancora sospeso o la Shell non
   // ha ancora registrato il listener.
-  await main.show();
-  await main.unminimize();
-  await main.setFocus();
+  await portaFinestraInPrimoPiano(main);
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const ack = `pt:naviga-ack:${id}`;
-  let conferma!: () => void;
-  const ricevuta = new Promise<void>((resolve) => {
-    conferma = resolve;
+  await inviaEventoConConferma({
+    ack,
+    ascolta: (evento, callback) => listen(evento, callback),
+    invia: () => emitTo("main", EVENTO_NAVIGA, { link, ack } satisfies RichiestaNavigazione),
+    timeoutMs: TIMEOUT_CONSEGNA_NAVIGAZIONE_MS,
+    messaggioTimeout: "La finestra principale non ha confermato la navigazione.",
   });
-  const off = await listen(ack, conferma);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await emitTo("main", EVENTO_NAVIGA, { link, ack } satisfies RichiestaNavigazione);
-    await Promise.race([
-      ricevuta,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("La finestra principale non ha confermato la navigazione.")),
-          TIMEOUT_CONSEGNA_NAVIGAZIONE_MS
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    off();
-  }
 }
 
 /** La finestra principale registra l'ascolto delle richieste di navigazione. */
@@ -236,6 +221,13 @@ export async function mostraSpotlight(): Promise<void> {
   }
   await spot.show();
   await spot.setFocus();
+}
+
+/** Consegna la richiesta della hotkey al coordinatore di avvio della main. */
+export async function richiediSpotlightAllaMain(): Promise<void> {
+  if (!inTauri) return;
+  const { emitTo } = await import("@tauri-apps/api/event");
+  await emitTo("main", "pt:apri-spotlight");
 }
 
 /** Nasconde la finestra corrente (Spotlight: resta viva e pronta al prossimo uso). */

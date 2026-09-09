@@ -5,6 +5,20 @@ export interface PopoverVerticalLayout {
   maxHeight: string;
 }
 
+/** Aggiorna un layout ancorato all'apertura e a ogni ridimensionamento della finestra. */
+export function useAggiornaLayoutPopover(aperto: boolean, aggiornaLayout: () => void) {
+  useLayoutEffect(() => {
+    if (!aperto) return;
+    aggiornaLayout();
+    const frame = window.requestAnimationFrame(aggiornaLayout);
+    window.addEventListener("resize", aggiornaLayout);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", aggiornaLayout);
+    };
+  }, [aperto, aggiornaLayout]);
+}
+
 export function calcolaPopoverVerticalLayout(
   rect: Pick<DOMRect, "top" | "bottom">,
   viewportHeight: number
@@ -37,16 +51,7 @@ export function usePopoverVerticalLayout(aperto: boolean) {
     setLayout(calcolaPopoverVerticalLayout(rect, viewportHeight));
   }, []);
 
-  useLayoutEffect(() => {
-    if (!aperto) return;
-    aggiornaLayout();
-    const frame = window.requestAnimationFrame(aggiornaLayout);
-    window.addEventListener("resize", aggiornaLayout);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", aggiornaLayout);
-    };
-  }, [aperto, aggiornaLayout]);
+  useAggiornaLayoutPopover(aperto, aggiornaLayout);
 
   return { targetRef, layout };
 }

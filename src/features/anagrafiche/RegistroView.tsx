@@ -1,7 +1,6 @@
 // Vista generica di un registro anagrafico: tabella + form (modale) di CRUD.
 import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ActionIcon,
   Badge,
   Box,
   Button,
@@ -14,7 +13,6 @@ import {
   ThemeIcon,
 } from "@mantine/core";
 import {
-  IconDotsVertical,
   IconHistory,
   IconMessage,
   IconPencil,
@@ -48,8 +46,10 @@ import { dur, durataSwitchTabelleMs, useAnimazioniRidotte } from "../../ui/motio
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { canRunPremiumAction } from "../../premium/PremiumAction";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
-import { apriComunicazione } from "../comunicazioni/apriComunicazione";
+import { apriComunicazione, variabiliNomeDestinatario } from "../comunicazioni/apriComunicazione";
 import { AnagraficaEditorModal } from "./AnagraficaEditorModal";
+import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
+import { MenuAzioniRiga } from "../../ui/MenuAzioniRiga";
 
 const ORDINE_CATEGORIE: Record<string, number> = {
   "immunoterapia": 1,
@@ -279,8 +279,7 @@ export function RegistroView({
       email: String(rec.data.email ?? ""),
       telefono: String(rec.data.telefono ?? ""),
       variabili: {
-        nome_cliente: nome,
-        ragione_sociale: nome,
+        ...variabiliNomeDestinatario(nome),
         nome_medico: registro.entity === "medico" ? nome : "",
       },
     });
@@ -489,24 +488,9 @@ export function RegistroView({
       textAlign: "center",
       render: (r) =>
         bloccato?.(r) ? null : (
-          <Menu position="bottom-end" withArrow>
-            <Menu.Target>
-              <ActionIcon
-                variant="subtle"
-                color="gray"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  origineMenuAzioniRef.current = catturaOrigineCestino(
-                    e.currentTarget,
-                  );
-                }}
-              >
-                <IconDotsVertical size={16} />
-              </ActionIcon>
-            </Menu.Target>
-            {/* stopPropagation: i click delle voci risalgono per l'albero React fino
-                all'`onRowClick` (aprirebbe la scheda anagrafica) anche col dropdown in portal. */}
-            <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+          <MenuAzioniRiga onTargetClick={(target) => {
+            origineMenuAzioniRef.current = catturaOrigineCestino(target);
+          }}>
               <Menu.Item leftSection={<IconPencil size={15} />} onClick={() => apriModifica(r)}>
                 Modifica
               </Menu.Item>
@@ -534,8 +518,7 @@ export function RegistroView({
                   Elimina
                 </Menu.Item>
               )}
-            </Menu.Dropdown>
-          </Menu>
+          </MenuAzioniRiga>
         ),
     };
     return [...dati, azioni];
@@ -549,25 +532,27 @@ export function RegistroView({
         ? 1
         : 0;
   const filtriAnagrafiche = useMemo(() => {
+    const filtri = [];
+    if (registro.entity === "cliente" || registro.entity === "medico") {
+      filtri.push({
+        chiave: "agenti",
+        larghezza: 190,
+        nodo: (
+          <MultiSelect
+            label="Agenti"
+            placeholder={filtroAgenti.length ? "" : "Tutti"}
+            data={opzioniAgenti}
+            value={filtroAgenti}
+            onChange={setFiltroAgenti}
+            clearable
+            searchable
+            comboboxProps={{ withinPortal: false }}
+          />
+        ),
+      });
+    }
     if (registro.entity === "cliente") {
-      return [
-        {
-          chiave: "agenti",
-          larghezza: 190,
-          nodo: (
-            <MultiSelect
-              label="Agenti"
-              placeholder={filtroAgenti.length ? "" : "Tutti"}
-              data={opzioniAgenti}
-              value={filtroAgenti}
-              onChange={setFiltroAgenti}
-              clearable
-              searchable
-              comboboxProps={{ withinPortal: false }}
-            />
-          ),
-        },
-        {
+      filtri.push({
           chiave: "medici",
           larghezza: 190,
           nodo: (
@@ -582,30 +567,9 @@ export function RegistroView({
               comboboxProps={{ withinPortal: false }}
             />
           ),
-        },
-      ];
+      });
     }
-    if (registro.entity === "medico") {
-      return [
-        {
-          chiave: "agenti",
-          larghezza: 190,
-          nodo: (
-            <MultiSelect
-              label="Agenti"
-              placeholder={filtroAgenti.length ? "" : "Tutti"}
-              data={opzioniAgenti}
-              value={filtroAgenti}
-              onChange={setFiltroAgenti}
-              clearable
-              searchable
-              comboboxProps={{ withinPortal: false }}
-            />
-          ),
-        },
-      ];
-    }
-    return [];
+    return filtri;
   }, [filtroAgenti, filtroMedici, opzioniAgenti, opzioniMedici, registro.entity]);
 
   const tabellaAnagrafiche = useMemo(() => {
@@ -630,10 +594,8 @@ export function RegistroView({
         }}
         onRowContextMenu={({ record, event }) => {
           if (bloccato?.(record)) return;
-          event.preventDefault();
           setContextMenu({
-            x: event.clientX,
-            y: event.clientY,
+            ...puntoDaEventoContextMenu(event),
             record,
           });
         }}
@@ -749,25 +711,7 @@ export function RegistroView({
       )}
 
       {contextMenu && (
-        <Menu
-          opened={!!contextMenu}
-          onClose={() => setContextMenu(null)}
-          position="bottom-start"
-          offset={0}
-        >
-          <Menu.Target>
-            <div
-              style={{
-                position: "fixed",
-                left: contextMenu.x,
-                top: contextMenu.y,
-                width: 1,
-                height: 1,
-                pointerEvents: "none",
-              }}
-            />
-          </Menu.Target>
-          <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+        <ContextMenuPuntuale punto={contextMenu} onClose={() => setContextMenu(null)}>
             <Menu.Item leftSection={<IconPencil size={15} />} onClick={() => { apriModifica(contextMenu.record); setContextMenu(null); }}>
               Modifica
             </Menu.Item>
@@ -795,8 +739,7 @@ export function RegistroView({
                 Elimina
               </Menu.Item>
             )}
-          </Menu.Dropdown>
-        </Menu>
+        </ContextMenuPuntuale>
       )}
     </Stack>
   );

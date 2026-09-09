@@ -119,6 +119,18 @@ function nomeDi(data: Record<string, unknown>): string {
   return (data.nome as string) || "(senza nome)";
 }
 
+const CAMPI_RECAPITO_SPEDIZIONE: Campo[] = [
+  { key: "indirizzo", label: "Indirizzo", tipo: "testo" },
+  { key: "citta", label: "Città", tipo: "testo", half: true },
+  { key: "prov", label: "Prov.", tipo: "prov", half: true },
+  { key: "cap", label: "CAP", tipo: "cap", half: true, autoFill: "cap" },
+  { key: "regione", label: "Regione", tipo: "testo", half: true },
+  { key: "telefono", label: "Telefono", tipo: "tel", half: true },
+  { key: "email", label: "Email", tipo: "email", half: true },
+  { key: "cf", label: "Codice fiscale / P.IVA", tipo: "cf", azione: "calcola-cf" },
+  { key: "note_spedizione", label: "Note di spedizione", tipo: "textarea" },
+];
+
 export const REGISTRI: Registro[] = [
   {
     entity: "agente",
@@ -189,15 +201,7 @@ export const REGISTRI: Registro[] = [
         tipo: "sezione",
         placeholder: "Usato quando il medico è anche destinatario (es. Diagnostica).",
       },
-      { key: "indirizzo", label: "Indirizzo", tipo: "testo" },
-      { key: "citta", label: "Città", tipo: "testo", half: true },
-      { key: "prov", label: "Prov.", tipo: "prov", half: true },
-      { key: "cap", label: "CAP", tipo: "cap", half: true, autoFill: "cap" },
-      { key: "regione", label: "Regione", tipo: "testo", half: true },
-      { key: "telefono", label: "Telefono", tipo: "tel", half: true },
-      { key: "email", label: "Email", tipo: "email", half: true },
-      { key: "cf", label: "Codice fiscale / P.IVA", tipo: "cf", azione: "calcola-cf" },
-      { key: "note_spedizione", label: "Note di spedizione", tipo: "textarea" },
+      ...CAMPI_RECAPITO_SPEDIZIONE,
     ],
     colonne: [
       { key: "nome", label: "Nome" },
@@ -215,15 +219,7 @@ export const REGISTRI: Registro[] = [
     titolo: nomeDi,
     campi: [
       { key: "nome", label: "Nome / Ragione sociale", tipo: "testo", required: true },
-      { key: "indirizzo", label: "Indirizzo", tipo: "testo" },
-      { key: "citta", label: "Città", tipo: "testo", half: true },
-      { key: "prov", label: "Prov.", tipo: "prov", half: true },
-      { key: "cap", label: "CAP", tipo: "cap", half: true, autoFill: "cap" },
-      { key: "regione", label: "Regione", tipo: "testo", half: true },
-      { key: "telefono", label: "Telefono", tipo: "tel", half: true },
-      { key: "email", label: "Email", tipo: "email", half: true },
-      { key: "cf", label: "Codice fiscale / P.IVA", tipo: "cf", azione: "calcola-cf" },
-      { key: "note_spedizione", label: "Note di spedizione", tipo: "textarea" },
+      ...CAMPI_RECAPITO_SPEDIZIONE,
     ],
     colonne: [
       { key: "nome", label: "Nome" },
@@ -313,6 +309,9 @@ export const REGISTRI: Registro[] = [
   },
 ];
 
+export const REGISTRO_CLIENTE = REGISTRI.find((registro) => registro.entity === "cliente")!;
+export const REGISTRO_MEDICO = REGISTRI.find((registro) => registro.entity === "medico")!;
+
 // ---- Validazione ----
 
 export function validaCampo(campo: Campo, valore: unknown): string | null {
@@ -343,4 +342,16 @@ export function validaCampo(campo: Campo, valore: unknown): string | null {
     default:
       return null;
   }
+}
+
+export function validaCampi(
+  campi: readonly Campo[],
+  valori: Readonly<Record<string, unknown>>
+): Record<string, string> {
+  const errori: Record<string, string> = {};
+  for (const campo of campi) {
+    const errore = validaCampo(campo, valori[campo.key]);
+    if (errore) errori[campo.key] = errore;
+  }
+  return errori;
 }

@@ -39,7 +39,7 @@ impl Default for ConfigurazioneDocumentiCampi {
             localita: "".into(),
             telefono: "".into(),
             email: "".into(),
-            sito: String::new(),
+            sito: "example.invalid".into(),
             validita_default_giorni: VALIDITA_DEFAULT_GIORNI,
             condizioni_default: String::new(),
         }
@@ -473,7 +473,7 @@ fn righe_dto(
                 paziente: str_field(&riga.data, "paziente"),
                 tipo_test: str_field(&riga.data, "tipo_test"),
                 ml: str_field(&riga.data, "ml"),
-                codice: str_field(&riga.data, "codice_fornitore"),
+                codice: str_field(&riga.data, "codice_laboratorio"),
                 formulazione: str_field(&riga.data, "formulazione"),
                 posologia: str_field(&riga.data, "posologia"),
                 numero: str_field(&riga.data, "numero"),
@@ -1533,7 +1533,7 @@ impl AppState {
                             ("paziente", json!(input_riga.paziente.trim())),
                             ("tipo_test", json!(input_riga.tipo_test.trim())),
                             ("ml", json!(input_riga.ml.trim())),
-                            ("codice_fornitore", json!(input_riga.codice.trim())),
+                            ("codice_laboratorio", json!(input_riga.codice.trim())),
                             ("formulazione", json!(input_riga.formulazione.trim())),
                             ("posologia", json!(input_riga.posologia.trim())),
                             ("numero", json!(input_riga.numero.trim())),
@@ -2024,14 +2024,13 @@ mod tests {
         let iniziale = state.configurazione_documenti_get().unwrap();
         assert!(!iniziale.esiste);
         assert_eq!(iniziale.campi.denominazione, "PharmaTek");
-        assert_eq!(iniziale.campi.sito, "");
+        assert_eq!(iniziale.campi.sito, "example.invalid");
         assert_eq!(iniziale.campi.validita_default_giorni, 30);
         let salvata = state
             .configurazione_documenti_salva(ConfigurazioneDocumentiSalvaInput {
                 revision: String::new(),
                 campi: ConfigurazioneDocumentiCampi {
                     telefono: "02 123456".into(),
-                    email: ["documenti", "example.invalid"].join("@"),
                     ..iniziale.campi
                 },
             })
@@ -2050,7 +2049,7 @@ mod tests {
     fn gate_premium_protegge_letture_e_crud_generico() {
         let (_app, _data, state) = stato_test(false);
         let ordine = crea_ordine(&state);
-        assert!(state.preventivo_get(&ordine.id).is_ok());
+        assert!(state.preventivo_get(&ordine.id).is_err());
         assert!(state.records_list("preventivo").is_err());
     }
 

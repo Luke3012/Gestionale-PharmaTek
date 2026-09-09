@@ -16,7 +16,7 @@
 //! serve all'overlay per agire (tipo, urgenza, collegamento da aprire, id promemoria,
 //! mittente del messaggio 6E per la risposta inline).
 //!
-//! **De-dup UNIFICATA (mai due volte).** Il suono/balloon è di competenza *esclusiva*
+//! **De-dup UNIFICATA (mai due volte).** Il suono/pop-up è di competenza *esclusiva*
 //! del Rust: il webview NON suona più (vedi `features/notifiche/useNotifiche.ts`). Con
 //! un solo "suonatore" il doppio avviso è impossibile per costruzione. La sorgente
 //! "già avvisato" vive qui (`Stato::avvisate`), allineata agli stessi id stabili del
@@ -49,8 +49,9 @@ use crate::data_events::emetti_entita_modificate;
 
 const GIORNO_MS: i64 = 86_400_000;
 const RIVALIDAZIONE_SUGGERIMENTO_MS: i64 = 60_000;
+const MAX_NOTIFICHE_OVERLAY_IN_ATTESA: usize = 99;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct PreferenzeSuggerimenti {
     tipi_abilitati: HashSet<String>,
     notifiche_attive: bool,
@@ -99,7 +100,7 @@ pub struct NotificheConfigInput {
     suggerimenti: SuggerimentiPreferenzeInput,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Cfg {
     user_id: String,
     /// Id del suono (vedi `features/notifiche/suoni`); `"nessuno"` = muto.
@@ -157,13 +158,18 @@ struct Stato {
     /// con `letta:false`, scritto quando es. si modifica un promemoria): se cresce, l'id
     /// torna da avvisare **una sola volta** per riattivazione (niente loop).
     reatt_viste: HashMap<String, i64>,
+    /// Ultimo avviso (o invio originario, durante la semina) per i messaggi
+    /// ancora non letti. Dopo un giorno consente un nuovo avviso con lo stesso
+    /// id applicativo, senza creare duplicati nella campanella.
+    messaggi_avvisati_ms: HashMap<String, i64>,
     seminato: bool,
 }
 
 impl Stato {
     /// Diff de-dup: dato l'insieme **corrente** di notifiche non lette, ritorna quelle
     /// **nuove** da avvisare (e le marca come avvisate), oppure `None` al primo giro
-    /// (semina: marca tutto l'arretrato senza avvisare). È pura → testabile: garantisce
+    /// (semina silenziosa, salvo messaggi non letti da almeno un giorno). È pura e
+    /// testabile: garantisce
     /// che ogni notifica nuova esca **una volta** e che la seconda/terza escano comunque
     /// (regressione storica «si ferma dopo la prima»).
     fn nuove_da_avvisare(
@@ -171,20 +177,50 @@ impl Stato {
         correnti: Vec<Notif>,
         reatt: &HashMap<String, i64>,
     ) -> Option<Vec<Notif>> {
+        self.nuove_da_avvisare_a(correnti, reatt, ora_ms())
+    }
+
+    fn nuove_da_avvisare_a(
+        &mut self,
+        correnti: Vec<Notif>,
+        reatt: &HashMap<String, i64>,
+        ora: i64,
+    ) -> Option<Vec<Notif>> {
         if !self.seminato {
+            let mut promemoria_messaggi = Vec::new();
             for n in &correnti {
                 self.avvisate.insert(n.id.clone());
+                if n.tipo == "messaggio" {
+                    let riferimento = n.origine_ms.max(0);
+                    if riferimento > 0 && ora.saturating_sub(riferimento) >= GIORNO_MS {
+                        promemoria_messaggi.push(n.clone());
+                        self.messaggi_avvisati_ms.insert(n.id.clone(), ora);
+                    } else {
+                        self.messaggi_avvisati_ms.insert(n.id.clone(), riferimento);
+                    }
+                }
             }
             // Memorizza le riattivazioni già presenti, così non ri-suonano alla prima scansione.
             for (id, ts) in reatt {
                 self.reatt_viste.insert(id.clone(), *ts);
             }
             self.seminato = true;
-            return None;
+            return if promemoria_messaggi.is_empty() {
+                None
+            } else {
+                Some(promemoria_messaggi)
+            };
         }
         let correnti_ids: HashSet<String> = correnti.iter().map(|n| n.id.clone()).collect();
+        let messaggi_correnti: HashSet<String> = correnti
+            .iter()
+            .filter(|n| n.tipo == "messaggio")
+            .map(|n| n.id.clone())
+            .collect();
         self.avvisate.retain(|id| correnti_ids.contains(id));
         self.reatt_viste.retain(|id, _| reatt.contains_key(id));
+        self.messaggi_avvisati_ms
+            .retain(|id, _| messaggi_correnti.contains(id));
         // Riattivazioni: quando si **modifica** un promemoria, il suo stato di lettura viene
         // azzerato (record `notifica_letta` con `letta:false`, ts aggiornato). Se quel ts è
         // più recente dell'ultimo trattato, l'id torna «da avvisare» — UNA sola volta per
@@ -196,12 +232,24 @@ impl Stato {
                 self.reatt_viste.insert(id.clone(), *ts);
             }
         }
+        for notifica in correnti.iter().filter(|n| n.tipo == "messaggio") {
+            let ultimo = self
+                .messaggi_avvisati_ms
+                .entry(notifica.id.clone())
+                .or_insert(notifica.origine_ms.max(0));
+            if *ultimo > 0 && ora.saturating_sub(*ultimo) >= GIORNO_MS {
+                self.avvisate.remove(&notifica.id);
+            }
+        }
         let nuove: Vec<Notif> = correnti
             .into_iter()
             .filter(|n| !self.avvisate.contains(&n.id))
             .collect();
         for n in &nuove {
             self.avvisate.insert(n.id.clone());
+            if n.tipo == "messaggio" {
+                self.messaggi_avvisati_ms.insert(n.id.clone(), ora);
+            }
         }
         Some(nuove)
     }
@@ -227,6 +275,11 @@ struct Notif {
     promemoria_id: String,
     /// Se è un messaggio 6E, l'id del mittente (per la risposta inline dall'overlay).
     mittente_id: String,
+    /// Timestamp dell'evento originario, usato solo dal de-dup nativo.
+    #[serde(skip_serializing)]
+    origine_ms: i64,
+    /// La riattivazione manuale dalla Dashboard richiede la card completa, non il riepilogo.
+    mostra_completa: bool,
     /// Deep-link FASE 14; assente per le notifiche collegate a un record.
     suggerimento_collegamento: Option<SuggerimentoCollegamentoDto>,
 }
@@ -261,6 +314,38 @@ fn ultimi_stati_lettura(
         .collect()
 }
 
+/// Riattivazioni create esplicitamente dal comando «Notifica...» della Dashboard.
+/// Consideriamo soltanto il record vincente con le stesse regole dello stato letto,
+/// così una lettura successiva o una normale riattivazione cancella correttamente il flag.
+fn ultime_riattivazioni_dashboard(
+    recs: Vec<crate::app::RecordDto>,
+    user_id: &str,
+) -> HashMap<String, i64> {
+    let mut ultimi: HashMap<String, (i64, String, bool, bool)> = HashMap::new();
+    for r in recs {
+        if r.data.get("user_id").and_then(|v| v.as_str()) != Some(user_id) {
+            continue;
+        }
+        let Some(id) = r.data.get("notifica_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let ts = r.data.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let letta = r.data.get("letta").and_then(|v| v.as_bool()) != Some(false);
+        let dashboard =
+            r.data.get("origine_riattivazione").and_then(|v| v.as_str()) == Some("dashboard");
+        if let Some((precedente_ts, precedente_record, _, _)) = ultimi.get(id) {
+            if *precedente_ts > ts || (*precedente_ts == ts && precedente_record > &r.id) {
+                continue;
+            }
+        }
+        ultimi.insert(id.to_string(), (ts, r.id, letta, dashboard));
+    }
+    ultimi
+        .into_iter()
+        .filter_map(|(id, (ts, _, letta, dashboard))| (!letta && dashboard).then_some((id, ts)))
+        .collect()
+}
+
 pub struct Notificatore {
     app: AppHandle,
     cfg: Mutex<Option<Cfg>>,
@@ -273,6 +358,13 @@ pub struct Notificatore {
     /// È condiviso con il job sul main thread che mostra la finestra prima di
     /// emettere gli eventi.
     overlay_ready: Arc<AtomicBool>,
+    /// Notifiche rilevate mentre il renderer custom non era ancora pronto. Restano
+    /// locali e vengono consegnate all'handshake successivo, senza ricadere sui
+    /// balloon nativi del sistema operativo.
+    overlay_in_attesa: Arc<Mutex<Vec<Notif>>>,
+    /// Evita di ripetere pulizia/evento a ogni scansione finché l'app resta in uno
+    /// stato autorevolmente non operativo (cartella, identità, restore).
+    avvisi_sospesi: AtomicBool,
     /// La finestra principale è in primo piano (a fuoco)? Aggiornato dai **window event**
     /// sul thread principale (vedi `lib.rs`), così il thread di fondo NON interroga lo
     /// stato finestra cross-thread (operazione fragile su Windows, causa storica di
@@ -290,6 +382,8 @@ impl Notificatore {
             suggerimenti_cache: Mutex::new(CacheSuggerimenti::default()),
             scan_lock: Mutex::new(()),
             overlay_ready: Arc::new(AtomicBool::new(false)),
+            overlay_in_attesa: Arc::new(Mutex::new(Vec::new())),
+            avvisi_sospesi: AtomicBool::new(true),
             main_focused: AtomicBool::new(false),
         }
     }
@@ -307,11 +401,30 @@ impl Notificatore {
     /// che WebView2 abbia già caricato React e registrato i listener.
     pub fn set_overlay_ready(&self, ready: bool) {
         self.overlay_ready.store(ready, Ordering::Release);
+        if !ready {
+            return;
+        }
+        if let Some(cfg) = self.cfg.lock().expect("cfg poisoned").clone() {
+            if !self.sessione_app_disponibile(&cfg) {
+                self.sospendi_avvisi_per_app_non_disponibile();
+                return;
+            }
+        }
+        let in_attesa = {
+            let mut coda = self
+                .overlay_in_attesa
+                .lock()
+                .expect("overlay queue poisoned");
+            std::mem::take(&mut *coda)
+        };
+        if !in_attesa.is_empty() {
+            self.consegna_overlay(None, in_attesa);
+        }
     }
 
     /// Riceve/aggiorna la configurazione dal webview e fa subito una scansione.
     pub fn configura(&self, input: NotificheConfigInput) {
-        *self.cfg.lock().expect("cfg poisoned") = Some(Cfg {
+        let prossima = Cfg {
             user_id: input.user_id,
             suono: input.suono,
             popup: input.balloon,
@@ -319,19 +432,36 @@ impl Notificatore {
             soglia: input.soglia,
             onboarding_time: input.onboarding_time,
             suggerimenti: normalizza_preferenze_suggerimenti(input.suggerimenti),
-        });
+        };
+        let mut cfg = self.cfg.lock().expect("cfg poisoned");
+        if cfg.as_ref() == Some(&prossima) {
+            return;
+        }
+        *cfg = Some(prossima);
+        drop(cfg);
         self.scansiona();
     }
 
     /// Scollega il notificatore dall'utente precedente e azzera la deduplicazione.
     /// Al termine del nuovo onboarding `notifiche_config` lo configura nuovamente.
-    pub fn disattiva_sessione(&self) {
-        *self.cfg.lock().expect("cfg poisoned") = None;
+    pub fn disattiva_sessione(&self) -> bool {
+        let aveva_config = self.cfg.lock().expect("cfg poisoned").take().is_some();
         *self.stato.lock().expect("stato poisoned") = Stato::default();
         *self
             .suggerimenti_cache
             .lock()
             .expect("suggerimenti cache poisoned") = CacheSuggerimenti::default();
+        let aveva_coda = {
+            let mut coda = self
+                .overlay_in_attesa
+                .lock()
+                .expect("overlay queue poisoned");
+            let presente = !coda.is_empty();
+            coda.clear();
+            presente
+        };
+        let era_attiva = !self.avvisi_sospesi.swap(true, Ordering::AcqRel);
+        aveva_config || aveva_coda || era_attiva
     }
 
     pub fn invalida_suggerimenti(&self, entities: &[String]) {
@@ -378,7 +508,9 @@ impl Notificatore {
         }
         let mut bundle = cache.bundle.clone()?;
         if let Some(duplicato) = cache.duplicato_locale.clone() {
-            if !bundle.nascosti.contains(&duplicato.id) {
+            if !bundle.nascosti.contains(&duplicato.id)
+                && !bundle.tipi_in_pausa.contains(&duplicato.tipo)
+            {
                 bundle.suggerimenti.push(duplicato);
                 bundle.suggerimenti.sort_by(|a, b| {
                     b.priorita
@@ -404,7 +536,7 @@ impl Notificatore {
         &self,
         state: &AppState,
         suggerimento: Option<SuggerimentoDto>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         crate::premium::ensure_access(state)?;
         if let Some(ref voce) = suggerimento {
             if voce.tipo != "duplicati"
@@ -420,12 +552,15 @@ impl Notificatore {
             .suggerimenti_cache
             .lock()
             .expect("suggerimenti cache poisoned");
+        if cache.duplicato_locale == suggerimento {
+            return Ok(false);
+        }
         let nuovo_id = suggerimento.as_ref().map(|voce| voce.id.as_str());
         cache.rilevati_ms.retain(|id, _| {
             !id.starts_with("s14:duplicati:") || nuovo_id.is_some_and(|corrente| corrente == id)
         });
         cache.duplicato_locale = suggerimento;
-        Ok(())
+        Ok(true)
     }
 
     pub fn suggerimenti_dashboard_lista(&self) -> Result<SuggerimentiBundleDto, String> {
@@ -510,16 +645,6 @@ impl Notificatore {
             Some(c) => c,
             None => return, // il webview non ha ancora inviato la config
         };
-        // Motore aperto e onboarded? Se no, non seminare (lo faremo quando ci saranno dati).
-        let onboarded = self
-            .app
-            .try_state::<AppState>()
-            .map(|s| s.whoami().is_some())
-            .unwrap_or(false);
-        if !onboarded {
-            return;
-        }
-
         // La main nascosta nella tray non esegue il polling JS e WebView2 può anche
         // perdere gli eventi del file-watch. Prima di derivare le notifiche facciamo
         // quindi un ingest incrementale nativo: è idempotente e mantiene aggiornati
@@ -545,21 +670,26 @@ impl Notificatore {
                     }
                     Err(_) => {}
                 }
-
-                // La sync può aver ricevuto la rimozione dell'utente configurato: non
-                // generare notifiche con una sessione che non è più valida.
-                if state.whoami().is_none() {
-                    return;
-                }
             }
         }
 
+        // Verifica autorevole nel core, non nel WebView: continua a funzionare con
+        // main sospesa/nascosta e blocca gli avvisi se cartella, identità o restore
+        // rendono indisponibile la home. Il confronto utente evita che una vecchia
+        // configurazione sopravviva alla revoca o a un cambio profilo.
+        if !self.sessione_app_disponibile(&cfg) {
+            self.sospendi_avvisi_per_app_non_disponibile();
+            return;
+        }
+        self.avvisi_sospesi.store(false, Ordering::Release);
+
         let correnti = self.deriva(&cfg);
         let reatt = self.reattivazioni(&cfg.user_id);
+        let reatt_dashboard = self.riattivazioni_dashboard(&cfg.user_id);
 
         // Diff + marcatura ATOMICI (sotto un solo lock): garantisce che due trigger
         // concorrenti (timer + webview) non avvisino mai due volte la stessa notifica.
-        let nuove = match self
+        let mut nuove = match self
             .stato
             .lock()
             .expect("stato poisoned")
@@ -574,7 +704,39 @@ impl Notificatore {
         if nuove.is_empty() {
             return;
         }
+        for notifica in &mut nuove {
+            notifica.mostra_completa = reatt_dashboard.get(&notifica.id) == reatt.get(&notifica.id);
+        }
         self.avvisa(&cfg, &nuove);
+    }
+
+    fn sessione_app_disponibile(&self, cfg: &Cfg) -> bool {
+        let Some(state) = self.app.try_state::<AppState>() else {
+            return false;
+        };
+        let boot = state.bootstrap();
+        boot.onboarded
+            && boot.data_dir_status == "ok"
+            && !boot.reconnect_required
+            && boot.restore_status == "none"
+            && boot
+                .identity
+                .as_ref()
+                .map(|identity| identity.user_id.as_str())
+                == Some(cfg.user_id.as_str())
+    }
+
+    fn sospendi_avvisi_per_app_non_disponibile(&self) {
+        self.overlay_in_attesa
+            .lock()
+            .expect("overlay queue poisoned")
+            .clear();
+        if self.avvisi_sospesi.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self
+            .app
+            .emit_to("overlay", "pt:overlay-pulisci-sessione", ());
     }
 
     /// Riattivazioni per-utente: id → ts dei record `notifica_letta` con `letta:false`
@@ -592,6 +754,14 @@ impl Notificatore {
             }
         }
         out
+    }
+
+    fn riattivazioni_dashboard(&self, user_id: &str) -> HashMap<String, i64> {
+        self.app
+            .try_state::<AppState>()
+            .and_then(|state| state.records_list("notifica_letta").ok())
+            .map(|recs| ultime_riattivazioni_dashboard(recs, user_id))
+            .unwrap_or_default()
     }
 
     /// Costruisce le notifiche correnti **non lette** (stessi id stabili del webview).
@@ -660,6 +830,8 @@ impl Notificatore {
                     collegato_nome: p.ordine_numero.clone(),
                     promemoria_id: String::new(),
                     mittente_id: String::new(),
+                    origine_ms: 0,
+                    mostra_completa: false,
                     suggerimento_collegamento: None,
                 });
             }
@@ -715,6 +887,8 @@ impl Notificatore {
                         collegato_nome: coll_nome,
                         promemoria_id: r.id.clone(),
                         mittente_id: String::new(),
+                        origine_ms: 0,
+                        mostra_completa: false,
                         suggerimento_collegamento: None,
                     });
                 } else if giorni == 0 || (avviso > 0 && -giorni <= avviso) {
@@ -733,6 +907,8 @@ impl Notificatore {
                         collegato_nome: coll_nome,
                         promemoria_id: r.id.clone(),
                         mittente_id: String::new(),
+                        origine_ms: 0,
+                        mostra_completa: false,
                         suggerimento_collegamento: None,
                     });
                 }
@@ -774,6 +950,8 @@ impl Notificatore {
                     collegato_nome: o.numero.clone(),
                     promemoria_id: String::new(),
                     mittente_id: String::new(),
+                    origine_ms: 0,
+                    mostra_completa: false,
                     suggerimento_collegamento: None,
                 });
             }
@@ -813,6 +991,8 @@ impl Notificatore {
                     collegato_nome: str_field(&r.data, "collegato_nome"),
                     promemoria_id: String::new(),
                     mittente_id,
+                    origine_ms: ts,
+                    mostra_completa: false,
                     suggerimento_collegamento: None,
                 });
             }
@@ -840,6 +1020,8 @@ impl Notificatore {
                 collegato_nome: String::new(),
                 promemoria_id: String::new(),
                 mittente_id: String::new(),
+                origine_ms: 0,
+                mostra_completa: false,
                 suggerimento_collegamento: Some(suggerimento.collegamento),
             });
         }
@@ -863,9 +1045,8 @@ impl Notificatore {
     /// tray, minimizzata o sei su un'altra finestra). Se stai già guardando il gestionale
     /// bastano badge + suono. Le non-urgenti spariscono da sole dopo 15s; aprire
     /// esplicitamente la campanella nasconde i pop-up ordinari senza modificare lo stato
-    /// letto/scartato. Il pop-up sostituisce normalmente il vecchio balloon di sistema:
-    /// mostriamo l'overlay prima dell'evento; il balloon resta soltanto il fallback se
-    /// WebView2 non è pronto.
+    /// letto/scartato. Le card custom sono l'unico canale visivo: se WebView2 non è
+    /// ancora pronto le accodiamo e le consegniamo al successivo handshake dell'overlay.
     fn avvisa(&self, cfg: &Cfg, nuove: &[Notif]) {
         // Il fuoco arriva dai window event (atomico), MAI interrogando lo stato finestra
         // cross-thread: su Windows quelle chiamate dal thread di fondo possono bloccarsi e
@@ -887,21 +1068,27 @@ impl Notificatore {
             if self.overlay_ready.load(Ordering::Acquire) {
                 self.consegna_overlay(suono_overlay, payload);
             } else {
-                // Renderer ancora in caricamento, sospeso o guasto: l'avviso è
-                // comunque consegnato una sola volta tramite i fallback nativi.
-                fallback_overlay(&self.app, suono_overlay.as_deref(), &payload);
+                // Renderer ancora in caricamento o sospeso: il suono ha un fallback
+                // nativo, mentre la parte visiva attende sempre l'overlay custom.
+                fallback_overlay_custom(
+                    suono_overlay.as_deref(),
+                    &self.overlay_in_attesa,
+                    &payload,
+                );
             }
         }
     }
 
     /// Mostra l'overlay e poi emette gli eventi sul main thread. In caso di
-    /// finestra scomparsa o consegna fallita, invalida l'handshake e usa i
-    /// fallback nativi senza duplicare i canali già consegnati.
+    /// finestra scomparsa o consegna fallita, invalida l'handshake e riaccoda le
+    /// card custom senza duplicare i canali già consegnati.
     fn consegna_overlay(&self, suono: Option<String>, notifiche: Vec<Notif>) {
         let app = self.app.clone();
         let app_main = app.clone();
         let ready = self.overlay_ready.clone();
         let ready_main = ready.clone();
+        let overlay_in_attesa = self.overlay_in_attesa.clone();
+        let overlay_in_attesa_main = overlay_in_attesa.clone();
         let suono_main = suono.clone();
         let notifiche_main = notifiche.clone();
         let schedulata = app.run_on_main_thread(move || {
@@ -928,14 +1115,14 @@ impl Notificatore {
             }
 
             if !suono_consegnato || !popup_consegnato {
-                if !overlay_operativo {
+                if !overlay_operativo || !popup_consegnato {
                     ready_main.store(false, Ordering::Release);
                 }
-                fallback_overlay(
-                    &app_main,
+                fallback_overlay_custom(
                     (!suono_consegnato)
                         .then_some(suono_main.as_deref())
                         .flatten(),
+                    &overlay_in_attesa_main,
                     if popup_consegnato {
                         &[]
                     } else {
@@ -946,15 +1133,19 @@ impl Notificatore {
         });
 
         if schedulata.is_err() {
-            fallback_overlay(&self.app, suono.as_deref(), &notifiche);
+            fallback_overlay_custom(suono.as_deref(), &overlay_in_attesa, &notifiche);
         }
     }
 }
 
-/// Percorso di affidabilità quando WebView2 non è pronto: audio rodio e balloon
-/// di sistema. Non viene accodata anche la card custom, evitando un duplicato
-/// quando il renderer torna disponibile.
-fn fallback_overlay(app: &AppHandle, suono: Option<&str>, notifiche: &[Notif]) {
+/// Percorso di affidabilità quando WebView2 non è pronto: l'audio continua a usare
+/// rodio, mentre gli avvisi visivi restano accodati per l'overlay custom. Gli id
+/// stabili evitano duplicati anche se più tentativi di consegna falliscono.
+fn fallback_overlay_custom(
+    suono: Option<&str>,
+    overlay_in_attesa: &Mutex<Vec<Notif>>,
+    notifiche: &[Notif],
+) {
     if let Some(bytes) = suono.and_then(suono_bytes) {
         riproduci(bytes);
     }
@@ -962,25 +1153,16 @@ fn fallback_overlay(app: &AppHandle, suono: Option<&str>, notifiche: &[Notif]) {
         return;
     }
 
-    use tauri_plugin_notification::NotificationExt;
-    let (titolo, corpo) = if notifiche.len() == 1 {
-        (notifiche[0].titolo.clone(), notifiche[0].dettaglio.clone())
-    } else {
-        (
-            format!("{} nuove notifiche", notifiche.len()),
-            format!(
-                "{} e altre {}",
-                notifiche[0].titolo,
-                notifiche.len().saturating_sub(1)
-            ),
-        )
-    };
-    let _ = app
-        .notification()
-        .builder()
-        .title(titolo)
-        .body(corpo)
-        .show();
+    let mut coda = overlay_in_attesa.lock().expect("overlay queue poisoned");
+    let mut presenti: HashSet<String> = coda.iter().map(|notifica| notifica.id.clone()).collect();
+    for notifica in notifiche {
+        if coda.len() >= MAX_NOTIFICHE_OVERLAY_IN_ATTESA {
+            break;
+        }
+        if presenti.insert(notifica.id.clone()) {
+            coda.push(notifica.clone());
+        }
+    }
 }
 
 /// Riproduce un WAV bundlato su un thread dedicato (il device sink di rodio non è
@@ -1183,7 +1365,8 @@ pub fn notifiche_check(nt: State<'_, std::sync::Arc<Notificatore>>) {
 }
 
 /// Conferma che il renderer overlay abbia registrato tutti i listener. Alla
-/// distruzione/reload torna false e il core usa i fallback nativi.
+/// distruzione/reload torna false: il core usa l'audio nativo e accoda le card
+/// visive finché l'overlay custom non è di nuovo pronto.
 #[tauri::command]
 pub fn notifiche_overlay_pronto(pronto: bool, nt: State<'_, std::sync::Arc<Notificatore>>) {
     nt.set_overlay_ready(pronto);
@@ -1208,9 +1391,11 @@ pub fn suggerimento_duplicati_locale_aggiorna(
     state: State<'_, AppState>,
     nt: State<'_, std::sync::Arc<Notificatore>>,
 ) -> Result<(), String> {
-    nt.aggiorna_duplicato_locale(&state, suggerimento)?;
-    let _ = app.emit("suggerimento:salvato", ());
-    nt.scansiona();
+    let modificato = nt.aggiorna_duplicato_locale(&state, suggerimento)?;
+    if modificato {
+        let _ = app.emit("suggerimento:salvato", ());
+        nt.scansiona();
+    }
     Ok(())
 }
 
@@ -1218,8 +1403,9 @@ pub fn suggerimento_duplicati_locale_aggiorna(
 /// sessione dati nell'overlay. Le notifiche di aggiornamento restano indipendenti.
 #[tauri::command]
 pub fn notifiche_disattiva_sessione(app: AppHandle, nt: State<'_, std::sync::Arc<Notificatore>>) {
-    nt.disattiva_sessione();
-    let _ = app.emit_to("overlay", "pt:overlay-pulisci-sessione", ());
+    if nt.disattiva_sessione() {
+        let _ = app.emit_to("overlay", "pt:overlay-pulisci-sessione", ());
+    }
 }
 
 #[cfg(test)]
@@ -1241,7 +1427,13 @@ mod tests {
         }
 
         let promemoria = [
-            ("r1", "2026-07-01", 8, 0, Some("promem-scaduto:r1:2026-07-01:1")),
+            (
+                "r1",
+                "2026-07-01",
+                8,
+                0,
+                Some("promem-scaduto:r1:2026-07-01:1"),
+            ),
             ("r1", "2026-07-01", 0, 0, Some("promem-pre:r1:2026-07-01")),
             ("r2", "2026-07-20", -2, 3, Some("promem-pre:r2:2026-07-20")),
             ("r2", "2026-07-20", -4, 3, None),
@@ -1348,6 +1540,51 @@ mod tests {
         assert_eq!(scartato.get("msg:1"), Some(&(200, true)));
     }
 
+    #[test]
+    fn riattivazione_dashboard_vale_solo_finche_e_lo_stato_piu_recente() {
+        let record = |record_id: &str, letta: bool, ts: i64, origine: Option<&str>| {
+            let mut data: serde_json::Map<String, serde_json::Value> = [
+                ("user_id".to_string(), serde_json::json!("u1")),
+                ("notifica_id".to_string(), serde_json::json!("promemoria:1")),
+                ("letta".to_string(), serde_json::json!(letta)),
+                ("ts".to_string(), serde_json::json!(ts)),
+            ]
+            .into_iter()
+            .collect();
+            if let Some(origine) = origine {
+                data.insert(
+                    "origine_riattivazione".to_string(),
+                    serde_json::json!(origine),
+                );
+            }
+            crate::app::RecordDto {
+                id: record_id.to_string(),
+                revision: String::new(),
+                data,
+                deleted: false,
+            }
+        };
+
+        let manuale = ultime_riattivazioni_dashboard(
+            vec![record("stato-dashboard", false, 200, Some("dashboard"))],
+            "u1",
+        );
+        assert_eq!(manuale.get("promemoria:1"), Some(&200));
+
+        let poi_letta = ultime_riattivazioni_dashboard(
+            vec![
+                record("stato-dashboard", false, 200, Some("dashboard")),
+                record("stato-letto", true, 300, None),
+            ],
+            "u1",
+        );
+        assert!(poi_letta.is_empty());
+
+        let normale =
+            ultime_riattivazioni_dashboard(vec![record("stato-modifica", false, 400, None)], "u1");
+        assert!(normale.is_empty());
+    }
+
     /// Notif minima per i test del diff (solo l'id conta).
     fn notif(id: &str) -> Notif {
         Notif {
@@ -1361,7 +1598,17 @@ mod tests {
             collegato_nome: String::new(),
             promemoria_id: String::new(),
             mittente_id: String::new(),
+            origine_ms: 0,
+            mostra_completa: false,
             suggerimento_collegamento: None,
+        }
+    }
+
+    fn messaggio_notif(id: &str, origine_ms: i64) -> Notif {
+        Notif {
+            tipo: "messaggio".into(),
+            origine_ms,
+            ..notif(id)
         }
     }
 
@@ -1453,6 +1700,27 @@ mod tests {
 
     fn ids(v: &[Notif]) -> Vec<String> {
         v.iter().map(|n| n.id.clone()).collect()
+    }
+
+    #[test]
+    fn coda_overlay_custom_deduplica_e_rispetta_il_limite() {
+        let coda = Mutex::new(Vec::new());
+        let mut ingresso: Vec<Notif> = (0..MAX_NOTIFICHE_OVERLAY_IN_ATTESA + 10)
+            .map(|indice| notif(&format!("n:{indice}")))
+            .collect();
+        ingresso.push(notif("n:0"));
+
+        fallback_overlay_custom(None, &coda, &ingresso);
+        let ids_accodati = ids(&coda.lock().expect("coda test poisoned"));
+        assert_eq!(ids_accodati.len(), MAX_NOTIFICHE_OVERLAY_IN_ATTESA);
+        assert_eq!(ids_accodati.first().map(String::as_str), Some("n:0"));
+        assert_eq!(ids_accodati.last().map(String::as_str), Some("n:98"));
+
+        fallback_overlay_custom(None, &coda, &[notif("n:0"), notif("n:nuova")]);
+        assert_eq!(
+            coda.lock().expect("coda test poisoned").len(),
+            MAX_NOTIFICHE_OVERLAY_IN_ATTESA,
+        );
     }
 
     /// Regressione storica «si ferma dopo la prima»: dopo la semina, OGNI nuova notifica
@@ -1549,5 +1817,39 @@ mod tests {
             ids(&st.nuove_da_avvisare(vec![notif("x")], &r2).unwrap()),
             vec!["x"]
         );
+    }
+
+    #[test]
+    fn messaggio_non_letto_viene_ricordato_ogni_giorno() {
+        let mut st = Stato::default();
+        let no = HashMap::new();
+        let origine = 1_000;
+
+        // Anche al primo giro un messaggio gia' vecchio di un giorno deve
+        // riapparire: e' un reminder, non la raffica dell'arretrato ordinario.
+        let primo_promemoria = st
+            .nuove_da_avvisare_a(
+                vec![messaggio_notif("msg:1", origine)],
+                &no,
+                origine + GIORNO_MS,
+            )
+            .unwrap();
+        assert_eq!(ids(&primo_promemoria), vec!["msg:1"]);
+        assert!(st
+            .nuove_da_avvisare_a(
+                vec![messaggio_notif("msg:1", origine)],
+                &no,
+                origine + GIORNO_MS + 1,
+            )
+            .unwrap()
+            .is_empty());
+        let secondo_promemoria = st
+            .nuove_da_avvisare_a(
+                vec![messaggio_notif("msg:1", origine)],
+                &no,
+                origine + 2 * GIORNO_MS,
+            )
+            .unwrap();
+        assert_eq!(ids(&secondo_promemoria), vec!["msg:1"]);
     }
 }

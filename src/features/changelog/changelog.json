@@ -1,6 +1,12 @@
 {
   "versioni": [
     {
+      "versione": "0.7.2",
+      "data": "2026-08-10",
+      "sintesi": "Risolti errori di messaggistica e migliorata la logica dei suggerimenti smart.",
+      "voci": []
+    },
+    {
       "versione": "0.7.0",
       "data": "2026-08-02",
       "sintesi": "Nuove funzionalità premium e diversi bugfix.",

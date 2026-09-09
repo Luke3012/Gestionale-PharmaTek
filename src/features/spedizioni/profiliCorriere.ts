@@ -96,13 +96,13 @@ function unisciTestoSenzaDuplicati(a: string, b: string): string {
   return `${a} - ${b}`;
 }
 
-interface GruppoCorriereDemo {
+interface GruppoCorriere A {
   riga: RigaCorriere;
   numeri: string[];
 }
 
-function preparaRigheCorriereDemo(spedizioni: Spedizione[]): RigaCorriere[] {
-  const gruppi = new Map<string, GruppoCorriereDemo>();
+function preparaRigheCorriere A(spedizioni: Spedizione[]): RigaCorriere[] {
+  const gruppi = new Map<string, GruppoCorriere A>();
 
   const aggiungi = (s: Spedizione, persona: string, numeri: string[]) => {
     const riga = rigaCorriere(s);
@@ -167,7 +167,7 @@ function preparaRigheCorriereDemo(spedizioni: Spedizione[]): RigaCorriere[] {
  *  Tutte le righe hanno sempre colli = 1 e peso = 1.
  */
 export function preparaRigheEsportazione(spedizioni: Spedizione[], profilo: string): RigaCorriere[] {
-  if (profilo === "carrai") return preparaRigheCorriereDemo(spedizioni);
+  if (profilo === "carrai") return preparaRigheCorriere A(spedizioni);
 
   // CORRIERE_B / CORRIERE_C / Altro: una riga per spedizione.
   return spedizioni.map((s) => {
@@ -178,18 +178,25 @@ export function preparaRigheEsportazione(spedizioni: Spedizione[], profilo: stri
   });
 }
 
-const COMUNI: ColonnaExport<RigaCorriere>[] = [
-  { key: "data", label: "Data Fattura", tipo: "data", valore: (r) => r.data },
-  { key: "numero", label: "Num fattura", valore: (r) => r.numero },
+const COLONNE_DESTINATARIO: ColonnaExport<RigaCorriere>[] = [
   { key: "cliente", label: "Cliente", valore: (r) => r.cliente },
   { key: "indirizzo", label: "Ind Dest", valore: (r) => r.indirizzo },
   { key: "cap", label: "Cap", valore: (r) => r.cap },
   { key: "citta", label: "Città", valore: (r) => r.citta },
   { key: "prov", label: "Provincia", valore: (r) => r.prov },
-  { key: "regione", label: "REGIONE", valore: (r) => r.regione },
+];
+const COLONNE_MOVIMENTAZIONE: ColonnaExport<RigaCorriere>[] = [
   { key: "colli", label: "Colli", tipo: "numero", valore: (r) => r.colli },
   { key: "peso", label: "Peso", tipo: "numero", valore: (r) => r.peso },
   { key: "telefono", label: "telefono", valore: (r) => r.telefono },
+];
+
+const COMUNI: ColonnaExport<RigaCorriere>[] = [
+  { key: "data", label: "Data Fattura", tipo: "data", valore: (r) => r.data },
+  { key: "numero", label: "Num fattura", valore: (r) => r.numero },
+  ...COLONNE_DESTINATARIO,
+  { key: "regione", label: "REGIONE", valore: (r) => r.regione },
+  ...COLONNE_MOVIMENTAZIONE,
   { key: "importo", label: "€", tipo: "euro", valore: (r) => r.importo },
   { key: "note", label: "NOTE", valore: (r) => r.note },
 ];
@@ -211,14 +218,8 @@ const PROFILO_CORRIERE_B: ColonnaExport<RigaCorriere>[] = [
 const PROFILO_CORRIERE_C: ColonnaExport<RigaCorriere>[] = [
   { key: "data", label: "Data distinta", tipo: "data", valore: (r) => r.data },
   { key: "numero", label: "Lotto", valore: (r) => r.numero },
-  { key: "cliente", label: "Cliente", valore: (r) => r.cliente },
-  { key: "indirizzo", label: "Ind Dest", valore: (r) => r.indirizzo },
-  { key: "cap", label: "Cap", valore: (r) => r.cap },
-  { key: "citta", label: "Città", valore: (r) => r.citta },
-  { key: "prov", label: "Provincia", valore: (r) => r.prov },
-  { key: "colli", label: "Colli", tipo: "numero", valore: (r) => r.colli },
-  { key: "peso", label: "Peso", tipo: "numero", valore: (r) => r.peso },
-  { key: "telefono", label: "telefono", valore: (r) => r.telefono },
+  ...COLONNE_DESTINATARIO,
+  ...COLONNE_MOVIMENTAZIONE,
   { key: "email", label: "email", valore: (r) => r.email },
   { key: "preavviso", label: "PREAVVISO TELEFONICO", valore: (r) => r.preavvisoTel },
   { key: "importo", label: "CONTRASSEGNO", tipo: "euro", valore: (r) => r.importo },

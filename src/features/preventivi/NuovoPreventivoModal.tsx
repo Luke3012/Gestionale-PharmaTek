@@ -512,7 +512,8 @@ export function NuovoPreventivoModal({
       <Text fw={700}>Nuovo preventivo</Text>
     </Group>
   );
-  const contenuto = (
+  const corpo = (
+    <>
       <AltezzaAnimata
         ridotta={ridurreAnimazioni}
         onRidimensionamento={setRidimensionando}
@@ -906,33 +907,38 @@ export function NuovoPreventivoModal({
               )}
             </motion.div>
           </AnimatePresence>
-
-          <Group justify="flex-end" mt="sm">
-            <Button variant="default" onClick={onClose}>
-              Annulla
-            </Button>
-            <Button
-              color="accent"
-              loading={caricando}
-              disabled={
-                origine === "giornaliero"
-                  ? !ordineId
-                  : !destinatario ||
-                    (tipoDestinatario === "cliente" && !medicoClienteId)
-              }
-              onClick={() => {
-                if (origine === "giornaliero" && ordineId) {
-                  onOrdinePreparato(ordineId);
-                } else {
-                  void continuaDaZero();
-                }
-              }}
-            >
-              Continua
-            </Button>
-          </Group>
         </Stack>
       </AltezzaAnimata>
+    </>
+  );
+  const contenuto = (
+    <Box className="pt-modal-shell">
+      <Box className="pt-modal-scroll">{corpo}</Box>
+      <Group className="pt-modal-footer" justify="flex-end">
+        <Button variant="default" onClick={onClose}>
+          Annulla
+        </Button>
+        <Button
+          color="accent"
+          loading={caricando}
+          disabled={
+            origine === "giornaliero"
+              ? !ordineId
+              : !destinatario ||
+                (tipoDestinatario === "cliente" && !medicoClienteId)
+          }
+          onClick={() => {
+            if (origine === "giornaliero" && ordineId) {
+              onOrdinePreparato(ordineId);
+            } else {
+              void continuaDaZero();
+            }
+          }}
+        >
+          Continua
+        </Button>
+      </Group>
+    </Box>
   );
 
   if (dentroFinestra) {
@@ -952,11 +958,7 @@ export function NuovoPreventivoModal({
         <Box mb="md" style={{ flex: "0 0 auto" }}>
           {titolo}
         </Box>
-        <Box className="pt-window-form">
-          <Box className="pt-modal-shell">
-            <Box className="pt-modal-scroll">{contenuto}</Box>
-          </Box>
-        </Box>
+        <Box className="pt-window-form">{contenuto}</Box>
       </Box>
     );
   }

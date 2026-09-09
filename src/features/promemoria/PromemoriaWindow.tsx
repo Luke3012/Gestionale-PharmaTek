@@ -10,7 +10,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Group, Loader, Text, ThemeIcon } from "@mantine/core";
 import { IconBellPlus, IconPencil } from "@tabler/icons-react";
-import { api, inTauri, type Identity } from "../../lib/tauri";
+import { api, inTauri } from "../../lib/tauri";
+import { identityDaParametri } from "../../lib/identityParams";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
 import { PromemoriaForm, type PromemoriaTarget } from "./PromemoriaModal";
 import { leggiPromemoria, type CollegatoTipo } from "./promemoria";
@@ -19,18 +20,7 @@ import { chiudiFinestraCorrente as chiudiFinestra } from "../../lib/finestreTaur
 export function PromemoriaWindow() {
   const params = new URLSearchParams(window.location.search);
 
-  const uid = params.get("uid");
-  const identity: Identity | undefined = uid
-    ? {
-        userId: uid,
-        nome: params.get("nome") ?? "",
-        deviceId: params.get("dev") ?? "",
-        avatarTipo: "iniziali",
-        avatarValore: "",
-        deviceNome: "",
-        dataDir: "",
-      }
-    : undefined;
+  const identity = identityDaParametri(params);
 
   const pid = params.get("pid");
   const isEdit = !!pid;

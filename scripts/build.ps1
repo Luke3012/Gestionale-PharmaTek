@@ -1,9 +1,9 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   Build di produzione dell'app (installer Windows via Tauri).
 .DESCRIPTION
-  Esegue: controllo toolchain -> npm install -> scelta test -> tauri build.
+  Esegue: controllo toolchain -> npm install -> scelta test -> pulizia build precedenti -> tauri build.
   Carica automaticamente la chiave di firma da ~/.tauri/pharmatek.key (se presente),
   così l'installer viene firmato per l'auto-aggiornamento (vedi docs/AGGIORNAMENTI.md).
 .PARAMETER Version    Imposta la versione (X.Y.Z) di app e installer prima di buildare
@@ -90,7 +90,7 @@ if (-not $SkipTests) {
 }
 
 # Carica automaticamente la chiave di firma dal percorso predefinito, se non gia' impostata
-$defaultKey = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.tauri\pharmatek-public.key'
+$defaultKey = Join-Path $HOME '.tauri\pharmatek.key'
 $firmaManualePasswordVuota = $false
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $defaultKey)) {
     $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $defaultKey -Raw
@@ -108,8 +108,31 @@ if ($env:TAURI_SIGNING_PRIVATE_KEY) {
         throw "Nessuna chiave di firma: build di rilascio interrotta."
     }
     Write-Warning "Nessuna chiave di firma trovata: il pacchetto NON sara' firmato (auto-update non funzionera')."
-    Write-Warning "Genera le chiavi: npx tauri signer generate -w `"$HOME\.tauri\pharmatek-public.key`" --ci"
+    Write-Warning "Genera le chiavi: npx tauri signer generate -w `"$HOME\.tauri\pharmatek.key`" --ci"
 }
+
+# Token updater per repo PRIVATO: viene iniettato in VITE_DEMO_UPDATER_DISABLED e finisce nel bundle,
+# cosi' l'app autenticata puo' scaricare manifest+installer (vedi src/updater.ts). Caricato dal
+# percorso predefinito se non gia' impostato. Usa un token a SOLA LETTURA del solo repo release.
+$defaultToken = Join-Path $HOME '.tauri\pharmatek-updater-token.txt'
+if (-not $env:VITE_DEMO_UPDATER_DISABLED -and (Test-Path $defaultToken)) {
+    $env:VITE_DEMO_UPDATER_DISABLED = (Get-Content $defaultToken -Raw).Trim()
+    Write-Host "Token updater caricato da $defaultToken" -ForegroundColor Green
+}
+if ($env:VITE_DEMO_UPDATER_DISABLED) {
+    Write-Host "Token updater: PRESENTE (auto-update da repo privato abilitato)." -ForegroundColor Green
+} else {
+    if ($env:PHARMATEK_REQUIRE_UPDATER_CREDENTIALS -eq '1') {
+        throw "Nessun token updater: build di rilascio interrotta. Salva il token read-only in $defaultToken"
+    }
+    Write-Warning "Nessun token updater: su repo privato l'auto-update NON potra' scaricare gli aggiornamenti."
+    Write-Warning "Crea un token (Contents: read-only sul repo release) e salvalo in $defaultToken"
+}
+
+# Chiude eventuali istanze del gestionale in esecuzione dalla cartella target per evitare blocchi file
+Get-Process -Name "pharmatek-gestionale" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -like "*\src-tauri\target\*" } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 
 Write-Host "Pulisco le build Tauri precedenti..." -ForegroundColor Cyan
 npm run clean:tauri

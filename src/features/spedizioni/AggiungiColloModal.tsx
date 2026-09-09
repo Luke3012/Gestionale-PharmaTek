@@ -27,9 +27,11 @@ import { toast } from "../../ui/toast/store";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { focusInvalidField } from "../../ui/focusInvalid";
 import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { setConToggle } from "../../lib/set";
 import { VirtualStack } from "../../ui/VirtualStack";
 import { DebouncedInput } from "../../ui/DebouncedInput";
-import { calcolaImportoSpedizione, colliDistintaAuto } from "./CreaSpedizioneModal";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
+import { calcolaImportoSpedizione, colliDistintaAuto, OPZIONI_PAGAMENTO_CONSEGNA } from "./CreaSpedizioneModal";
 import { normalizzaColliPesoCorriere } from "./profiliCorriere";
 import { ordineHaDatiVaccino } from "./datiVaccino";
 
@@ -110,12 +112,7 @@ function Corpo({
       .finally(() => setCaric(false));
   }, []);
   const toggleRiga = (id: string) =>
-    setSel((s) => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
-    });
+    setSel((corrente) => setConToggle(corrente, id));
 
   const toggleOrdine = (o: OrdineDaSpedire, checked: boolean) =>
     setSel((s) => {
@@ -465,11 +462,7 @@ function Corpo({
                 <Select
                   label="Pagamento alla consegna"
                   w={210}
-                  data={[
-                    { value: "prepagato", label: "Prepagato (nessuno)" },
-                    { value: "contrassegno", label: "Contrassegno" },
-                    { value: "assegno", label: "Assegno" },
-                  ]}
+                  data={OPZIONI_PAGAMENTO_CONSEGNA}
                   value={m.mezzo}
                   onChange={(v) => setF("mezzo", (v as Mezzo) || "prepagato")}
                   allowDeselect={false}
@@ -500,8 +493,7 @@ function Corpo({
         </Stack>
       </Box>
 
-      <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-        <div className="pt-modal-actions">
+      <FooterAzioniModale>
           <Button variant="default" onClick={onClose} disabled={salvando}>
             Annulla
           </Button>
@@ -526,8 +518,7 @@ function Corpo({
               Aggiungi collo
             </Button>
           )}
-        </div>
-      </div>
+      </FooterAzioniModale>
     </Box>
   );
 }

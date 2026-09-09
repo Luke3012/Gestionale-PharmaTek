@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { inTauri } from "../../lib/tauri";
 import { usePrefs } from "../../lib/prefs";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
 
 const CHIAVE_RILEVAZIONE = "pt.suggerimentiDuplicatiRilevazione.v1";
 
@@ -113,8 +114,8 @@ export function SuggerimentoDuplicatiWorker() {
     };
 
     pianifica();
-    const disiscrizioni: Array<() => void> = [];
-    void import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         Promise.all(
           ["cliente:salvato", "pt:proiezione-ricostruita"].map((evento) =>
@@ -122,17 +123,14 @@ export function SuggerimentoDuplicatiWorker() {
           ),
         ),
       )
-      .then((unlisten) => {
-        if (vivo) disiscrizioni.push(...unlisten);
-        else unlisten.forEach((off) => off());
-      })
-      .catch(() => {});
+      .then((disiscrizioni) => () => disiscrizioni.forEach((off) => off())),
+    );
 
     return () => {
       vivo = false;
       sequenza += 1;
       annullaPianificazione();
-      disiscrizioni.forEach((off) => off());
+      disiscriviTauri();
     };
   }, [categoriaAttiva, premium.enabled]);
 

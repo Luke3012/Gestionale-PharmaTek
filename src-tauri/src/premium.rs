@@ -22,8 +22,12 @@ const PREMIUM_ENTITIES: &[&str] = &[
 
 /// Restituisce lo stato premium registrato esclusivamente nella cartella locale
 /// dell'app. File assente, JSON non valido o campo non booleano significano chiuso.
-pub(crate) fn is_enabled(_app_dir: &Path) -> bool {
-    true
+pub(crate) fn is_enabled(app_dir: &Path) -> bool {
+    std::fs::read(app_dir.join(PREMIUM_STATE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|state| state.get("enabled").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// Guardia condivisa dai futuri comandi e processi automatici premium.
@@ -53,23 +57,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn premium_demo_e_aperto_senza_configurazione() {
+    fn premium_locale_e_chiuso_senza_file_o_con_file_non_valido() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(is_enabled(dir.path()));
+        assert!(!is_enabled(dir.path()));
 
         std::fs::write(dir.path().join(PREMIUM_STATE_FILE), b"non-json").unwrap();
-        assert!(is_enabled(dir.path()));
+        assert!(!is_enabled(dir.path()));
 
         std::fs::write(dir.path().join(PREMIUM_STATE_FILE), br#"{"enabled":"si"}"#).unwrap();
-        assert!(is_enabled(dir.path()));
+        assert!(!is_enabled(dir.path()));
     }
 
     #[test]
-    fn premium_demo_ignora_lo_stato_locale() {
+    fn premium_locale_rispetta_attivazione_e_disattivazione() {
         let dir = tempfile::tempdir().unwrap();
 
         std::fs::write(dir.path().join(PREMIUM_STATE_FILE), br#"{"enabled":false}"#).unwrap();
-        assert!(is_enabled(dir.path()));
+        assert!(!is_enabled(dir.path()));
 
         std::fs::write(dir.path().join(PREMIUM_STATE_FILE), br#"{"enabled":true}"#).unwrap();
         assert!(is_enabled(dir.path()));

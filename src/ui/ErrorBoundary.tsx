@@ -7,6 +7,8 @@ import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
 
 interface Props {
   children: ReactNode;
+  onError?: (errore: Error) => void;
+  onReset?: () => void;
 }
 interface State {
   errore: Error | null;
@@ -22,9 +24,13 @@ export class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(errore: Error, info: ErrorInfo) {
     // Lasciamo traccia in console per la diagnosi (visibile in DevTools / log).
     console.error("Errore di rendering:", errore, info.componentStack);
+    this.props.onError?.(errore);
   }
 
-  riprova = () => this.setState({ errore: null });
+  riprova = () => {
+    this.props.onReset?.();
+    this.setState({ errore: null });
+  };
 
   render() {
     const { errore } = this.state;

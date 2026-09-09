@@ -21,6 +21,10 @@ import { api, type RataInput } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { focusInvalidField } from "../../ui/focusInvalid";
+import { EuroInput } from "../../ui/EuroInput";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
+import { èContoTransito } from "./contoPreferito";
 import {
   aggiungiGiorniRate,
   calcolaRate,
@@ -64,10 +68,7 @@ export function RateizzaModal({
    * alla spedizione (prima scadenza = spedizione + 7gg, riallineata all'invio). */
   onLocalSave?: (rate: RataInput[], daSpedizione: boolean) => void;
 }) {
-  const [mostrato, setMostrato] = useState<RateizzaTarget | null>(target);
-  useEffect(() => {
-    if (target) setMostrato(target);
-  }, [target]);
+  const [mostrato, clearMostrato] = useModalSnapshot(target);
 
   return (
     <Modal
@@ -85,7 +86,7 @@ export function RateizzaModal({
           )}
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && <Form target={mostrato} onClose={onClose} onSaved={onSaved} onLocalSave={onLocalSave} />}
     </Modal>
@@ -111,7 +112,7 @@ function Form({
   // Default: prima scadenza legata alla spedizione (+7gg, riallineata all'invio). Togliendo
   // la spunta, la prima scadenza è fissa a 30 giorni dopo l'acconto.
   const [daSpedizione, setDaSpedizione] = useState(true);
-  const primaRataTransito = target.contoTipo === "contrassegno" || target.contoTipo === "assegno";
+  const primaRataTransito = èContoTransito(target.contoTipo);
   const baseOffset = offsetSpedizione(target.contoTipo);
   const baseOffsetSuccessive = primaRataTransito ? offsetSpedizione(target.contoRateSuccessiveTipo) : baseOffset;
 
@@ -190,6 +191,17 @@ function Form({
     }
   }
 
+  const campoPrimaScadenza = daSpedizione ? (
+    <TextInput label="Prima scadenza" value={`≈ spedizione + ${baseOffset}gg`} disabled />
+  ) : (
+    <TextInput
+      label="Prima scadenza"
+      type="date"
+      value={inizio}
+      onChange={(e) => setInizio(e.currentTarget.value)}
+    />
+  );
+
   return (
     <Box className="pt-modal-shell">
       <Box className="pt-modal-scroll">
@@ -243,28 +255,11 @@ function Form({
                 max={365}
                 allowDecimal={false}
               />
-            ) : daSpedizione ? (
-              <TextInput label="Prima scadenza" value={`≈ spedizione + ${baseOffset}gg`} disabled />
             ) : (
-              <TextInput
-                label="Prima scadenza"
-                type="date"
-                value={inizio}
-                onChange={(e) => setInizio(e.currentTarget.value)}
-              />
+              campoPrimaScadenza
             )}
           </Group>
-          {cadenza === "giorni" &&
-            (daSpedizione ? (
-              <TextInput label="Prima scadenza" value={`≈ spedizione + ${baseOffset}gg`} disabled />
-            ) : (
-              <TextInput
-                label="Prima scadenza"
-                type="date"
-                value={inizio}
-                onChange={(e) => setInizio(e.currentTarget.value)}
-              />
-            ))}
+          {cadenza === "giorni" && campoPrimaScadenza}
 
           <Divider label="Anteprima rate (modificabile)" labelPosition="left" my={4} />
 
@@ -275,15 +270,10 @@ function Form({
                   #{i + 1}
                 </Text>
                 <Box data-pt-field="rateizza-rata-importo">
-                  <NumberInput
+                  <EuroInput
                     aria-label={`Importo rata ${i + 1}`}
                     value={r.importo / 100}
                     onChange={(v) => aggiornaRata(i, { importo: v === "" ? 0 : eurToCents(Number(v)) })}
-                    prefix="€ "
-                    decimalScale={2}
-                    fixedDecimalScale
-                    thousandSeparator="."
-                    decimalSeparator=","
                     min={0}
                     w={150}
                   />
@@ -316,16 +306,14 @@ function Form({
         </Stack>
       </Box>
 
-      <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-        <div className="pt-modal-actions">
+      <FooterAzioniModale>
         <Button variant="default" onClick={onClose} disabled={salvando}>
           Annulla
         </Button>
         <Button color="accent" onClick={conferma} loading={salvando} disabled={salvando}>
           {target.modalita === "aggiungi" ? "Aggiungi rate" : "Rateizza"}
         </Button>
-        </div>
-      </div>
+      </FooterAzioniModale>
     </Box>
   );
 }

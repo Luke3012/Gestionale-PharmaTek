@@ -21,10 +21,12 @@ import {
   IconBulb,
   IconCash,
   IconChevronDown,
+  IconClockHour4,
   IconEyeOff,
   IconFlask2,
   IconReceiptRefund,
   IconSettings,
+  IconSparkle,
   IconSparkles,
   IconTruckDelivery,
   IconUsersGroup,
@@ -32,7 +34,7 @@ import {
   type Icon,
 } from "@tabler/icons-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type Suggerimento,
@@ -46,7 +48,14 @@ import { toast } from "../../ui/toast/store";
 import { VirtualStack } from "../../ui/VirtualStack";
 import { calcolaLayoutVirtuale } from "../../ui/virtualizzazione";
 import {
+  avviaControlloManualeSuggerimenti,
+  caricaSuggerimentoDuplicati,
   combinaSuggerimenti,
+  invalidaControlloManualeSuggerimenti,
+  ordinaSuggerimenti,
+  riconciliaControlloManualeSuggerimenti,
+  rimuoviSuggerimentiDalControlloManuale,
+  statoControlloManualeSuggerimenti,
 } from "./suggerimenti";
 import { deepLinkSuggerimento } from "./collegamento";
 import {
@@ -57,11 +66,13 @@ import {
 const VUOTO: SuggerimentiBundle = {
   suggerimenti: [],
   nascosti: [],
+  tipiInPausa: [],
 };
 const LIMITE_COMPATTO = 5;
 const ALTEZZA_SCHEDA = 58;
 const GAP_SCHEDE = 7;
 const ALTEZZA_EXTRA_MAX = 360;
+const DURATA_USCITA_MS = 170;
 
 const ASPETTO: Record<
   TipoSuggerimento,
@@ -86,15 +97,16 @@ const chiaveSuggerimento = (suggerimento: Suggerimento) => suggerimento.id;
 
 const SchedaSuggerimento = memo(function SchedaSuggerimento({
   suggerimento,
-  indice,
   virtuale = false,
+  temporaneo = false,
   ridotte,
   onApri,
   onNascondi,
 }: {
   suggerimento: Suggerimento;
-  indice: number;
+  indice?: number;
   virtuale?: boolean;
+  temporaneo?: boolean;
   ridotte: boolean;
   onApri: (suggerimento: Suggerimento) => void;
   onNascondi: (suggerimento: Suggerimento) => void;
@@ -107,18 +119,73 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
       className="pt-suggerimento-card-shell"
       layout={!ridotte && !virtuale}
       initial={
-        ridotte || virtuale ? false : { opacity: 0, y: 7, scale: 0.992 }
+        ridotte || virtuale
+          ? false
+          : {
+              opacity: 0,
+              y: 8,
+              scale: 0.99,
+              height: 0,
+              marginBottom: -GAP_SCHEDE,
+            }
       }
-      animate={{ opacity: 1, y: 0, scale: 1 }}
+      animate={{
+        opacity: 1,
+        x: 0,
+        y: 0,
+        scale: 1,
+        height: "auto",
+        marginBottom: 0,
+      }}
       exit={
         ridotte || virtuale
-          ? { opacity: 0 }
-          : { opacity: 0, x: 18, height: 0 }
+          ? { opacity: 0, transition: { duration: 0 } }
+          : {
+              opacity: 0,
+              x: 16,
+              scale: 0.98,
+              height: 0,
+              marginBottom: -GAP_SCHEDE,
+              transition: {
+                opacity: { duration: 0.14, ease: "easeOut" },
+                x: { duration: 0.14, ease: "easeOut" },
+                scale: { duration: 0.14, ease: "easeOut" },
+                height: { duration: 0.22, delay: 0.06, ease: [0.22, 1, 0.36, 1] },
+                marginBottom: { duration: 0.22, delay: 0.06, ease: [0.22, 1, 0.36, 1] },
+              },
+            }
       }
       transition={{
         duration: ridotte ? 0 : dur.fast,
         ease: easeOut,
-        delay: ridotte || virtuale ? 0 : Math.min(indice, 5) * 0.025,
+        opacity: {
+          duration: ridotte ? 0 : 0.2,
+          delay: ridotte || virtuale ? 0 : 0.08,
+          ease: "easeOut",
+        },
+        y: {
+          duration: ridotte ? 0 : 0.22,
+          delay: ridotte || virtuale ? 0 : 0.06,
+          ease: [0.22, 1, 0.36, 1],
+        },
+        height: {
+          duration: ridotte ? 0 : 0.22,
+          delay: ridotte || virtuale ? 0 : 0.06,
+          ease: [0.22, 1, 0.36, 1],
+        },
+        marginBottom: {
+          duration: ridotte ? 0 : 0.22,
+          delay: ridotte || virtuale ? 0 : 0.06,
+          ease: [0.22, 1, 0.36, 1],
+        },
+        layout: {
+          duration: ridotte ? 0 : 0.22,
+          ease: [0.22, 1, 0.36, 1],
+        },
+      }}
+      style={{
+        overflow: "hidden",
+        width: "100%",
       }}
     >
       <Group
@@ -146,6 +213,20 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
             <Badge size="xs" variant="light" color={aspetto.colore}>
               {aspetto.label}
             </Badge>
+            {temporaneo && (
+              <Tooltip
+                label="Mostrato temporaneamente dal controllo manuale"
+                withArrow
+                openDelay={350}
+              >
+                <IconClockHour4
+                  size={13}
+                  color="var(--mantine-color-dimmed)"
+                  aria-label="Suggerimento temporaneo"
+                  style={{ flex: "0 0 auto" }}
+                />
+              </Tooltip>
+            )}
             <Text size="sm" fw={700} truncate>
               {suggerimento.titolo}
             </Text>
@@ -165,7 +246,7 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
           {suggerimento.azioneLabel}
         </Button>
         <Tooltip
-          label="Nascondi finché i dati cambiano"
+          label="Nascondi e sospendi questa categoria per 24 ore"
           withArrow
           openDelay={350}
         >
@@ -196,13 +277,22 @@ export function SuggerimentiPanel({
     preferenzeSuggerimenti,
     setPreferenzeSuggerimenti,
   } = usePrefs();
-  const [bundle, setBundle] = useState<SuggerimentiBundle | null>(null);
+  const [bundle, setBundle] = useState<SuggerimentiBundle | null>(
+    () => statoControlloManualeSuggerimenti().bundle,
+  );
+  const [temporanei, setTemporanei] = useState<ReadonlySet<string>>(
+    () => statoControlloManualeSuggerimenti().temporanei,
+  );
   const [nascostiLocali, setNascostiLocali] = useState<Set<string>>(new Set());
+  const usciteInCorsoRef = useRef<Set<string>>(new Set());
   const [espanso, setEspanso] = useState(false);
   const [ignorandoTutti, setIgnorandoTutti] = useState(false);
-  const [scansionando, setScansionando] = useState(false);
+  const [uscitaTutti, setUscitaTutti] = useState(false);
+  const [scansionando, setScansionando] = useState(
+    () => statoControlloManualeSuggerimenti().inCorso !== null,
+  );
   const [controlloManualeCompletato, setControlloManualeCompletato] =
-    useState(false);
+    useState(() => statoControlloManualeSuggerimenti().bundle !== null);
   const [impostazioniAperte, setImpostazioniAperte] = useState(false);
   const [preferenzeBozza, setPreferenzeBozza] =
     useState<PreferenzeSuggerimenti>(preferenzeSuggerimenti);
@@ -211,17 +301,69 @@ export function SuggerimentiPanel({
 
   useEffect(() => {
     if (!haCategorieAttive) {
+      invalidaControlloManualeSuggerimenti();
       setBundle(VUOTO);
       setNascostiLocali(new Set());
       setControlloManualeCompletato(false);
+      setScansionando(false);
+      setTemporanei(new Set());
       return;
     }
     let vivo = true;
+    const manuale = statoControlloManualeSuggerimenti();
+    if (manuale.inCorso) {
+      setBundle(VUOTO);
+      setNascostiLocali(new Set());
+      setControlloManualeCompletato(false);
+      setScansionando(true);
+      void manuale.inCorso
+        .then(async (value) => {
+          if (!vivo || !value) return;
+          const correnti = await api.suggerimentiLista();
+          if (!vivo) return;
+          const riconciliato = riconciliaControlloManualeSuggerimenti(correnti);
+          setBundle(riconciliato);
+          setTemporanei(statoControlloManualeSuggerimenti().temporanei);
+          setEspanso(false);
+          setControlloManualeCompletato(true);
+        })
+        .catch((error) => {
+          if (vivo) console.error("Controllo delle azioni non riuscito", error);
+        })
+        .finally(() => {
+          if (vivo) setScansionando(false);
+        });
+      return () => {
+        vivo = false;
+      };
+    }
+    if (manuale.bundle) {
+      setBundle(manuale.bundle);
+      setTemporanei(manuale.temporanei);
+      setNascostiLocali(new Set());
+      setControlloManualeCompletato(true);
+      setScansionando(false);
+      void api
+        .suggerimentiLista()
+        .then((correnti) => {
+          if (!vivo) return;
+          setBundle(riconciliaControlloManualeSuggerimenti(correnti));
+          setTemporanei(statoControlloManualeSuggerimenti().temporanei);
+        })
+        .catch((error) => {
+          if (vivo) console.error("Aggiornamento suggerimenti non riuscito", error);
+        });
+      return () => {
+        vivo = false;
+      };
+    }
+    setScansionando(false);
     api
       .suggerimentiLista()
       .then((value) => {
         if (vivo) {
           setBundle(value);
+          setTemporanei(new Set());
           setNascostiLocali(new Set());
           setControlloManualeCompletato(false);
         }
@@ -243,13 +385,26 @@ export function SuggerimentiPanel({
     setControlloManualeCompletato(false);
     const durataMinima = ridotte ? 0 : 1_350;
     try {
-      const [value] = await Promise.all([
-        api.suggerimentiRigenera(),
-        new Promise<void>((resolve) =>
-          window.setTimeout(resolve, durataMinima),
-        ),
-      ]);
+      const value = await avviaControlloManualeSuggerimenti(async () => {
+        const [rigenerato, duplicati] = await Promise.all([
+          api.suggerimentiRigeneraCompleta(),
+          caricaSuggerimentoDuplicati(),
+          new Promise<void>((resolve) =>
+            window.setTimeout(resolve, durataMinima),
+          ),
+        ]);
+        return {
+          suggerimenti: ordinaSuggerimenti([
+            ...rigenerato.suggerimenti,
+            ...(duplicati ? [duplicati] : []),
+          ]),
+          nascosti: [],
+          tipiInPausa: [],
+        };
+      });
+      if (!value) return;
       setBundle(value);
+      setTemporanei(statoControlloManualeSuggerimenti().temporanei);
       setNascostiLocali(new Set());
       setEspanso(false);
       setControlloManualeCompletato(true);
@@ -299,23 +454,44 @@ export function SuggerimentiPanel({
     GAP_SCHEDE +
     Math.min(altezzaNaturaleUlteriori, ALTEZZA_EXTRA_MAX);
 
-  const nascondi = useCallback(async (suggerimento: Suggerimento) => {
-    setNascostiLocali((correnti) => {
-      const prossimi = new Set(correnti);
-      prossimi.add(suggerimento.id);
-      return prossimi;
-    });
-    try {
-      await api.suggerimentoNascondi(suggerimento.id);
-    } catch (error) {
+  const nascondi = useCallback(
+    async (suggerimento: Suggerimento) => {
+      if (usciteInCorsoRef.current.has(suggerimento.id)) return;
+      usciteInCorsoRef.current.add(suggerimento.id);
+      const eUltimo = suggerimenti.length <= 1;
+      if (eUltimo && !ridotte) {
+        setUscitaTutti(true);
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, DURATA_USCITA_MS),
+        );
+      }
       setNascostiLocali((correnti) => {
         const prossimi = new Set(correnti);
-        prossimi.delete(suggerimento.id);
+        prossimi.add(suggerimento.id);
         return prossimi;
       });
-      toast.error(`Impossibile nascondere il suggerimento: ${error}`);
-    }
-  }, []);
+      if (eUltimo) {
+        setEspanso(false);
+      }
+      try {
+        await api.suggerimentoNascondi(suggerimento.id);
+        rimuoviSuggerimentiDalControlloManuale([suggerimento.id]);
+      } catch (error) {
+        setNascostiLocali((correnti) => {
+          const prossimi = new Set(correnti);
+          prossimi.delete(suggerimento.id);
+          return prossimi;
+        });
+        toast.error(`Impossibile nascondere il suggerimento: ${error}`);
+      } finally {
+        if (eUltimo) {
+          setUscitaTutti(false);
+        }
+        usciteInCorsoRef.current.delete(suggerimento.id);
+      }
+    },
+    [ridotte, suggerimenti.length],
+  );
 
   const apri = useCallback(
     (suggerimento: Suggerimento) =>
@@ -326,29 +502,38 @@ export function SuggerimentiPanel({
   const renderVirtuale = useCallback(
     (suggerimento: Suggerimento, indice: number) => (
       <SchedaSuggerimento
+        key={suggerimento.id}
         suggerimento={suggerimento}
         indice={indice}
         virtuale
+        temporaneo={temporanei.has(suggerimento.id)}
         ridotte={ridotte}
         onApri={apri}
         onNascondi={nascondi}
       />
     ),
-    [apri, nascondi, ridotte],
+    [apri, nascondi, ridotte, temporanei],
   );
 
   const ignoraTutti = useCallback(async () => {
     const ids = suggerimenti.map((suggerimento) => suggerimento.id);
     if (ids.length === 0) return;
     setIgnorandoTutti(true);
+    if (!ridotte) {
+      setUscitaTutti(true);
+      await new Promise<void>((resolve) =>
+        window.setTimeout(resolve, DURATA_USCITA_MS),
+      );
+    }
     setEspanso(false);
     setNascostiLocali((correnti) => new Set([...correnti, ...ids]));
     try {
       await api.suggerimentiNascondi(ids);
+      rimuoviSuggerimentiDalControlloManuale(ids);
       toast.success(
         ids.length === 1
-          ? "Suggerimento ignorato fino al prossimo cambiamento."
-          : `${ids.length} suggerimenti ignorati fino al prossimo cambiamento.`,
+          ? "Suggerimento ignorato."
+          : `${ids.length} suggerimenti ignorati.`,
       );
     } catch (error) {
       setNascostiLocali((correnti) => {
@@ -358,9 +543,10 @@ export function SuggerimentiPanel({
       });
       toast.error(`Impossibile ignorare tutti i suggerimenti: ${error}`);
     } finally {
+      setUscitaTutti(false);
       setIgnorandoTutti(false);
     }
-  }, [suggerimenti]);
+  }, [ridotte, suggerimenti]);
 
   const apriImpostazioni = useCallback(() => {
     setPreferenzeBozza({
@@ -409,8 +595,6 @@ export function SuggerimentiPanel({
             transition={{
               duration: 2.8,
               ease: "easeInOut",
-              repeat: Infinity,
-              repeatDelay: 4,
             }}
           >
             <ThemeIcon variant="light" color="yellow" radius="md" size="lg">
@@ -451,175 +635,202 @@ export function SuggerimentiPanel({
         </Group>
       </Group>
 
-      {!bundle ? (
-        <Stack gap={7}>
-          {[0, 1, 2].map((indice) => (
-            <Skeleton key={indice} h={58} radius="md" />
-          ))}
-        </Stack>
-      ) : suggerimenti.length === 0 ? (
-        <Paper withBorder radius="lg" p="md" className="pt-suggerimenti-vuoto">
-          <Group justify="space-between" gap="md" wrap="wrap">
-            <Group gap="sm" wrap="nowrap">
-              <ThemeIcon variant="light" color="gray" radius="xl">
-                <IconSparkles size={17} />
-              </ThemeIcon>
-              <Box>
-                <Text size="sm" fw={700}>
-                  {scansionando
-                    ? "Analisi delle azioni in corso"
-                    : "Tutto sotto controllo"}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {scansionando
-                    ? "Ricontrollo ordini, scadenze e attività correnti…"
-                    : controlloManualeCompletato
-                      ? "Controllo completato: nessuna nuova azione da suggerire."
-                      : "Non ci sono azioni operative da suggerire adesso."}
-                </Text>
-              </Box>
-            </Group>
-            <Tooltip
-              label={
-                haCategorieAttive
-                  ? "Rigenera le azioni dai dati correnti"
-                  : "Attiva almeno una categoria nelle impostazioni"
-              }
-              withArrow
-            >
-              <Button
-                size="compact-sm"
-                variant="light"
-                color="violet"
-                className="pt-galaxy-scan-button"
-                data-scanning={scansionando || undefined}
-                data-reduced={ridotte || undefined}
-                aria-busy={scansionando}
-                disabled={!haCategorieAttive}
-                leftSection={
-                  <span className="pt-galaxy-scan-icon" aria-hidden>
-                    <IconSparkles size={15} />
-                    <b />
-                  </span>
-                }
-                onClick={() => void forzaControllo()}
-              >
-                {scansionando ? "Sto analizzando" : "Controlla ora"}
-              </Button>
-            </Tooltip>
-          </Group>
-        </Paper>
-      ) : (
-        <>
-          <Stack gap={GAP_SCHEDE}>
-            <AnimatePresence mode="popLayout">
-              {principali.map((suggerimento, indice) => (
-                <SchedaSuggerimento
-                  key={suggerimento.id}
-                  suggerimento={suggerimento}
-                  indice={indice}
-                  ridotte={ridotte}
-                  onApri={apri}
-                  onNascondi={nascondi}
-                />
+      <AnimatePresence mode="wait" initial={false}>
+        {!bundle ? (
+          <motion.div
+            key="suggerimenti-loading"
+            initial={ridotte ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={ridotte ? { opacity: 0 } : { opacity: 0, transition: { duration: 0.15 } }}
+            transition={{ duration: ridotte ? 0 : 0.15 }}
+          >
+            <Stack gap={7}>
+              {[0, 1, 2].map((indice) => (
+                <Skeleton key={indice} h={58} radius="md" />
               ))}
-            </AnimatePresence>
-          </Stack>
-          <AnimatePresence initial={false}>
-            {espanso && ulteriori.length > 0 && (
-              <motion.div
-                id="pt-suggerimenti-extra"
-                key="suggerimenti-extra"
-                initial={ridotte ? false : { height: 0, opacity: 0 }}
-                animate={{
-                  height: virtualizzaUlteriori
-                    ? altezzaEspansaUlteriori
-                    : "auto",
-                  opacity: 1,
-                }}
-                exit={ridotte ? { height: 0 } : { height: 0, opacity: 0 }}
-                transition={
-                  ridotte
-                    ? { duration: 0 }
-                    : {
-                        height: { duration: dur.slow, ease: easeOut },
-                        opacity: { duration: dur.base, ease: easeOut },
-                      }
-                }
-                style={{ overflow: "hidden" }}
-              >
-                <Box pt={GAP_SCHEDE}>
-                  {virtualizzaUlteriori ? (
-                    <VirtualStack
-                      items={ulteriori}
-                      getKey={chiaveSuggerimento}
-                      maxHeight={ALTEZZA_EXTRA_MAX}
-                      gap={GAP_SCHEDE}
-                      estimateHeight={ALTEZZA_SCHEDA}
-                      fixedItemHeight={ALTEZZA_SCHEDA}
-                      overscan={2}
-                      renderItem={renderVirtuale}
-                    />
-                  ) : (
-                    <Stack gap={GAP_SCHEDE}>
-                      {ulteriori.map((suggerimento, indice) => (
-                        <SchedaSuggerimento
-                          key={suggerimento.id}
-                          suggerimento={suggerimento}
-                          indice={indice}
-                          virtuale
-                          ridotte={ridotte}
-                          onApri={apri}
-                          onNascondi={nascondi}
-                        />
-                      ))}
-                    </Stack>
-                  )}
+            </Stack>
+          </motion.div>
+        ) : suggerimenti.length === 0 ? (
+          <motion.div
+            key="suggerimenti-vuoto"
+            initial={ridotte ? false : { opacity: 0, y: 4, scale: 0.995 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={ridotte ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.992 }}
+            transition={{ duration: ridotte ? 0 : dur.base, ease: easeOut }}
+          >
+            <Paper withBorder radius="lg" p="md" className="pt-suggerimenti-vuoto">
+              <Group justify="space-between" gap="md" wrap="wrap">
+              <Group gap="sm" wrap="nowrap">
+                <ThemeIcon variant="light" color="gray" radius="xl">
+                  <IconSparkles size={17} />
+                </ThemeIcon>
+                <Box>
+                  <Text size="sm" fw={700}>
+                    {scansionando
+                      ? "Analisi delle azioni in corso"
+                      : "Tutto sotto controllo"}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {scansionando
+                      ? "Ricontrollo ordini, scadenze e attività correnti…"
+                      : controlloManualeCompletato
+                        ? "Controllo completato: nessuna nuova azione da suggerire."
+                        : "Non ci sono azioni operative da suggerire adesso."}
+                  </Text>
                 </Box>
-              </motion.div>
-            )}
-          </AnimatePresence>
-          <Group justify="space-between" gap="xs" mt={8}>
-            <Button
-              variant="subtle"
-              color="gray"
-              size="compact-xs"
-              leftSection={<IconEyeOff size={13} />}
-              loading={ignorandoTutti}
-              onClick={() => void ignoraTutti()}
-            >
-              Ignora tutte
-            </Button>
-            {ulteriori.length > 0 && (
+              </Group>
+              <Tooltip
+                label={
+                  haCategorieAttive
+                    ? "Mostra tutte le azioni correnti, anche quelle ignorate o sospese"
+                    : "Attiva almeno una categoria nelle impostazioni"
+                }
+                withArrow
+              >
+                <Button
+                  size="compact-sm"
+                  variant="light"
+                  color="violet"
+                  className="pt-galaxy-scan-button"
+                  data-scanning={scansionando || undefined}
+                  data-reduced={ridotte || undefined}
+                  aria-busy={scansionando}
+                  disabled={!haCategorieAttive}
+                  leftSection={
+                    <span className="pt-galaxy-scan-icon" aria-hidden>
+                      <IconSparkle className="pt-galaxy-scan-star pt-galaxy-scan-star--1" />
+                      <IconSparkle className="pt-galaxy-scan-star pt-galaxy-scan-star--2" />
+                      <IconSparkle className="pt-galaxy-scan-star pt-galaxy-scan-star--3" />
+                    </span>
+                  }
+                  onClick={() => void forzaControllo()}
+                >
+                  {scansionando ? "Sto analizzando" : "Controlla ora"}
+                </Button>
+              </Tooltip>
+              </Group>
+            </Paper>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="suggerimenti-lista"
+            initial={ridotte ? false : { opacity: 0, y: 6, scale: 0.995 }}
+            animate={
+              uscitaTutti && !ridotte
+                ? { opacity: 0, y: -4, scale: 0.992 }
+                : { opacity: 1, y: 0, scale: 1 }
+            }
+            exit={ridotte ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.992 }}
+            transition={{ duration: ridotte ? 0 : dur.base, ease: easeOut }}
+            style={{
+              pointerEvents: uscitaTutti ? "none" : undefined,
+              willChange:
+                uscitaTutti && !ridotte ? "transform, opacity" : undefined,
+            }}
+          >
+            <Stack gap={GAP_SCHEDE}>
+              <AnimatePresence initial={false}>
+                {principali.map((suggerimento, indice) => (
+                  <SchedaSuggerimento
+                    key={suggerimento.id}
+                    suggerimento={suggerimento}
+                    indice={indice}
+                    temporaneo={temporanei.has(suggerimento.id)}
+                    ridotte={ridotte}
+                    onApri={apri}
+                    onNascondi={nascondi}
+                  />
+                ))}
+              </AnimatePresence>
+            </Stack>
+            <AnimatePresence initial={false}>
+              {espanso && ulteriori.length > 0 && (
+                <motion.div
+                  id="pt-suggerimenti-extra"
+                  key="suggerimenti-extra"
+                  initial={ridotte ? false : { height: 0, opacity: 0 }}
+                  animate={{
+                    height: virtualizzaUlteriori
+                      ? altezzaEspansaUlteriori
+                      : "auto",
+                    opacity: 1,
+                  }}
+                  exit={ridotte ? { height: 0 } : { height: 0, opacity: 0 }}
+                  transition={
+                    ridotte
+                      ? { duration: 0 }
+                      : {
+                          height: { duration: dur.slow, ease: easeOut },
+                          opacity: { duration: dur.base, ease: easeOut },
+                        }
+                  }
+                  style={{ overflow: "hidden" }}
+                >
+                  <Box pt={GAP_SCHEDE}>
+                    {virtualizzaUlteriori ? (
+                      <VirtualStack
+                        items={ulteriori}
+                        getKey={chiaveSuggerimento}
+                        maxHeight={ALTEZZA_EXTRA_MAX}
+                        gap={GAP_SCHEDE}
+                        estimateHeight={ALTEZZA_SCHEDA}
+                        fixedItemHeight={ALTEZZA_SCHEDA}
+                        overscan={2}
+                        renderItem={renderVirtuale}
+                      />
+                    ) : (
+                      <Stack gap={GAP_SCHEDE}>
+                        <AnimatePresence initial={false}>
+                          {ulteriori.map(renderVirtuale)}
+                        </AnimatePresence>
+                      </Stack>
+                    )}
+                  </Box>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <Group justify="space-between" gap="xs" mt={8}>
               <Button
                 variant="subtle"
                 color="gray"
                 size="compact-xs"
-                aria-expanded={espanso}
-                aria-controls="pt-suggerimenti-extra"
-                rightSection={
-                  <motion.span
-                    aria-hidden
-                    animate={{ rotate: espanso ? 180 : 0 }}
-                    transition={{
-                      duration: ridotte ? 0 : dur.base,
-                      ease: easeOut,
-                    }}
-                    style={{ display: "inline-flex" }}
-                  >
-                    <IconChevronDown size={14} />
-                  </motion.span>
-                }
-                onClick={() => setEspanso((value) => !value)}
+                leftSection={<IconEyeOff size={13} />}
+                loading={ignorandoTutti}
+                onClick={() => void ignoraTutti()}
               >
-                {espanso
-                  ? "Mostra meno"
-                  : `Mostra altre ${ulteriori.length}`}
+                Ignora tutte
               </Button>
-            )}
-          </Group>
-        </>
-      )}
+              {ulteriori.length > 0 && (
+                <Button
+                  variant="subtle"
+                  color="gray"
+                  size="compact-xs"
+                  aria-expanded={espanso}
+                  aria-controls="pt-suggerimenti-extra"
+                  rightSection={
+                    <motion.span
+                      aria-hidden
+                      animate={{ rotate: espanso ? 180 : 0 }}
+                      transition={{
+                        duration: ridotte ? 0 : dur.base,
+                        ease: easeOut,
+                      }}
+                      style={{ display: "inline-flex" }}
+                    >
+                      <IconChevronDown size={14} />
+                    </motion.span>
+                  }
+                  onClick={() => setEspanso((value) => !value)}
+                >
+                  {espanso
+                    ? "Mostra meno"
+                    : `Mostra altre ${ulteriori.length}`}
+                </Button>
+              )}
+            </Group>
+          </motion.div>
+        )}
+      </AnimatePresence>
       </Card>
       <Modal
         opened={impostazioniAperte}

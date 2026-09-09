@@ -1,6 +1,16 @@
 // Token e varianti di animazione condivisi (Framer Motion). Vedi UI-SPEC §12.
 import type { Variants } from "framer-motion";
-import { usePrefs } from "../lib/prefs";
+import type { CSSProperties } from "react";
+import { CHIAVI_PREFERENZE, usePrefs } from "../lib/prefs";
+
+/** Lettura sincrona per gli effetti avviati fuori dal ciclo React. */
+export function animazioniRidotteSalvate(): boolean {
+  try {
+    return JSON.parse(localStorage.getItem(CHIAVI_PREFERENZE.ridurreAnimazioni) || "false") === true;
+  } catch {
+    return false;
+  }
+}
 
 /** True se l'utente ha attivato «Riduci animazioni» (Impostazioni).
  *
@@ -16,6 +26,19 @@ export function useAnimazioniRidotte(): boolean {
 export const dur = { xfast: 0.1, fast: 0.13, base: 0.18, tab: 0.18, slow: 0.26 } as const;
 /** Switch fra tabelle parallele (Spedizioni e Contabilità): volutamente istantaneo. */
 export const durataSwitchTabelleMs = 0;
+
+/** Stile comune alle viste contabili mantenute montate durante il cambio scheda. */
+export function stileVistaTabellaParallela(
+  nascosta: boolean,
+  ridurreAnimazioni: boolean
+): CSSProperties {
+  return {
+    height: "100%",
+    opacity: nascosta ? 0 : 1,
+    visibility: nascosta ? "hidden" : "visible",
+    transition: ridurreAnimazioni ? "none" : `opacity ${durataSwitchTabelleMs}ms ease-out`,
+  };
+}
 export const easeOut = [0.2, 0.8, 0.2, 1] as const;
 export const easeInOut = [0.4, 0, 0.2, 1] as const;
 

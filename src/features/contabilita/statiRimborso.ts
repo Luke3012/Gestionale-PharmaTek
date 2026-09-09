@@ -90,21 +90,14 @@ export function impattoRimborsoDopoIncasso(args: {
   nuovoIncasso: number;
   rimborsi: Rimborso[];
 }): { importoAttuale: number; importoDopo: number; esistente: boolean } {
-  const collegati = args.rimborsi.filter(
-    (rimborso) => rimborso.origine === "extra" && rimborso.ordineId === args.ordineId
+  const { richiesto, importoEffettuato } = riepilogaRimborsiExtraOrdine(
+    args.rimborsi,
+    args.ordineId
   );
-  const richiesto = collegati
-    .filter((rimborso) => rimborso.stato === "richiesto")
-    .sort(
-      (a, b) => b.dataRichiesta.localeCompare(a.dataRichiesta) || b.id.localeCompare(a.id)
-    )[0];
-  const giaEffettuato = collegati
-    .filter((rimborso) => rimborso.stato === "effettuato")
-    .reduce((somma, rimborso) => somma + Math.max(0, rimborso.importo), 0);
   const eccedenzaDopo = Math.max(0, args.incassatoPrima + args.nuovoIncasso - args.totale);
   return {
     importoAttuale: richiesto?.importo ?? 0,
-    importoDopo: Math.max(0, eccedenzaDopo - giaEffettuato),
+    importoDopo: Math.max(0, eccedenzaDopo - importoEffettuato),
     esistente: !!richiesto,
   };
 }

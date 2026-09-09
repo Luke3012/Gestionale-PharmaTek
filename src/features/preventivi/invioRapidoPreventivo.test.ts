@@ -14,11 +14,7 @@ import {
 import type { AllegatiPreventivoPerCanale } from "./allegatiPreventivo";
 import { toast } from "../../ui/toast/store";
 
-const EMAIL_DEMO = ["cliente", ["example", "invalid"].join(".")].join("@");
-
-function preventivo(
-  overrides: Partial<Preventivo> = {},
-): Preventivo {
+function preventivo(overrides: Partial<Preventivo> = {}): Preventivo {
   return {
     id: "preventivo-1",
     revision: "rev-1",
@@ -32,7 +28,7 @@ function preventivo(
     medicoNome: "Dott. Bianchi",
     agenteNome: "Agente",
     linee: ["Immunoterapia"],
-    email: EMAIL_DEMO,
+    email: "",
     telefono: "3331234567",
     creatoMs: Date.UTC(2026, 6, 30),
     totale: 12_300,
@@ -53,7 +49,10 @@ function modello(): ModelloComunicazione {
   } as ModelloComunicazione;
 }
 
-function comunicazione(id: string, canale: "email" | "whatsapp"): Comunicazione {
+function comunicazione(
+  id: string,
+  canale: "email" | "whatsapp",
+): Comunicazione {
   return { id, canale, stato: "bozza" } as Comunicazione;
 }
 
@@ -64,10 +63,7 @@ function dipendenze() {
   const mettiInCoda = vi.fn(
     async (id: string): Promise<Comunicazione> =>
       ({
-        ...comunicazione(
-          id,
-          id.endsWith("email") ? "email" : "whatsapp",
-        ),
+        ...comunicazione(id, id.endsWith("email") ? "email" : "whatsapp"),
         stato: "in_coda",
       }) as Comunicazione,
   );
@@ -75,24 +71,21 @@ function dipendenze() {
   const valore: DipendenzeInvioRapidoPreventivo = {
     listaModelli: vi.fn(async () => [modello()]),
     preparaAllegati: vi.fn(
-      async (
-        _preventivo: Preventivo,
-        canali: readonly CanaleComunicazione[],
-      ) =>
-      Object.fromEntries(
-        canali.map((canale) => [
-          canale,
-          [
-            {
-              nome: `${canale}.pdf`,
-              mime: "application/pdf",
-              dimensione: 1,
-              riferimento: `pt-cache://${canale}`,
-              sha256: canale,
-            },
-          ],
-        ]),
-      ),
+      async (_preventivo: Preventivo, canali: readonly CanaleComunicazione[]) =>
+        Object.fromEntries(
+          canali.map((canale) => [
+            canale,
+            [
+              {
+                nome: `${canale}.pdf`,
+                mime: "application/pdf",
+                dimensione: 1,
+                riferimento: `pt-cache://${canale}`,
+                sha256: canale,
+              },
+            ],
+          ]),
+        ),
     ),
     rilasciaAllegati,
     creaBozza,
@@ -131,19 +124,16 @@ describe("inviaPreventivoRapido", () => {
       patch: { email: "" },
       canale: "whatsapp",
     },
-  ])("invia silenziosamente sul canale disponibile: $nome", async ({
-    patch,
-    canale,
-  }) => {
-    const deps = dipendenze();
-    const esito = await inviaPreventivoRapido(
-      preventivo(patch),
-      deps.valore,
-    );
-    expect(esito.canali).toEqual([canale]);
-    expect(deps.creaBozza).toHaveBeenCalledTimes(1);
-    expect(deps.creaBozza.mock.calls[0][0].campagnaId).toBe("");
-  });
+  ])(
+    "invia silenziosamente sul canale disponibile: $nome",
+    async ({ patch, canale }) => {
+      const deps = dipendenze();
+      const esito = await inviaPreventivoRapido(preventivo(patch), deps.valore);
+      expect(esito.canali).toEqual([canale]);
+      expect(deps.creaBozza).toHaveBeenCalledTimes(1);
+      expect(deps.creaBozza.mock.calls[0][0].campagnaId).toBe("");
+    },
+  );
 
   it("non crea bozze quando entrambi i recapiti sono inutilizzabili", async () => {
     const deps = dipendenze();
@@ -172,9 +162,13 @@ describe("inviaPreventivoRapido", () => {
     deps.valore.preparaAllegati = vi.fn(async () => {
       throw new Error("documento in overflow");
     });
-    const toastErrore = vi.spyOn(toast, "error").mockImplementation(() => "toast-test");
+    const toastErrore = vi
+      .spyOn(toast, "error")
+      .mockImplementation(() => "toast-test");
 
-    expect(await avviaInvioRapidoPreventivo(preventivo(), deps.valore)).toBe(false);
+    expect(await avviaInvioRapidoPreventivo(preventivo(), deps.valore)).toBe(
+      false,
+    );
     expect(toastErrore).toHaveBeenCalledWith(
       "Invio preventivo non riuscito: documento in overflow",
     );

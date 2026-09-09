@@ -493,6 +493,17 @@ export function Tabella<T>(props: TabellaProps<T>) {
       (table.querySelector(".mantine-datatable-header-selector-cell") as HTMLElement | null)
         ?.getBoundingClientRect().width ?? 0;
 
+    const applicaLarghezzeColonne = (ths: HTMLElement[], larghezze: number[]) => {
+      ths.forEach((th, i) => {
+        const width = `${Math.round(larghezze[i])}px`;
+        if (th.style.width !== width) {
+          th.style.width = width;
+          th.style.minWidth = width;
+          th.style.maxWidth = width;
+        }
+      });
+    };
+
     const applicaFluido = (table: HTMLElement, ths: HTMLElement[], preferite: number[], conAnimazione = false) => {
       const viewport = table.closest(".mantine-ScrollArea-viewport") as HTMLElement | null;
       const disponibile = viewport?.clientWidth || shell.clientWidth || table.getBoundingClientRect().width;
@@ -505,14 +516,7 @@ export function Tabella<T>(props: TabellaProps<T>) {
       if (table.style.width !== newTableWidth) {
         table.style.width = newTableWidth;
       }
-      ths.forEach((th, i) => {
-        const width = `${Math.round(larghezze[i])}px`;
-        if (th.style.width !== width) {
-          th.style.width = width;
-          th.style.minWidth = width;
-          th.style.maxWidth = width;
-        }
-      });
+      applicaLarghezzeColonne(ths, larghezze);
 
       if (conAnimazione && !ridurreAnimazioni) {
         shell.classList.remove("pt-tabella-pre-fade");
@@ -532,14 +536,7 @@ export function Tabella<T>(props: TabellaProps<T>) {
       if (table.style.width !== newTableWidth) {
         table.style.width = newTableWidth;
       }
-      ths.forEach((th, i) => {
-        const width = `${Math.round(larghezze[i])}px`;
-        if (th.style.width !== width) {
-          th.style.width = width;
-          th.style.minWidth = width;
-          th.style.maxWidth = width;
-        }
-      });
+      applicaLarghezzeColonne(ths, larghezze);
     };
 
     const salva = (ths: HTMLElement[], larghezze: number[]) => {

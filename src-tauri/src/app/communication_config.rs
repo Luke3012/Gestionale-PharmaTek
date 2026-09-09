@@ -30,9 +30,9 @@ const DEFAULT_NOME_MITTENTE: &str = "PharmaTek";
 const DEFAULT_EMAIL_MITTENTE: &str = "";
 const DEFAULT_REPLY_TO: &str = "";
 const DEFAULT_DESTINATARIO_PROVA: &str = "";
-const DEFAULT_SMTP_HOST: &str = "";
+const DEFAULT_SMTP_HOST: &str = "smtp.example.invalid";
 const DEFAULT_SMTP_PORT: u16 = 465;
-const DEFAULT_IMAP_HOST: &str = "";
+const DEFAULT_IMAP_HOST: &str = "imap.example.invalid";
 const DEFAULT_IMAP_PORT: u16 = 993;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,24 +736,8 @@ mod tests {
         (app, data, state)
     }
 
-    fn email_demo() -> String {
-        ["casella", "example.invalid"].join("@").to_string()
-    }
-
-    fn config_test() -> ConfigurazioneEmailCondivisa {
-        ConfigurazioneEmailCondivisa {
-            nome_mittente: "PharmaTek Demo".into(),
-            indirizzo_mittente: email_demo(),
-            smtp_host: "smtp.example.invalid".into(),
-            smtp_username: "utente-demo".into(),
-            imap_host: "imap.example.invalid".into(),
-            destinatario_prova: email_demo(),
-            ..ConfigurazioneEmailCondivisa::default()
-        }
-    }
-
     fn input_default() -> ConfigurazioneEmailSalvaInput {
-        let config = config_test();
+        let config = ConfigurazioneEmailCondivisa::default();
         ConfigurazioneEmailSalvaInput {
             nome_mittente: config.nome_mittente,
             indirizzo_mittente: config.indirizzo_mittente,
@@ -777,9 +761,9 @@ mod tests {
     fn preset_aruba_e_decisioni_utente_sono_coerenti() {
         let config = ConfigurazioneEmailCondivisa::default();
         assert_eq!(config.indirizzo_mittente, "");
-        assert_eq!(config.smtp_host, "");
+        assert_eq!(config.smtp_host, "smtp.example.invalid");
         assert_eq!(config.smtp_port, 465);
-        assert_eq!(config.imap_host, "");
+        assert_eq!(config.imap_host, "imap.example.invalid");
         assert_eq!(config.imap_port, 993);
         assert!(config.salva_posta_inviata);
         assert_eq!(config.reply_to, "");
@@ -814,14 +798,14 @@ mod tests {
 
     #[test]
     fn reply_to_disabilitato_resta_proposto_ma_non_obbligatorio() {
-        let mut config = config_test();
+        let mut config = ConfigurazioneEmailCondivisa::default();
         config.reply_to.clear();
         assert!(valida(config).is_ok());
 
         let config = ConfigurazioneEmailCondivisa {
             reply_to_abilitato: true,
             reply_to: "non-valido".into(),
-            ..config_test()
+            ..ConfigurazioneEmailCondivisa::default()
         };
         assert!(valida(config).is_err());
     }
@@ -835,7 +819,7 @@ mod tests {
             canale: CanaleComunicazione::Email,
             destinatario_entita: "cliente".into(),
             destinatario_id: "cliente-1".into(),
-            recapito: email_demo(),
+            recapito: "".into(),
             oggetto: "Preventivo P-1".into(),
             corpo: "In allegato trova il preventivo.".into(),
             modello_id: String::new(),
@@ -851,6 +835,8 @@ mod tests {
             allegati: Vec::new(),
             tentativi: 0,
             ultimo_errore: String::new(),
+            errore_codice: String::new(),
+            errore_fase: String::new(),
             esito_ambiguo: false,
             proprietario_utente_id: "utente-1".into(),
             proprietario_utente_nome: "Tester".into(),
@@ -863,7 +849,7 @@ mod tests {
             stato_aggiornato_ms: 1,
         };
         let messaggio = crea_messaggio_operativo(
-            &config_test(),
+            &ConfigurazioneEmailCondivisa::default(),
             &comunicazione,
             vec![(
                 "Preventivo P-1.pdf".into(),

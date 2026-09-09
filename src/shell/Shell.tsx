@@ -9,11 +9,19 @@ import { toast } from "../ui/toast/store";
 import { usePrefs } from "../lib/prefs";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
-import { ascoltaNavigazione, mostraSpotlight, registraHotkeyGlobale, DeepLinkCtx, type DeepLink } from "./navigazione";
+import {
+  ascoltaNavigazione,
+  mostraSpotlight,
+  registraHotkeyGlobale,
+  richiediSpotlightAllaMain,
+  DeepLinkCtx,
+  type DeepLink,
+} from "./navigazione";
 import { RiepilogoModalHost } from "./RiepilogoModalHost";
 import { fadeSlide } from "../ui/motion";
 import { UnifiedBootScreen } from "../ui/Brand";
 import { vistaBloccanteAttiva } from "../lib/closeOnScroll";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 import { CHIAVE_ANNO_PROMPT_COMPLETATO, deveProporreCambioAnno } from "./cambioAnno";
 import { PremiumRoute } from "../premium/PremiumAccess";
 
@@ -63,17 +71,21 @@ const CampagnaComunicazioniHost = lazy(() =>
   }))
 );
 
+interface ShellProps {
+  identity: Identity;
+  onIdentityChange: (identity: Identity) => void;
+  forceDashboardIntro?: boolean;
+  testoDashboardLoader?: string | null;
+  saltaIntroDashboard?: boolean;
+}
+
 export function Shell({
   identity,
   onIdentityChange,
   forceDashboardIntro = false,
   testoDashboardLoader = "Preparo la tua dashboard…",
-}: {
-  identity: Identity;
-  onIdentityChange: (identity: Identity) => void;
-  forceDashboardIntro?: boolean;
-  testoDashboardLoader?: string | null;
-}) {
+  saltaIntroDashboard = false,
+}: ShellProps) {
   return (
     <MemoryRouter>
       <ShellLayout
@@ -81,6 +93,7 @@ export function Shell({
         onIdentityChange={onIdentityChange}
         forceDashboardIntro={forceDashboardIntro}
         testoDashboardLoader={testoDashboardLoader}
+        saltaIntroDashboard={saltaIntroDashboard}
       />
     </MemoryRouter>
   );
@@ -91,12 +104,8 @@ function ShellLayout({
   onIdentityChange,
   forceDashboardIntro = false,
   testoDashboardLoader = "Preparo la tua dashboard…",
-}: {
-  identity: Identity;
-  onIdentityChange: (identity: Identity) => void;
-  forceDashboardIntro?: boolean;
-  testoDashboardLoader?: string | null;
-}) {
+  saltaIntroDashboard = false,
+}: ShellProps) {
   const { anno, setAnno, sidebar, setSidebar, cestinoGiorni, hotkeyGlobale, ridurreAnimazioni } =
     usePrefs();
   const navigate = useNavigate();
@@ -230,7 +239,7 @@ function ShellLayout({
   useEffect(() => {
     if (!inTauri) return;
     let annullato = false;
-    registraHotkeyGlobale(hotkeyGlobale, () => void mostraSpotlight()).then((ok) => {
+    registraHotkeyGlobale(hotkeyGlobale, () => void richiediSpotlightAllaMain()).then((ok) => {
       if (!ok && !annullato) {
         toast.error(
           `Scorciatoia globale «${hotkeyGlobale}» non disponibile (forse già usata da un altro programma). Cambiala in Impostazioni.`,
@@ -263,21 +272,17 @@ function ShellLayout({
   useEffect(() => {
     if (!inTauri) return;
     let attivo = true;
-    let off: (() => void) | undefined;
-    ascoltaNavigazione((link) => {
-      if (!attivo) return false;
-      setDeepLink(link);
-      navigate(link.path);
-      return true;
-    })
-      .then((u) => {
-        if (attivo) off = u;
-        else u();
-      })
-      .catch(() => {});
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      ascoltaNavigazione((link) => {
+        if (!attivo) return false;
+        setDeepLink(link);
+        navigate(link.path);
+        return true;
+      }),
+    );
     return () => {
       attivo = false;
-      off?.();
+      disiscriviTauri();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -356,7 +361,17 @@ function ShellLayout({
   const rotte: ReactNode = (
     <Suspense fallback={fallbackRotta}>
       <Routes location={location}>
-        <Route path="/" element={<DashboardView identity={identity} forceIntro={forceDashboardIntroOnce} testoIntro={testoDashboardLoader} />} />
+        <Route
+          path="/"
+          element={
+            <DashboardView
+              identity={identity}
+              forceIntro={forceDashboardIntroOnce}
+              testoIntro={testoDashboardLoader}
+              saltaIntro={saltaIntroDashboard}
+            />
+          }
+        />
         <Route path="/giornaliero" element={<GiornalieroView identity={identity} />} />
         <Route path="/preventivi" element={<PremiumRoute><PreventiviView identity={identity} /></PremiumRoute>} />
         <Route path="/produzione" element={<ProduzioneView identity={identity} />} />

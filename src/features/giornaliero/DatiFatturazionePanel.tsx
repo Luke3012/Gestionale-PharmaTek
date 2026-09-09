@@ -1,10 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { Autocomplete, Box, Button, Collapse, Group, Popover, Stack, Text, TextInput } from "@mantine/core";
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 
-import { cercaPerCAP, cercaPerCitta, type ComuneInfo } from "../../lib/cap-lookup";
-import { useCloseOnScroll } from "../../lib/closeOnScroll";
+import {
+  cercaCittaSelezionata,
+  type ComuneInfo,
+} from "../../lib/cap-lookup";
 import { CalcolaCFPopover, CFValidationBadge } from "../anagrafiche/CalcolaCFPopover";
+import { ScelteCapPopover } from "../../ui/ScelteCapPopover";
+import { useScelteCap } from "../../ui/useScelteCap";
 
 export interface DatiFatturazione {
   ragione_sociale: string;
@@ -24,11 +28,10 @@ interface Props {
 
 /** Campi di fatturazione opzionali, inclusa la disambiguazione CAP/città. */
 export function DatiFatturazionePanel({ expanded, value, onToggle, onChange }: Props) {
-  const [suggerimentiCitta, setSuggerimentiCitta] = useState<string[]>([]);
-  const [capAmbiguo, setCapAmbiguo] = useState<ComuneInfo[] | null>(null);
-  const [capCittaMultiplo, setCapCittaMultiplo] = useState<ComuneInfo | null>(null);
-  const [capPopoverAperto, setCapPopoverAperto] = useState(false);
-  useCloseOnScroll(capPopoverAperto, setCapPopoverAperto);
+  const {
+    suggerimentiCitta, capAmbiguo, capCittaMultiplo, capPopoverAperto,
+    setCapPopoverAperto, dopoSceltaComune, gestisciCap, suggerisciCitta,
+  } = useScelteCap();
 
   const aggiorna = useCallback(
     (patch: Partial<DatiFatturazione>) => onChange({ ...value, ...patch }),
@@ -48,44 +51,23 @@ export function DatiFatturazionePanel({ expanded, value, onToggle, onChange }: P
             ? { cap: info.cap[0] }
             : {}),
       });
-      setCapAmbiguo(null);
-      if (opzioni.mostraCapMultipli && info.cap.length > 1) {
-        setCapCittaMultiplo(info);
-        setCapPopoverAperto(true);
-      } else {
-        setCapCittaMultiplo(null);
-        setCapPopoverAperto(false);
-      }
+      dopoSceltaComune(info, opzioni.mostraCapMultipli);
     },
-    [aggiorna]
+    [aggiorna, dopoSceltaComune]
   );
 
   function cambiaCap(cap: string) {
     aggiorna({ cap });
-    if (cap.length === 5 && /^\d{5}$/.test(cap)) {
-      const risultato = cercaPerCAP(cap);
-      if (risultato?.univoco) {
-        usaComune(risultato.comuni[0], { capSelezionato: cap });
-      }
-      else if (risultato) {
-        setCapCittaMultiplo(null);
-        setCapAmbiguo(risultato.comuni);
-        setCapPopoverAperto(true);
-      }
-    } else {
-      setCapAmbiguo(null);
-      setCapCittaMultiplo(null);
-      setCapPopoverAperto(false);
-    }
+    gestisciCap(cap, (comune) => usaComune(comune, { capSelezionato: cap }));
   }
 
   function cambiaCitta(query: string) {
     aggiorna({ citta: query });
-    setSuggerimentiCitta(query.length < 2 ? [] : cercaPerCitta(query, 10).map((comune) => comune.nome));
+    suggerisciCitta(query);
   }
 
   function selezionaCitta(nome: string) {
-    const comune = cercaPerCitta(nome, 1).find((risultato) => risultato.nome.toLowerCase() === nome.toLowerCase());
+    const comune = cercaCittaSelezionata(nome);
     if (comune) usaComune(comune, { mostraCapMultipli: true });
   }
 
@@ -118,37 +100,11 @@ export function DatiFatturazionePanel({ expanded, value, onToggle, onChange }: P
             {capAmbiguo || capCittaMultiplo ? (
               <Popover opened={capPopoverAperto} onChange={setCapPopoverAperto} position="bottom-start" shadow="md" radius="md" width={280} withArrow zIndex={1400}>
                 <Popover.Target><TextInput label="CAP" maxLength={5} value={value.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} /></Popover.Target>
-                <Popover.Dropdown p="xs" data-mantine-stop-propagation="true">
-                  <Text size="xs" fw={600} c="dimmed" mb={4}>
-                    {capCittaMultiplo
-                      ? `Più CAP per ${capCittaMultiplo.nome}:`
-                      : "Più comuni per questo CAP:"}
-                  </Text>
-                  <Stack gap={2}>
-                    {capCittaMultiplo
-                      ? capCittaMultiplo.cap.map((cap) => (
-                          <Button
-                            key={cap}
-                            variant="subtle"
-                            size="xs"
-                            justify="flex-start"
-                            fullWidth
-                            onClick={() =>
-                              usaComune(capCittaMultiplo, {
-                                capSelezionato: cap,
-                              })
-                            }
-                          >
-                            {cap} — {capCittaMultiplo.nome} ({capCittaMultiplo.sigla})
-                          </Button>
-                        ))
-                      : capAmbiguo?.map((comune) => (
-                          <Button key={comune.nome} variant="subtle" size="xs" justify="flex-start" fullWidth onClick={() => usaComune(comune)}>
-                            {comune.nome} ({comune.sigla}) — {comune.regione}
-                          </Button>
-                        ))}
-                  </Stack>
-                </Popover.Dropdown>
+                <ScelteCapPopover
+                  capCittaMultiplo={capCittaMultiplo}
+                  capAmbiguo={capAmbiguo}
+                  onScegli={usaComune}
+                />
               </Popover>
             ) : (
               <TextInput label="CAP" maxLength={5} value={value.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} />

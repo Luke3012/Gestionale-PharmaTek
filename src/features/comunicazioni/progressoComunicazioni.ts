@@ -20,6 +20,27 @@ export interface ProgressoComunicazioni {
   messaggio: string;
 }
 
+/**
+ * Conta le comunicazioni come azioni percepite dall'utente: WhatsApp ed e-mail
+ * destinati alla stessa persona nello stesso invio valgono come un solo
+ * messaggio. I ripieghi coprono comunicazioni storiche prive di destinatario.
+ */
+export function contaMessaggiLogici(
+  comunicazioni: Comunicazione[],
+): number {
+  return new Set(
+    comunicazioni.map((item) => {
+      const destinatarioId = item.destinatarioId?.trim();
+      if (destinatarioId) {
+        return `destinatario:${item.destinatarioEntita}:${destinatarioId}`;
+      }
+      const origineId = item.origineId?.trim();
+      if (origineId) return `origine:${item.origineEntita}:${origineId}`;
+      return `testo:${item.tipoModello}:${item.corpo.trim()}`;
+    }),
+  ).size;
+}
+
 export function riepilogaProgressoComunicazioni(
   comunicazioni: Comunicazione[],
 ): ProgressoComunicazioni {

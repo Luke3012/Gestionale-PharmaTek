@@ -4,7 +4,8 @@
 // read-state per-utente e l'apertura delle entità collegate).
 import { Box } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { inTauri, type Identity } from "../lib/tauri";
+import { inTauri } from "../lib/tauri";
+import { identityDaParametri } from "../lib/identityParams";
 import { useRicordaGeometria } from "../lib/geometriaFinestre";
 import { ListaNotifiche } from "../features/notifiche/ListaNotifiche";
 import { useNotifiche } from "../features/notifiche/useNotifiche";
@@ -12,22 +13,13 @@ import type { ComposeNotificaTarget } from "./apriPannelli";
 
 export function NotificheWindow() {
   const params = new URLSearchParams(window.location.search);
-  const uid = params.get("uid");
   const composeDest = params.get("composeDest") ?? "";
   const composeNome = params.get("composeNome") ?? "";
-  const identity: Identity | undefined = uid
-    ? {
-        userId: uid,
-        nome: params.get("nome") ?? "",
-        deviceId: params.get("dev") ?? "",
-        avatarTipo: "iniziali",
-        avatarValore: "",
-        deviceNome: "",
-        dataDir: "",
-      }
-    : undefined;
+  const identity = identityDaParametri(params);
 
-  const state = useNotifiche(identity);
+  // Questa finestra consulta e modifica lo stato, ma il rilevatore Rust appartiene
+  // esclusivamente alla campanella della Shell principale.
+  const state = useNotifiche(identity, false);
   useRicordaGeometria("notifiche");
   const [componi, setComponi] = useState<{ destId: string; destNome: string; nonce: number } | undefined>(
     composeDest ? { destId: composeDest, destNome: composeNome || composeDest, nonce: 1 } : undefined

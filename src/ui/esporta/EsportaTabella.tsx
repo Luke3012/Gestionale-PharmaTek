@@ -32,7 +32,9 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, inTauri } from "../../lib/tauri";
 import { toast } from "../toast/store";
 import { centsToEurStr } from "../../lib/money";
+import { formattaDataIsoItaliana as formatData } from "../../lib/date";
 import { useModalSnapshot } from "../useModalSnapshot";
+import { setConToggle } from "../../lib/set";
 
 export type TipoCella = "testo" | "euro" | "data" | "numero";
 export type Orientamento = "verticale" | "orizzontale";
@@ -56,11 +58,6 @@ export interface MetaExport<T> {
   tipo?: TipoCella;
   totale?: boolean;
   valore: (r: T) => string | number;
-}
-
-function formatData(iso: string): string {
-  if (!iso || iso.length < 10) return iso || "";
-  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 }
 
 function isNumerica<T>(c: ColonnaExport<T>): boolean {
@@ -118,6 +115,21 @@ export function colonneEsportabili<T>(
       valore: d.esporta!.valore,
       preSel: visibili.has(d.key),
     }));
+}
+
+/** Colonne esportabili nello stesso ordine e con la stessa visibilità della tabella. */
+export function useColonneEsportabili<T>(colonne: {
+  tutte: readonly { def: { key: string; label: string; esporta?: MetaExport<T> } }[];
+  visibili: readonly { key: string }[];
+}) {
+  return useMemo(
+    () =>
+      colonneEsportabili(
+        colonne.tutte.map((voce) => voce.def),
+        new Set(colonne.visibili.map((colonna) => colonna.key)),
+      ),
+    [colonne.tutte, colonne.visibili],
+  );
 }
 
 function escapeHtml(s: string): string {
@@ -340,12 +352,7 @@ export function EsportaTabella<T>({
   }, [aperto]);
 
   function toggle(key: string) {
-    setSel((s) => {
-      const n = new Set(s);
-      if (n.has(key)) n.delete(key);
-      else n.add(key);
-      return n;
-    });
+    setSel((corrente) => setConToggle(corrente, key));
   }
 
   async function salvaExcel() {

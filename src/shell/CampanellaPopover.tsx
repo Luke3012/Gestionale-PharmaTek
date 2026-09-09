@@ -9,11 +9,17 @@ import { IconBell, IconBellRinging } from "@tabler/icons-react";
 import { motion } from "framer-motion";
 import { type Identity } from "../lib/tauri";
 import { ListaNotifiche } from "../features/notifiche/ListaNotifiche";
-import { nascondiPopupDaCampanella } from "../features/notifiche/notifiche";
+import {
+  EVENTO_APRI_POPOVER_NOTIFICHE,
+  nascondiPopupDaCampanella,
+  type RichiestaAperturaPopoverNotifiche,
+} from "../features/notifiche/notifiche";
 import { useNotifiche } from "../features/notifiche/useNotifiche";
 import { EVENTO_COMPONI, type ComponiTarget } from "../features/notifiche/messaggi";
 import { useDismissPopover } from "../lib/closeOnScroll";
 import { useAnimazioniRidotte } from "../ui/motion";
+import { osservaRidimensionamento } from "../ui/osservaRidimensionamento";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 
 function AltezzaPannelloFluida({ children }: { children: ReactNode }) {
   const contenutoRef = useRef<HTMLDivElement>(null);
@@ -33,10 +39,7 @@ function AltezzaPannelloFluida({ children }: { children: ReactNode }) {
       setAltezza((corrente) => (corrente === prossima ? corrente : prossima));
     };
 
-    misura();
-    const observer = new ResizeObserver(misura);
-    observer.observe(contenuto);
-    return () => observer.disconnect();
+    return osservaRidimensionamento(contenuto, misura);
   }, []);
 
   return (
@@ -68,6 +71,36 @@ export function CampanellaPopover({ identity }: { identity: Identity }) {
   // Richiesta «scrivi a questa persona» dal box sincronizzazione: apre la campanella e il
   // composer già indirizzato. Il nonce permette di riaprirlo anche sullo stesso destinatario.
   const [componi, setComponi] = useState<{ destId: string; destNome: string; nonce: number }>();
+  useEffect(() => {
+    const apri = () => {
+      setAperto(true);
+      void nascondiPopupDaCampanella();
+    };
+    window.addEventListener(EVENTO_APRI_POPOVER_NOTIFICHE, apri);
+
+    let disiscriviTauri: (() => void) | undefined;
+    if ("__TAURI_INTERNALS__" in window) {
+      disiscriviTauri = collegaDisiscrizioneAsincrona(
+        import("@tauri-apps/api/webviewWindow")
+        .then(async ({ getCurrentWebviewWindow }) => {
+          const { emit } = await import("@tauri-apps/api/event");
+          return getCurrentWebviewWindow().listen<RichiestaAperturaPopoverNotifiche>(
+            EVENTO_APRI_POPOVER_NOTIFICHE,
+            ({ payload }) => {
+              apri();
+              if (payload?.ack) void emit(payload.ack);
+            },
+          );
+        }),
+      );
+    }
+
+    return () => {
+      disiscriviTauri?.();
+      window.removeEventListener(EVENTO_APRI_POPOVER_NOTIFICHE, apri);
+    };
+  }, []);
+
   useEffect(() => {
     const on = (e: Event) => {
       const d = (e as CustomEvent).detail as ComponiTarget;

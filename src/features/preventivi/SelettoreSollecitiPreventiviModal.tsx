@@ -23,12 +23,11 @@ import { centsToEurStr } from "../../lib/money";
 import { VirtualStack } from "../../ui/VirtualStack";
 import type { GruppoSollecitiPreventivi } from "./sollecitiPreventivi";
 import { testoRicercaPreventivo } from "./ricercaPreventivi";
-
-const FORMATO_DATA_PREVENTIVO = new Intl.DateTimeFormat("it-IT");
+import { formattaDataLocale } from "../../lib/date";
 
 function dataPreventivo(preventivo: Preventivo): string {
   return preventivo.creatoMs
-    ? FORMATO_DATA_PREVENTIVO.format(preventivo.creatoMs)
+    ? formattaDataLocale(preventivo.creatoMs)
     : "Data non disponibile";
 }
 

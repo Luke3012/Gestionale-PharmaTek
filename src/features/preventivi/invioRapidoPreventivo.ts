@@ -8,12 +8,15 @@ import {
   type Preventivo,
 } from "../../lib/tauri";
 import { centsToEurStr } from "../../lib/money";
+import { creaIdCasuale } from "../../lib/idCasuale";
+import { formattaDataLocale } from "../../lib/date";
 import { toast } from "../../ui/toast/store";
 import {
   emailComunicazioneValida,
   telefonoWhatsappValido,
 } from "../comunicazioni/recapiti";
 import { risolviModello } from "../comunicazioni/modelliComunicazione";
+import { variabiliNomeDestinatario } from "../comunicazioni/apriComunicazione";
 import {
   preparaAllegatiPreventivo,
   rilasciaAllegatiPreventivo,
@@ -49,17 +52,10 @@ const dipendenzeDefault: DipendenzeInvioRapidoPreventivo = {
   rilasciaAllegati: rilasciaAllegatiPreventivo,
   creaBozza: (input) => api.comunicazioneCreaBozza(input),
   mettiInCoda: (id) => api.comunicazioneMettiInCoda(id),
-  creaChiaveIntento: () => {
-    const casuale =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    return `preventivo-rapido:${casuale}`;
-  },
+  creaChiaveIntento: () => `preventivo-rapido:${creaIdCasuale()}`,
 };
 
 const inviiInCorso = new Set<string>();
-const FORMATO_DATA_PREVENTIVO = new Intl.DateTimeFormat("it-IT");
 
 export function destinatarioPreventivo(
   preventivo: Preventivo,
@@ -70,9 +66,7 @@ export function destinatarioPreventivo(
   return {
     destinatarioEntita: medico ? "medico" : "cliente",
     destinatarioId: medico ? preventivo.medicoId : preventivo.clienteId,
-    destinatarioNome: medico
-      ? preventivo.medicoNome
-      : preventivo.clienteNome,
+    destinatarioNome: medico ? preventivo.medicoNome : preventivo.clienteNome,
   };
 }
 
@@ -81,11 +75,10 @@ export function variabiliPreventivo(
 ): Record<string, string> {
   const destinatario = destinatarioPreventivo(preventivo);
   return {
-    nome_cliente: destinatario.destinatarioNome,
-    ragione_sociale: destinatario.destinatarioNome,
+    ...variabiliNomeDestinatario(destinatario.destinatarioNome),
     numero_preventivo: preventivo.numeroPreventivo,
     data_preventivo: preventivo.creatoMs
-      ? FORMATO_DATA_PREVENTIVO.format(preventivo.creatoMs)
+      ? formattaDataLocale(preventivo.creatoMs)
       : "",
     totale_preventivo: `€ ${centsToEurStr(preventivo.totale)}`,
     riferimento_ordine: `ordine ${preventivo.ordineNumero}`,
@@ -98,9 +91,7 @@ export function canaliDisponibiliPreventivo(
   preventivo: Preventivo,
 ): CanaleComunicazione[] {
   return [
-    ...(emailComunicazioneValida(preventivo.email)
-      ? (["email"] as const)
-      : []),
+    ...(emailComunicazioneValida(preventivo.email) ? (["email"] as const) : []),
     ...(telefonoWhatsappValido(preventivo.telefono)
       ? (["whatsapp"] as const)
       : []),

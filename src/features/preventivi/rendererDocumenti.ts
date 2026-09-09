@@ -1,4 +1,6 @@
 import { api, inTauri, type Preventivo, type SchedaClienteCampi } from "../../lib/tauri";
+import { formattaDataLocale, formattaDataSeparataItaliana as dataIt } from "../../lib/date";
+import { formattaEuroCentesimi as euro } from "../../lib/money";
 import {
   PHARMATEK_LOGO_CROP_HEIGHT,
   PHARMATEK_LOGO_CROP_Y,
@@ -87,7 +89,7 @@ export const CONFIGURAZIONE_DOCUMENTO_DEFAULT: ConfigurazioneDocumento = {
   localita: "",
   telefono: "",
   email: "",
-  sito: "",
+  sito: "example.invalid",
 };
 
 const COLORI = {
@@ -107,7 +109,7 @@ const SCHEDA_NERO = "#111111";
 const SCHEDA_GIALLO = "#f4c542";
 const TELEFONO_AZIENDA = "";
 const WHATSAPP_AZIENDA = "";
-const IBAN_AZIENDA = "";
+const IBAN_AZIENDA = "IBAN-DEMO-NON-VALIDO";
 
 function testo(
   nodes: DocumentoNode[],
@@ -318,18 +320,6 @@ function testoMultilinea(
   return { lines: visibili.length, overflow };
 }
 
-function dataIt(value: string): string {
-  const [anno, mese, giorno] = value.split("-");
-  return anno && mese && giorno ? `${giorno}/${mese}/${anno}` : value || "—";
-}
-
-function euro(cents: number): string {
-  return new Intl.NumberFormat("it-IT", {
-    style: "currency",
-    currency: "EUR",
-  }).format(cents / 100);
-}
-
 function ibanVisuale(value: string): string {
   return value
     .replace(/\s+/g, "")
@@ -415,7 +405,7 @@ export function creaDocumentoPreventivo(
   nuovaPagina();
 
   const dataPreventivo = preventivo.creatoMs
-    ? new Intl.DateTimeFormat("it-IT").format(preventivo.creatoMs)
+    ? formattaDataLocale(preventivo.creatoMs)
     : dataIt(preventivo.ordineData);
   rect(nodes, 48, y, 698, 54, {
     radius: 8,

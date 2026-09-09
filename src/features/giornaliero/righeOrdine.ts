@@ -132,6 +132,25 @@ export function totaleRigheForm(righe: RigaForm[]): number {
   return righe.reduce((somma, riga) => somma + totaleRigaForm(riga), 0);
 }
 
+/** Traduce una riga dell'editor nei campi persistiti dal batch ordine. */
+export function campiPersistenzaRigaForm(riga: RigaForm): Record<string, unknown> {
+  return {
+    prodotto_id: riga.prodottoId,
+    // Il nome persistito serve solo ai prodotti liberi; quelli di catalogo si risolvono dal record.
+    prodotto_nome: riga.prodottoId ? "" : riga.prodottoNome.trim(),
+    qta: riga.qta || 0,
+    prezzo: riga.prezzo === "" ? 0 : Math.round(Number(riga.prezzo) * 100),
+    paziente: riga.paziente.trim(),
+    tipo_test: riga.tipoTest.trim(),
+    ml: riga.ml.trim(),
+    codice_laboratorio: riga.codice.trim(),
+    formulazione: riga.formulazione.trim(),
+    posologia: riga.posologia.trim(),
+    numero: riga.numero.trim(),
+    allergeni: riga.allergeni,
+  };
+}
+
 /** Un ordine omaggio conserva prodotti e quantità, ma non genera alcun valore economico. */
 export function azzeraPrezziRigheForm(righe: RigaForm[]): RigaForm[] {
   return righe.map((riga) => ({ ...riga, prezzo: 0 }));
@@ -222,7 +241,7 @@ export function righeOrdineDaRecord(
           paziente: (record.data.paziente as string) || "",
           tipoTest: (record.data.tipo_test as string) || "",
           ml: (record.data.ml as string) || "",
-          codice: (record.data.codice_fornitore as string) || "",
+          codice: (record.data.codice_laboratorio as string) || "",
           formulazione: (record.data.formulazione as string) || "",
           posologia: (record.data.posologia as string) || "",
           numero: (record.data.numero as string) || "",

@@ -28,6 +28,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
 import { useAnimazioniRidotte } from "../../ui/motion";
 import { tabCompleta } from "../../ui/tabCompleta";
+import { EuroInput } from "../../ui/EuroInput";
 import { ML_COMUNI, type Suggerimenti } from "../produzione/datiProduzione";
 import type { RigaForm } from "./righeOrdine";
 
@@ -294,7 +295,7 @@ export function ProdottiOrdinePanel({
                       disabled={disabled}
                     />
                   )}
-                  <NumberInput
+                  <EuroInput
                     size="xs"
                     label={
                       isDiagnostica
@@ -309,11 +310,6 @@ export function ProdottiOrdinePanel({
                         prezzo: value === "" ? "" : Number(value),
                       })
                     }
-                    prefix="€ "
-                    decimalScale={2}
-                    fixedDecimalScale
-                    thousandSeparator="."
-                    decimalSeparator=","
                     min={0}
                     disabled={disabled || prezziDisabilitati}
                   />

@@ -25,13 +25,7 @@ import {
 } from "../../lib/tauri";
 import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
-
-const EVENTI_NOTIFICHE_DA_RICALCOLARE = [
-  "ordine:salvato",
-  "pagamento:salvato",
-  "promemoria:salvato",
-  "notifica:salvato",
-];
+import { ricalcolaNotificheSubito } from "../notifiche/ricalcolaNotifiche";
 
 const OPZIONI_MODALITA: { value: PuliziaModalita; label: string }[] = [
   { value: "inutili", label: "Ordini inutili" },
@@ -47,16 +41,6 @@ const OPZIONI_PRESET: { value: PuliziaPreset; label: string }[] = [
   { value: "mesi_36", label: "Più vecchi di 36 mesi" },
   { value: "custom", label: "Date custom" },
 ];
-
-async function ricalcolaNotificheSubito() {
-  try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await Promise.all(EVENTI_NOTIFICHE_DA_RICALCOLARE.map((evento) => emit(evento)));
-  } catch {
-    // Best effort: la pulizia dati resta conclusa anche senza broadcast UI.
-  }
-  await api.notificheCheck().catch(() => {});
-}
 
 export function PuliziaDatiBox({
   anno,

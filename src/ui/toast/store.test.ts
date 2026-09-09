@@ -1,10 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
   applicaToastPrincipale,
+  destinazioneToastDaRicerca,
   durataToastAutomatica,
   toastStore,
   type ToastItem,
 } from "./store";
+
+describe("destinazione contestuale dei toast", () => {
+  it.each([
+    ["", "locale"],
+    ["?ordine=ordine-1", "locale"],
+    ["?preventivo=ordine-1", "locale"],
+    ["?riepilogo=cliente-1", "locale"],
+    ["?pagamento=pagamento-1", "locale"],
+    ["?promemoria=promemoria-1", "locale"],
+    ["?notifiche=1", "locale"],
+    ["?comunicazioni=1", "locale"],
+    ["?componiComunicazione=1", "locale"],
+    ["?campagnaComunicazioni=1", "locale"],
+    ["?cestino=1", "locale"],
+    ["?info=1", "locale"],
+    ["?spotlight=1", "principale"],
+    ["?overlay=1", "principale"],
+  ] as const)("risolve %s come %s", (search, destinazione) => {
+    expect(destinazioneToastDaRicerca(search)).toBe(destinazione);
+  });
+});
 
 describe("inoltro toast alla finestra principale", () => {
   it("mostra, aggiorna e chiude un toast ricevuto da una Webview", () => {

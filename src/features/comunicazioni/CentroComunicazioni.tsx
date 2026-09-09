@@ -28,6 +28,7 @@ import {
 } from "@mantine/core";
 import {
   IconBrandWhatsapp,
+  IconClipboard,
   IconMail,
   IconHistory,
   IconPlayerPause,
@@ -45,12 +46,15 @@ import {
   type RecordDto,
   type StatoComunicazione,
 } from "../../lib/tauri";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
+import { setConToggle } from "../../lib/set";
 import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
 import { VirtualStack } from "../../ui/VirtualStack";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { chiudiFinestraCorrente } from "../../lib/finestreTauri";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
+import { formattaDataOraBreve as dataOra } from "../../lib/date";
 import {
   EVENTO_APRI_CENTRO_COMUNICAZIONI,
   apriCampagnaComunicazioni,
@@ -58,6 +62,7 @@ import {
   type AperturaCentroComunicazioni,
   type PresentazioneCentroComunicazioni,
 } from "./apriComunicazione";
+import { TitoloNuovaComunicazione } from "./ElementiComunicazione";
 
 const STATI: Record<
   StatoComunicazione,
@@ -111,12 +116,14 @@ interface DestinatarioManuale {
   telefono: string;
 }
 
-function dataOra(ms: number) {
-  if (!ms) return "—";
-  return new Intl.DateTimeFormat("it-IT", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(ms));
+function StatoElencoDestinatari({ messaggio }: { messaggio: string }) {
+  return (
+    <Box style={{ flex: 1, display: "grid", placeItems: "center" }}>
+      <Text size="sm" c="dimmed" p="md" ta="center">
+        {messaggio}
+      </Text>
+    </Box>
+  );
 }
 
 function appartieneAlFiltro(comunicazione: Comunicazione, filtro: Filtro) {
@@ -141,9 +148,11 @@ function comunicazioneEliminabile(comunicazione: Comunicazione) {
 const CorpoComunicazioneCompatto = memo(function CorpoComunicazioneCompatto({
   corpo,
   ultimoErrore,
+  erroreFase,
 }: {
   corpo: string;
   ultimoErrore?: string | null;
+  erroreFase?: string | null;
 }) {
   const [aperto, setAperto] = useState(false);
 
@@ -179,9 +188,16 @@ const CorpoComunicazioneCompatto = memo(function CorpoComunicazioneCompatto({
             {corpo}
           </Text>
           {ultimoErrore && (
-            <Text size="xs" c="red">
-              {ultimoErrore}
-            </Text>
+            <Stack gap={2}>
+              {erroreFase && (
+                <Text size="xs" fw={700} c="red">
+                  Fase: {erroreFase.replace(/_/g, " ")}
+                </Text>
+              )}
+              <Text size="xs" c="red">
+                {ultimoErrore}
+              </Text>
+            </Stack>
           )}
         </Stack>
       </Popover.Dropdown>
@@ -723,6 +739,31 @@ export function CentroComunicazioniContenuto({
     });
   };
 
+  const copiaDiagnosticaWhatsapp = async () => {
+    try {
+      const diagnostica = await api.whatsappDiagnosticaGet();
+      const rapporto = {
+        generatoIl: new Date().toISOString(),
+        protocolloRegistrato: diagnostica.protocolloRegistrato,
+        finestraRilevata: diagnostica.finestraRilevata,
+        processo: diagnostica.processo,
+        pacchetto: diagnostica.pacchetto,
+        versione: diagnostica.versione,
+        identificazioneFallback: diagnostica.identificazioneFallback,
+        prestazioni: {
+          campioni: diagnostica.campioniPrestazioni,
+          medianaMs: diagnostica.medianaMs,
+          percentile95Ms: diagnostica.percentile95Ms,
+        },
+        ultimoEsito: diagnostica.ultimoEsito,
+      };
+      await navigator.clipboard.writeText(JSON.stringify(rapporto, null, 2));
+      toast.success("Diagnostica WhatsApp copiata.");
+    } catch (error) {
+      toast.error(`Diagnostica WhatsApp non disponibile: ${error}`);
+    }
+  };
+
   return (
       <Stack gap="md" style={{ flex: 1, minHeight: 0, height: "100%" }}>
         <Group gap="sm" wrap="nowrap">
@@ -749,6 +790,16 @@ export function CentroComunicazioniContenuto({
               aria-label="Aggiorna comunicazioni"
             >
               <IconRefresh size={17} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Copia diagnostica WhatsApp" withArrow>
+            <ActionIcon
+              variant="default"
+              size="lg"
+              onClick={() => void copiaDiagnosticaWhatsapp()}
+              aria-label="Copia diagnostica WhatsApp"
+            >
+              <IconClipboard size={17} />
             </ActionIcon>
           </Tooltip>
         </Group>
@@ -1147,6 +1198,7 @@ export function CentroComunicazioniContenuto({
                           <CorpoComunicazioneCompatto
                             corpo={comunicazione.corpo}
                             ultimoErrore={comunicazione.ultimoErrore}
+                            erroreFase={comunicazione.erroreFase}
                           />
                         </Box>
                       </Stack>
@@ -1301,14 +1353,7 @@ export function CentroComunicazioniContenuto({
           onClose={() => setNuovaAperta(false)}
           centered
           size="md"
-          title={
-            <Group gap="sm">
-              <ThemeIcon variant="light" color="yellow" radius="md">
-                <IconSend size={18} />
-              </ThemeIcon>
-              <Text fw={700}>Nuova comunicazione</Text>
-            </Group>
-          }
+          title={<TitoloNuovaComunicazione />}
           transitionProps={{ transition: "fade", duration: 180 }}
           styles={{
             content: { overflow: "hidden" },
@@ -1348,17 +1393,7 @@ export function CentroComunicazioniContenuto({
               }}
             >
               {destinatariCaricando ? (
-                <Box
-                  style={{
-                    flex: 1,
-                    display: "grid",
-                    placeItems: "center",
-                  }}
-                >
-                  <Text size="sm" c="dimmed" p="md" ta="center">
-                    Caricamento destinatari…
-                  </Text>
-                </Box>
+                <StatoElencoDestinatari messaggio="Caricamento destinatari…" />
               ) : destinatariVisibili.length ? (
                 <VirtualStack
                   items={destinatariVisibili}
@@ -1370,12 +1405,7 @@ export function CentroComunicazioniContenuto({
                     const id = `${item.entita}:${item.id}`;
                     const selezionato = destinatarioIds.has(id);
                     const cambiaSelezione = () =>
-                      setDestinatarioIds((correnti) => {
-                        const prossimi = new Set(correnti);
-                        if (prossimi.has(id)) prossimi.delete(id);
-                        else prossimi.add(id);
-                        return prossimi;
-                      });
+                      setDestinatarioIds((correnti) => setConToggle(correnti, id));
                     return (
                       <Box
                         px="sm"
@@ -1420,17 +1450,7 @@ export function CentroComunicazioniContenuto({
                   }}
                 />
               ) : (
-                <Box
-                  style={{
-                    flex: 1,
-                    display: "grid",
-                    placeItems: "center",
-                  }}
-                >
-                  <Text size="sm" c="dimmed" p="md" ta="center">
-                    Nessun destinatario trovato
-                  </Text>
-                </Box>
+                <StatoElencoDestinatari messaggio="Nessun destinatario trovato" />
               )}
             </Box>
             <Text size="xs" c="dimmed">
@@ -1501,29 +1521,32 @@ export function CentroComunicazioniHost() {
     };
     const apriLocale = (event: Event) => apri(event);
     window.addEventListener(EVENTO_APRI_CENTRO_COMUNICAZIONI, apriLocale);
-    let attivo = true;
-    let off: (() => void) | undefined;
-    void import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<AperturaCentroComunicazioni>(
           EVENTO_APRI_CENTRO_COMUNICAZIONI,
           apri,
         )
-      )
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
+      ),
+    );
     return () => {
-      attivo = false;
       window.removeEventListener(
         EVENTO_APRI_CENTRO_COMUNICAZIONI,
         apriLocale
       );
-      off?.();
+      disiscriviTauri();
     };
   }, []);
+
+  const contenuto = (
+    <CentroComunicazioniContenuto
+      attivo={aperto}
+      onModalStateChange={setModaleFiglioAperto}
+      onPrimaComposizione={() => setAperto(false)}
+      evidenziazione={evidenziazione}
+    />
+  );
 
   if (presentazione === "modale") {
     return (
@@ -1551,12 +1574,7 @@ export function CentroComunicazioniHost() {
           },
         }}
       >
-        <CentroComunicazioniContenuto
-          attivo={aperto}
-          onModalStateChange={setModaleFiglioAperto}
-          onPrimaComposizione={() => setAperto(false)}
-          evidenziazione={evidenziazione}
-        />
+        {contenuto}
       </Modal>
     );
   }
@@ -1586,12 +1604,7 @@ export function CentroComunicazioniHost() {
         },
       }}
     >
-      <CentroComunicazioniContenuto
-        attivo={aperto}
-        onModalStateChange={setModaleFiglioAperto}
-        onPrimaComposizione={() => setAperto(false)}
-        evidenziazione={evidenziazione}
-      />
+      {contenuto}
     </Drawer>
   );
 }
@@ -1609,9 +1622,8 @@ export function CentroComunicazioniWindow() {
   );
 
   useEffect(() => {
-    let attivo = true;
-    let off: (() => void) | undefined;
-    void import("@tauri-apps/api/webviewWindow")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/webviewWindow")
       .then(({ getCurrentWebviewWindow }) =>
         getCurrentWebviewWindow().listen<AperturaCentroComunicazioni>(
           EVENTO_APRI_CENTRO_COMUNICAZIONI,
@@ -1626,16 +1638,9 @@ export function CentroComunicazioniWindow() {
             }
           },
         ),
-      )
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
-    return () => {
-      attivo = false;
-      off?.();
-    };
+      ),
+    );
+    return disiscriviTauri;
   }, []);
 
   return (

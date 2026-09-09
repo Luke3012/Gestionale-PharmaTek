@@ -168,10 +168,10 @@ mod tests {
         let _cleanup = Cleanup(target.clone());
         assert!(platform::read(&target).unwrap().is_none());
 
-        platform::write(&target, "utente-demo", "segreto-di-test")
+        platform::write(&target, "", "segreto-di-test")
             .expect("scrittura credenziale temporanea");
         let letta = platform::read(&target).unwrap().unwrap();
-        assert_eq!(letta.username, "utente-demo");
+        assert_eq!(letta.username, "");
         assert_eq!(letta.password, "segreto-di-test");
 
         assert!(platform::delete(&target).unwrap());

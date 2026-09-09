@@ -1,6 +1,6 @@
 # Icone applicazione
 
-Generate dal marchio PharmaTek fornito per la variante dimostrativa con:
+Generate dal logo PharmaTek (`pharmaface`, 1600×1600, scaricato da example.invalid) con:
 
 ```
 npm run tauri icon ./app-icon.jpg

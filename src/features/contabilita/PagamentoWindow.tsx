@@ -5,10 +5,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Group, Text, ThemeIcon } from "@mantine/core";
 import { IconCashBanknote } from "@tabler/icons-react";
-import { api, inTauri, type Pagamento } from "../../lib/tauri";
+import { api, inTauri } from "../../lib/tauri";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
 import { PagamentoForm, type PagamentoModalTarget } from "./PagamentoModal";
 import { chiudiFinestraCorrente as chiudiFinestra } from "../../lib/finestreTauri";
+import { pagamentoDaVista } from "./pagamentoDaVista";
 
 export function PagamentoWindow() {
   const params = new URLSearchParams(window.location.search);
@@ -34,25 +35,7 @@ export function PagamentoWindow() {
         setErrore("Pagamento non trovato (forse è stato eliminato).");
         return false;
       }
-      const pagamento: Pagamento = {
-        id: r.id,
-        revision: rec?.revision || r.revision,
-        ordineId: r.ordineId,
-        tipo: r.tipo as Pagamento["tipo"],
-        importo: r.importo,
-        saldato: r.saldato,
-        scadenza: r.scadenza,
-        contoId: r.contoId,
-        contoNome: r.contoNome,
-        contoTipo: r.contoTipo,
-        data: r.data,
-        verificato: r.verificato,
-        distintaId: (rec?.data.distinta_id as string) || "",
-        contoAccreditoNome: r.contoAccreditoNome,
-        note: (rec?.data.note as string) || "",
-        scadDaSpedizione: (rec?.data.scad_da_spedizione as boolean) || false,
-        scadRelGiorni: (rec?.data.scad_rel_giorni as number) || 0,
-      };
+      const pagamento = pagamentoDaVista(r, rec);
       setErrore(null);
       setNumeroOrdine(r.ordineNumero || "");
       // saldaSubito solo se è ancora da incassare (un già-saldato si apre in dettaglio).

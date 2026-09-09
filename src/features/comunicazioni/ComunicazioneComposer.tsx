@@ -12,7 +12,6 @@ import {
   Text,
   Textarea,
   TextInput,
-  ThemeIcon,
 } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -33,12 +32,16 @@ import {
 import { toast } from "../../ui/toast/store";
 import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { chiudiFinestraCorrente } from "../../lib/finestreTauri";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
+import { creaIdCasuale } from "../../lib/idCasuale";
 import {
   CHIAVE_GEOMETRIA_COMUNICAZIONE,
+  datiDestinatarioDaRecord,
   EVENTO_APRI_COMUNICAZIONE,
   type ComunicazioneTarget,
+  variabiliNomeDestinatario,
 } from "./apriComunicazione";
 import { formattaStimaInvio, stimaInvioSecondi } from "./stimaInvio";
 import {
@@ -50,6 +53,14 @@ import {
   risolviModello,
   variabiliMancantiNeiTesti,
 } from "./modelliComunicazione";
+import {
+  ComunicazioneNonDisponibile,
+  ContenitoreComunicazioneStandalone,
+  IntestazioneComunicazioneStandalone,
+  leggiPayloadComunicazione,
+  TitoloNuovaComunicazione,
+} from "./ElementiComunicazione";
+import { accodaBozzeComunicazione } from "./operazioniComunicazioni";
 
 export {
   emailComunicazioneValida,
@@ -64,17 +75,12 @@ const EVENTI_DESTINATARIO_COMPOSER = [
 type SceltaCanale = CanaleComunicazione | "entrambi";
 
 function chiaveIntento() {
-  const casuale =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `manuale:${casuale}`;
+  return `manuale:${creaIdCasuale()}`;
 }
 
 function variabiliTarget(target: ComunicazioneTarget): Record<string, string> {
   return {
-    nome_cliente: target.destinatarioNome,
-    ragione_sociale: target.destinatarioNome,
+    ...variabiliNomeDestinatario(target.destinatarioNome),
     ...target.variabili,
   };
 }
@@ -166,10 +172,6 @@ export function ComunicazioneComposerHost({
   }, []);
 
   const applicaDestinatarioAggiornato = useCallback((record: RecordDto) => {
-    const valore = (campo: string) =>
-      typeof record.data[campo] === "string"
-        ? String(record.data[campo]).trim()
-        : "";
     setTarget((corrente) => {
       if (
         !corrente ||
@@ -178,21 +180,15 @@ export function ComunicazioneComposerHost({
       ) {
         return corrente;
       }
-      const nome =
-        valore("ragione_sociale") ||
-        valore("denominazione") ||
-        valore("nome_completo") ||
-        `${valore("nome")} ${valore("cognome")}`.trim() ||
-        corrente.destinatarioNome;
+      const dati = datiDestinatarioDaRecord(record, corrente.destinatarioNome);
       return {
         ...corrente,
-        destinatarioNome: nome,
-        email: valore("email"),
-        telefono: valore("telefono"),
+        destinatarioNome: dati.nome,
+        email: dati.email,
+        telefono: dati.telefono,
         variabili: {
           ...corrente.variabili,
-          nome_cliente: nome,
-          ragione_sociale: nome,
+          ...variabiliNomeDestinatario(dati.nome),
         },
       };
     });
@@ -208,9 +204,8 @@ export function ComunicazioneComposerHost({
       return () =>
         window.removeEventListener(EVENTO_APRI_COMUNICAZIONE, locale);
     }
-    let attivo = true;
-    let off: (() => void) | undefined;
-    void import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<ComunicazioneTarget>(
           EVENTO_APRI_COMUNICAZIONE,
@@ -218,16 +213,11 @@ export function ComunicazioneComposerHost({
             if (payload) riceviTarget(payload);
           },
         ),
-      )
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
+      ),
+    );
     return () => {
-      attivo = false;
       window.removeEventListener(EVENTO_APRI_COMUNICAZIONE, locale);
-      off?.();
+      disiscriviTauri();
     };
   }, [riceviTarget]);
 
@@ -417,11 +407,7 @@ export function ComunicazioneComposerHost({
         );
       }
       if (invia) {
-        for (const bozza of bozze) {
-          if (bozza.stato === "bozza" || bozza.stato === "da_revisionare") {
-            await api.comunicazioneMettiInCoda(bozza.id);
-          }
-        }
+        await accodaBozzeComunicazione(bozze, api.comunicazioneMettiInCoda);
         toast.success(
           bozze.length === 1
             ? "Invio avviato."
@@ -479,7 +465,7 @@ export function ComunicazioneComposerHost({
           value={
             whatsappValido
               ? `${mostrato?.destinatarioNome ?? ""} · ${mostrato?.telefono?.trim() ?? ""}`
-              : "Numero cellulare mancante o non valido"
+              : "Numero di telefono mancante o non utilizzabile"
           }
           readOnly
         />
@@ -513,7 +499,7 @@ export function ComunicazioneComposerHost({
         >
           <Stack gap="xs" align="flex-start">
             <Text size="sm">
-              Aggiungi un indirizzo e-mail oppure un numero cellulare valido
+              Aggiungi un indirizzo e-mail oppure un numero di telefono utilizzabile
               nell’anagrafica.
             </Text>
             {mostrato && (
@@ -611,19 +597,12 @@ export function ComunicazioneComposerHost({
         style={standalone ? { flex: 1, minHeight: 0 } : undefined}
       >
         {standalone ? (
-          <Group gap="sm" mb="lg" wrap="nowrap">
-            <ThemeIcon variant="light" color="yellow" radius="md" size="lg">
-              <IconSend size={19} />
-            </ThemeIcon>
-            <Box style={{ minWidth: 0 }}>
-              <Text fw={800} size="lg">
-                Nuova comunicazione
-              </Text>
-              <Text size="sm" c="dimmed" truncate>
-                {mostrato.destinatarioNome}
-              </Text>
-            </Box>
-          </Group>
+          <IntestazioneComunicazioneStandalone
+            titolo="Nuova comunicazione"
+            sottotitolo={mostrato.destinatarioNome}
+            conMargine
+            troncaSottotitolo
+          />
         ) : (
           <Text size="xs" c="dimmed" mb="md">
             {mostrato.destinatarioNome}
@@ -677,16 +656,9 @@ export function ComunicazioneComposerHost({
 
   if (standalone) {
     return (
-      <Box
-        p="lg"
-        style={{
-          height: "100vh",
-          overflow: "hidden",
-          background: "var(--mantine-color-body)",
-        }}
-      >
+      <ContenitoreComunicazioneStandalone>
         {contenuto}
-      </Box>
+      </ContenitoreComunicazioneStandalone>
     );
   }
 
@@ -698,14 +670,7 @@ export function ComunicazioneComposerHost({
       closeOnClickOutside={!salvataggio}
       size="min(900px, calc(100vw - 40px))"
       centered
-      title={
-        <Group gap="sm">
-          <ThemeIcon variant="light" color="yellow" radius="md">
-            <IconSend size={18} />
-          </ThemeIcon>
-          <Text fw={700}>Nuova comunicazione</Text>
-        </Group>
-      }
+      title={<TitoloNuovaComunicazione />}
       transitionProps={{
         transition: "fade",
         duration: 180,
@@ -720,22 +685,9 @@ export function ComunicazioneComposerHost({
 
 export function ComunicazioneComposerWindow() {
   useRicordaGeometria(CHIAVE_GEOMETRIA_COMUNICAZIONE);
-  const payload = new URLSearchParams(window.location.search).get("payload");
-  let target: ComunicazioneTarget | null = null;
-  try {
-    target = payload ? (JSON.parse(payload) as ComunicazioneTarget) : null;
-  } catch {
-    target = null;
-  }
+  const target = leggiPayloadComunicazione<ComunicazioneTarget>();
   if (!target?.destinatarioId || !target.destinatarioNome) {
-    return (
-      <Stack align="center" justify="center" h="100vh" p="xl" ta="center">
-        <Text fw={700}>Comunicazione non disponibile</Text>
-        <Text c="dimmed" size="sm">
-          Chiudi questa finestra e riapri la comunicazione dal gestionale.
-        </Text>
-      </Stack>
-    );
+    return <ComunicazioneNonDisponibile />;
   }
   return <ComunicazioneComposerHost initialTarget={target} standalone />;
 }

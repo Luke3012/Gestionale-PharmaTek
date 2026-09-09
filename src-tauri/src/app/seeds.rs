@@ -342,8 +342,8 @@ impl AppState {
                     rf.insert("tipo_test".into(), json!(TIPI_TEST[i % TIPI_TEST.len()]));
                     rf.insert("ml".into(), json!(ML[i % ML.len()]));
                     rf.insert(
-                        "codice_fornitore".into(),
-                        json!(str_field(&prod.data, "codice_fornitore")),
+                        "codice_laboratorio".into(),
+                        json!(str_field(&prod.data, "codice_laboratorio")),
                     );
                     if stato == "In produzione" {
                         rf.insert("stato_produzione".into(), json!("in_produzione"));

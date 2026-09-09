@@ -8,26 +8,12 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { IconTrash } from "@tabler/icons-react";
 import { inTauri } from "../lib/tauri";
+import { animazioniRidotteSalvate } from "./motion";
+import { ultimoPuntoPointer, type PuntoPointer } from "./ultimoPuntoPointer";
 
 const EVENTO = "pt:vola-cestino";
 
-// Ultimo punto cliccato: sorgente di default del volo (di solito è la voce «Elimina» o il
-// bottone di conferma che l'utente ha appena premuto). Aggiornato a ogni pointerdown.
-let ultimoClick = { x: 0, y: 0 };
-if (typeof window !== "undefined") {
-  window.addEventListener(
-    "pointerdown",
-    (e) => {
-      ultimoClick = { x: e.clientX, y: e.clientY };
-    },
-    { capture: true, passive: true }
-  );
-}
-
-export interface PuntoVoloCestino {
-  x: number;
-  y: number;
-}
+export type PuntoVoloCestino = PuntoPointer;
 
 type SorgenteVolo =
   | HTMLElement
@@ -59,16 +45,7 @@ export function catturaOrigineCestino(src?: SorgenteVolo): PuntoVoloCestino {
     return { x: ev.clientX, y: ev.clientY };
   }
 
-  return { ...ultimoClick };
-}
-
-/** True se l'utente ha «Riduci animazioni» attivo (letto da localStorage, senza hook). */
-function animazioniRidotte(): boolean {
-  try {
-    return JSON.parse(localStorage.getItem("pt.ridurreAnimazioni") || "false") === true;
-  } catch {
-    return false;
-  }
+  return ultimoPuntoPointer();
 }
 
 /** Lancia l'animazione «vola nel cestino». Chiamala subito dopo aver spostato un elemento nel
@@ -76,8 +53,8 @@ function animazioniRidotte(): boolean {
  *  Ritorna `true` se l'animazione partirà (così il chiamante può **omettere il toast**, che la
  *  coprirebbe); `false` con «Riduci animazioni» → il chiamante mostri pure il toast di conferma. */
 export function volaNelCestino(from?: PuntoVoloCestino): boolean {
-  if (typeof window === "undefined" || animazioniRidotte()) return false;
-  const targetFrom = from ?? ultimoClick;
+  if (typeof window === "undefined" || animazioniRidotteSalvate()) return false;
+  const targetFrom = from ?? ultimoPuntoPointer();
 
   // Calcoliamo la coordinata assoluta sullo schermo per la traduzione cross-window
   const screenX = window.screenX + targetFrom.x;

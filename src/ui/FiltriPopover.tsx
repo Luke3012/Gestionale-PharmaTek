@@ -14,6 +14,7 @@ import { IconAdjustmentsHorizontal, IconFilterOff } from "@tabler/icons-react";
 import { usePrefs } from "../lib/prefs";
 import { useDismissPopover } from "../lib/closeOnScroll";
 import { usePopoverVerticalLayout } from "./usePopoverVerticalLayout";
+import { osservaRidimensionamento } from "./osservaRidimensionamento";
 
 /** Un filtro della barra: una chiave stabile, il controllo, e la larghezza stimata (auto). */
 export interface FiltroDef {
@@ -103,10 +104,7 @@ export function FiltriPopover({
       }
       setNInline((prev) => (prev === n ? prev : n));
     };
-    calc();
-    const ro = new ResizeObserver(calc);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return osservaRidimensionamento(el, calc);
     // `filtri` è ricostruito a ogni render: dipendiamo solo da modo + numero di filtri
     // (la larghezza è gestita dal ResizeObserver). eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtriModo, filtri.length]);

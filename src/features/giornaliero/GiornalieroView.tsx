@@ -1,20 +1,17 @@
 // Giornaliero: lista ordini con filtri, badge stato, numero (provvisorio) e azioni.
 // Tabella universale (mantine-datatable): resize colonne, sort cliccando l'header,
 // header/filtri sempre visibili (solo il corpo scrolla).
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
-  ActionIcon,
   Badge,
   Box,
   Button,
   Group,
   Menu,
   MultiSelect,
-  SegmentedControl,
   Select,
   Stack,
   Text,
-  TextInput,
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
@@ -23,7 +20,6 @@ import {
   IconBan,
   IconCashBanknote,
   IconClipboardList,
-  IconDotsVertical,
   IconFlagOff,
   IconGift,
   IconPencil,
@@ -56,21 +52,27 @@ import { mappaRimborsiExtra, statoRimborsoDef } from "../contabilita/statiRimbor
 import { apriFinestraOrdine } from "./apriFinestra";
 import { COLONNE, ColonneDominioProvider, useColonneGiornaliero } from "./colonne";
 import { ColonneMenu } from "./ColonneMenu";
-import { EsportaTabella, colonneEsportabili } from "../../ui/esporta/EsportaTabella";
+import { EsportaTabella, useColonneEsportabili } from "../../ui/esporta/EsportaTabella";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { riattivaNotifichePerUtenti, scarta } from "../notifiche/notifiche";
 import { mappaLottiPerOrdine, opzioniLottiSpedizione } from "../spedizioni/filtriSpedizione";
+import { FiltroStatoSpedizione } from "../spedizioni/FiltroStatoSpedizione";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
 import { PremiumPaywallModal } from "../../premium/PremiumAction";
+import { stampaSchedaClienteDiretta } from "../preventivi/stampaDiretta";
+import { ordinaCopia } from "../../ui/ordinamento";
+import {
+  confrontaPagamentiAperti,
+  pagamentoApertoDaSaldare,
+} from "./ordineScadenzario";
+import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
+import { MenuAzioniRiga } from "../../ui/MenuAzioniRiga";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
+import { colonneTabellaConfigurabili } from "../../ui/colonneConfigurabili";
 
 const OrdineEditorLazy = lazy(() =>
   import("./OrdineEditor").then((m) => ({ default: m.OrdineEditor }))
-);
-const SchedaClienteModalLazy = lazy(() =>
-  import("../preventivi/SchedaClienteModal").then((m) => ({
-    default: m.SchedaClienteModal,
-  }))
 );
 
 const GETTER_SORT: Record<string, (o: OrdineDto) => string | number> = {
@@ -88,6 +90,93 @@ const EVENTI_RICARICA = [
   "agente:salvato",
   "prodotto:salvato",
 ] as const;
+
+function AzioniOrdineMenu({
+  ordine,
+  rimborso,
+  onApri,
+  onStampa,
+  onPagamento,
+  onRimborso,
+  onSostituzione,
+  onSegna,
+  onRipristina,
+  onRifiuta,
+  onElimina,
+}: {
+  ordine: OrdineDto;
+  rimborso?: Rimborso;
+  onApri: () => void;
+  onStampa: () => void;
+  onPagamento: () => void | Promise<void>;
+  onRimborso: (target: RimborsoModalTarget) => void;
+  onSostituzione: () => void;
+  onSegna: (marcatore: string) => void;
+  onRipristina: () => void;
+  onRifiuta: () => void | Promise<void>;
+  onElimina: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <>
+      <Menu.Item leftSection={<IconPencil size={15} />} onClick={onApri}>
+        Apri / modifica
+      </Menu.Item>
+      <Menu.Item leftSection={<IconPrinter size={15} />} onClick={onStampa}>
+        Stampa scheda cliente
+      </Menu.Item>
+      <Menu.Item leftSection={<IconCashBanknote size={15} />} onClick={onPagamento}>
+        Registra pagamento
+      </Menu.Item>
+      {ordine.residuo >= 0 && !rimborso ? null : (
+        <Menu.Item
+          leftSection={<IconReceiptRefund size={15} />}
+          onClick={() => onRimborso(
+            rimborso
+              ? { rimborso }
+              : { nuovoExtra: { ordineId: ordine.id, numero: ordine.numero } },
+          )}
+        >
+          {rimborso
+            ? `Rimborso ${statoRimborsoDef(rimborso.stato).label.toLowerCase()}`
+            : "Rimborsa extra"}
+        </Menu.Item>
+      )}
+      <Menu.Item leftSection={<IconGift size={15} />} onClick={onSostituzione}>
+        Sostituzione prodotto
+      </Menu.Item>
+      <Menu.Divider />
+      <Menu.Label>Segnalazione</Menu.Label>
+      {MARCATORI.map((marcatore) => (
+        <Menu.Item
+          key={marcatore.value}
+          leftSection={<marcatore.Ico size={15} color={`var(--mantine-color-${marcatore.color}-6)`} />}
+          disabled={ordine.marcatore === marcatore.value}
+          onClick={() => onSegna(marcatore.value)}
+        >
+          Segna come {marcatore.label.toLowerCase()}
+        </Menu.Item>
+      ))}
+      {ordine.marcatore && (
+        <Menu.Item leftSection={<IconFlagOff size={15} />} onClick={() => onSegna("")}>
+          Togli segnalazione
+        </Menu.Item>
+      )}
+      <Menu.Divider />
+      {ordine.stato === "Rifiutato" ? (
+        <Menu.Item color="teal" leftSection={<IconArrowBackUp size={15} />} onClick={onRipristina}>
+          Ripristina ordine
+        </Menu.Item>
+      ) : (
+        <Menu.Item color="orange" leftSection={<IconBan size={15} />} onClick={onRifiuta}>
+          Rifiuta ordine
+        </Menu.Item>
+      )}
+      <Menu.Item color="red" leftSection={<IconTrash size={15} />} onClick={onElimina}>
+        Elimina
+      </Menu.Item>
+    </>
+  );
+}
 
 export function GiornalieroView({ identity }: { identity: Identity }) {
   const [ordini, setOrdini] = useState<OrdineDto[]>([]);
@@ -119,7 +208,6 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   const [sort, setSort] = useState<DataTableSortStatus<OrdineDto>>({ columnAccessor: "data", direction: "desc" });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; record: OrdineDto } | null>(null);
   const origineMenuAzioniRef = useRef<PuntoVoloCestino | null>(null);
-  const [schedaCliente, setSchedaCliente] = useState<{ id: string; numero: string } | null>(null);
   const [paywallScheda, setPaywallScheda] = useState(false);
   const { ordineFinestra, anno } = usePrefs();
   const premium = usePremiumAccess();
@@ -170,12 +258,42 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
     setEditor({ ordineId, numero, categoria });
   }
 
-  function apriSchedaCliente(o: Pick<OrdineDto, "id" | "numero">) {
+  async function stampaSchedaCliente(o: Pick<OrdineDto, "id" | "numero">) {
     if (!premium.enabled) {
       setPaywallScheda(true);
       return;
     }
-    setSchedaCliente({ id: o.id, numero: o.numero });
+    try {
+      await stampaSchedaClienteDiretta(o.id, o.numero);
+    } catch (error) {
+      toast.error(`Stampa scheda cliente non riuscita: ${error}`);
+    }
+  }
+
+  async function registraPagamento(
+    ordine: Pick<OrdineDto, "id" | "numero" | "residuo">,
+  ) {
+    try {
+      const pagamenti = await api.pagamentiOrdine(ordine.id);
+      const prossimo = pagamenti
+        .filter(pagamentoApertoDaSaldare)
+        .sort(confrontaPagamentiAperti)[0];
+      setSalda(
+        prossimo
+          ? { pagamento: prossimo, saldaSubito: true }
+          : {
+              nuovo: {
+                ordineId: ordine.id,
+                numero: ordine.numero,
+                tipo: "saldo",
+                importo: ordine.residuo > 0 ? ordine.residuo : 0,
+                saldato: true,
+              },
+            },
+      );
+    } catch (error) {
+      toast.error(`Apertura pagamento non riuscita: ${error}`);
+    }
   }
 
   useEffect(() => {
@@ -357,20 +475,12 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   const ordinati = useMemo(() => {
     const getter = GETTER_SORT[sort.columnAccessor as string];
     if (!getter) return filtrati;
-    const arr = [...filtrati];
-    arr.sort((a, b) => {
-      const va = getter(a);
-      const vb = getter(b);
-      let cmp =
-        typeof va === "number" && typeof vb === "number"
-          ? va - vb
-          : String(va).localeCompare(String(vb), "it", { numeric: true });
-      if (cmp === 0) {
-        cmp = a.numero.localeCompare(b.numero, "it", { numeric: true });
-      }
-      return sort.direction === "desc" ? -cmp : cmp;
-    });
-    return arr;
+    return ordinaCopia(
+      filtrati,
+      getter,
+      sort.direction,
+      (a, b) => a.numero.localeCompare(b.numero, "it", { numeric: true }),
+    );
   }, [filtrati, sort]);
 
   const columns = useMemo<DataTableColumn<OrdineDto>[]>(() => {
@@ -399,15 +509,11 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
       </Stack>
     );
 
-    const dati: DataTableColumn<OrdineDto>[] = colonne.visibili.map((c) => ({
-      accessor: c.key,
-      title: c.label,
-      textAlign: c.align === "right" ? "right" : c.align === "center" ? "center" : "left",
-      sortable: !!c.sortAccessor,
-      resizable: true,
-      width: c.width,
-      render: (o: OrdineDto) => (c.key === "numero" ? renderNumero(o) : c.render(o)),
-    }));
+    const dati = colonneTabellaConfigurabili<OrdineDto>(colonne.visibili, {
+      includiLarghezza: true,
+      render: (colonna, ordine) =>
+        colonna.key === "numero" ? renderNumero(ordine) : colonna.render(ordine),
+    });
 
     const azioni: DataTableColumn<OrdineDto> = {
       accessor: "azioni",
@@ -415,137 +521,28 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
       width: 36,
       textAlign: "center",
       render: (o) => (
-        <Menu position="bottom-end" withArrow>
-          <Menu.Target>
-            <ActionIcon
-              variant="subtle"
-              color="gray"
-              onClick={(e) => {
-                e.stopPropagation();
-                origineMenuAzioniRef.current = catturaOrigineCestino(
-                  e.currentTarget,
-                );
-              }}
-            >
-              <IconDotsVertical size={16} />
-            </ActionIcon>
-          </Menu.Target>
-          {/* stopPropagation: i click delle voci, anche se il dropdown è in un portal,
-              risalgono per l'albero React fino all'`onRowClick` della riga (aprirebbe
-              l'ordine). Lo fermiamo qui, una volta per tutto il menu. */}
-          <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-            <Menu.Item leftSection={<IconPencil size={15} />} onClick={() => apri(o.id, o.numero)}>
-              Apri / modifica
-            </Menu.Item>
-            <Menu.Item leftSection={<IconPrinter size={15} />} onClick={() => apriSchedaCliente(o)}>
-              Stampa scheda cliente
-            </Menu.Item>
-            <Menu.Item
-              leftSection={<IconCashBanknote size={15} />}
-              onClick={async () => {
-                try {
-                  const pagamenti = await api.pagamentiOrdine(o.id);
-                  const prossimo = pagamenti
-                    .filter((p) => !p.saldato && (p.tipo === "acconto" || p.tipo === "saldo" || p.tipo === "rata"))
-                    .sort((a, b) => {
-                      const prioritaA = a.tipo === "acconto" ? 0 : 1;
-                      const prioritaB = b.tipo === "acconto" ? 0 : 1;
-                      return prioritaA - prioritaB ||
-                        (a.scadenza || "9999-12-31").localeCompare(b.scadenza || "9999-12-31") ||
-                        a.id.localeCompare(b.id);
-                    })[0];
-                  setSalda(
-                    prossimo
-                      ? { pagamento: prossimo, saldaSubito: true }
-                      : {
-                          nuovo: {
-                            ordineId: o.id,
-                            numero: o.numero,
-                            tipo: "saldo",
-                            importo: o.residuo > 0 ? o.residuo : 0,
-                            saldato: true,
-                          },
-                        }
-                  );
-                } catch (e) {
-                  toast.error(`Apertura pagamento non riuscita: ${e}`);
-                }
-              }}
-            >
-              Registra pagamento
-            </Menu.Item>
-            {(() => {
-              const esistente = rimborsiExtra.get(o.id);
-              if (o.residuo >= 0 && !esistente) return null;
-              return (
-                <Menu.Item
-                  leftSection={<IconReceiptRefund size={15} />}
-                  onClick={() =>
-                    setRimborsoExtra(
-                      esistente
-                        ? { rimborso: esistente }
-                        : { nuovoExtra: { ordineId: o.id, numero: o.numero } }
-                    )
-                  }
-                >
-                  {esistente ? `Rimborso ${statoRimborsoDef(esistente.stato).label.toLowerCase()}` : "Rimborsa extra"}
-                </Menu.Item>
-              );
-            })()}
-            <Menu.Item leftSection={<IconGift size={15} />} onClick={() => setSostituzione(o)}>
-              Sostituzione prodotto
-            </Menu.Item>
-            <Menu.Divider />
-            <Menu.Label>Segnalazione</Menu.Label>
-            {MARCATORI.map((m) => (
-              <Menu.Item
-                key={m.value}
-                leftSection={<m.Ico size={15} color={`var(--mantine-color-${m.color}-6)`} />}
-                disabled={o.marcatore === m.value}
-                onClick={() => segna(o, m.value)}
-              >
-                Segna come {m.label.toLowerCase()}
-              </Menu.Item>
-            ))}
-            {o.marcatore && (
-              <Menu.Item leftSection={<IconFlagOff size={15} />} onClick={() => segna(o, "")}>
-                Togli segnalazione
-              </Menu.Item>
+        <MenuAzioniRiga onTargetClick={(target) => {
+          origineMenuAzioniRef.current = catturaOrigineCestino(target);
+        }}>
+          <AzioniOrdineMenu
+            ordine={o}
+            rimborso={rimborsiExtra.get(o.id)}
+            onApri={() => apri(o.id, o.numero)}
+            onStampa={() => void stampaSchedaCliente(o)}
+            onPagamento={() => registraPagamento(o)}
+            onRimborso={setRimborsoExtra}
+            onSostituzione={() => setSostituzione(o)}
+            onSegna={(marcatore) => segna(o, marcatore)}
+            onRipristina={() => ripristina(o)}
+            onRifiuta={async () => {
+              if (await rifiutaOrdine(o)) carica();
+            }}
+            onElimina={(event) => elimina(
+              o,
+              origineMenuAzioniRef.current ?? catturaOrigineCestino(event),
             )}
-            <Menu.Divider />
-            {o.stato === "Rifiutato" ? (
-              <Menu.Item
-                color="teal"
-                leftSection={<IconArrowBackUp size={15} />}
-                onClick={() => ripristina(o)}
-              >
-                Ripristina ordine
-              </Menu.Item>
-            ) : (
-              <Menu.Item
-                color="orange"
-                leftSection={<IconBan size={15} />}
-                onClick={async () => {
-                  if (await rifiutaOrdine(o)) carica();
-                }}
-              >
-                Rifiuta ordine
-              </Menu.Item>
-            )}
-            <Menu.Item
-              color="red"
-              leftSection={<IconTrash size={15} />}
-              onClick={(e) =>
-                elimina(
-                  o,
-                  origineMenuAzioniRef.current ?? catturaOrigineCestino(e),
-                )
-              }
-            >
-              Elimina
-            </Menu.Item>
-          </Menu.Dropdown>
-        </Menu>
+          />
+        </MenuAzioniRiga>
       ),
     };
 
@@ -581,11 +578,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
 
   const haFiltri = !!cerca || nFiltri > 0;
 
-  // Colonne esportabili: pre-spuntate = quelle visibili; ordine = quello configurato.
-  const colonneExport = useMemo(
-    () => colonneEsportabili(colonne.tutte.map((v) => v.def), new Set(colonne.visibili.map((c) => c.key))),
-    [colonne.tutte, colonne.visibili]
-  );
+  const colonneExport = useColonneEsportabili(colonne);
 
   return (
     <Pagina
@@ -685,21 +678,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
                 chiave: "spedito",
                 larghezza: 240,
                 nodo: (
-                  <Box>
-                    <Text size="sm" fw={500} mb={4}>
-                      Stato spedizione
-                    </Text>
-                    <SegmentedControl
-                      fullWidth
-                      value={filtroSpedito}
-                      onChange={(v) => setFiltroSpedito(v as "tutti" | "spediti" | "non")}
-                      data={[
-                        { value: "tutti", label: "Tutti" },
-                        { value: "spediti", label: "Spediti" },
-                        { value: "non", label: "Non spediti" },
-                      ]}
-                    />
-                  </Box>
+                  <FiltroStatoSpedizione value={filtroSpedito} onChange={setFiltroSpedito} />
                 ),
               },
               {
@@ -754,10 +733,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
                 chiave: "periodo",
                 larghezza: 260,
                 nodo: (
-                  <Group grow gap="sm">
-                    <TextInput label="Dal" type="date" value={filtroDal} onChange={(e) => setFiltroDal(e.currentTarget.value)} />
-                    <TextInput label="Al" type="date" value={filtroAl} onChange={(e) => setFiltroAl(e.currentTarget.value)} />
-                  </Group>
+                  <FiltroIntervalloDate dal={filtroDal} al={filtroAl} onDalChange={setFiltroDal} onAlChange={setFiltroAl} />
                 ),
               },
             ]}
@@ -790,10 +766,8 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
             onSortStatusChange={setSort}
             onRowClick={({ record }) => apri(record.id, record.numero)}
             onRowContextMenu={({ record, event }) => {
-              event.preventDefault();
               setContextMenu({
-                x: event.clientX,
-                y: event.clientY,
+                ...puntoDaEventoContextMenu(event),
                 record,
               });
             }}
@@ -863,17 +837,6 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
         }}
       />
 
-      {premium.enabled && schedaCliente && (
-        <Suspense fallback={null}>
-          <SchedaClienteModalLazy
-            ordineId={schedaCliente.id}
-            ordineNumero={schedaCliente.numero}
-            opened
-            onClose={() => setSchedaCliente(null)}
-          />
-        </Suspense>
-      )}
-
       <PremiumPaywallModal
         opened={paywallScheda}
         onClose={() => setPaywallScheda(false)}
@@ -882,164 +845,50 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
       />
 
       {contextMenu && (
-        <Menu
-          opened={!!contextMenu}
-          onClose={() => setContextMenu(null)}
-          position="bottom-start"
-          offset={0}
-        >
-          <Menu.Target>
-            <div
-              style={{
-                position: "fixed",
-                left: contextMenu.x,
-                top: contextMenu.y,
-                width: 1,
-                height: 1,
-                pointerEvents: "none",
-              }}
-            />
-          </Menu.Target>
-          <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-            <Menu.Item leftSection={<IconPencil size={15} />} onClick={() => { apri(contextMenu.record.id, contextMenu.record.numero); setContextMenu(null); }}>
-              Apri / modifica
-            </Menu.Item>
-            <Menu.Item
-              leftSection={<IconPrinter size={15} />}
-              onClick={() => {
-                apriSchedaCliente(contextMenu.record);
-                setContextMenu(null);
-              }}
-            >
-              Stampa scheda cliente
-            </Menu.Item>
-            <Menu.Item
-              leftSection={<IconCashBanknote size={15} />}
-              onClick={async () => {
-                try {
-                  const pagamenti = await api.pagamentiOrdine(contextMenu.record.id);
-                  const prossimo = pagamenti
-                    .filter((p) => !p.saldato && (p.tipo === "acconto" || p.tipo === "saldo" || p.tipo === "rata"))
-                    .sort((a, b) => {
-                      const prioritaA = a.tipo === "acconto" ? 0 : 1;
-                      const prioritaB = b.tipo === "acconto" ? 0 : 1;
-                      return prioritaA - prioritaB ||
-                        (a.scadenza || "9999-12-31").localeCompare(b.scadenza || "9999-12-31") ||
-                        a.id.localeCompare(b.id);
-                    })[0];
-                  setSalda(
-                    prossimo
-                      ? { pagamento: prossimo, saldaSubito: true }
-                      : {
-                          nuovo: {
-                            ordineId: contextMenu.record.id,
-                            numero: contextMenu.record.numero,
-                            tipo: "saldo",
-                            importo: contextMenu.record.residuo > 0 ? contextMenu.record.residuo : 0,
-                            saldato: true,
-                          },
-                        }
-                  );
-                } catch (e) {
-                  toast.error(`Apertura pagamento non riuscita: ${e}`);
-                }
-                setContextMenu(null);
-              }}
-            >
-              Registra pagamento
-            </Menu.Item>
-            {(() => {
-              const esistente = rimborsiExtra.get(contextMenu.record.id);
-              if (contextMenu.record.residuo >= 0 && !esistente) return null;
-              return (
-                <Menu.Item
-                  leftSection={<IconReceiptRefund size={15} />}
-                  onClick={() => {
-                    setRimborsoExtra(
-                      esistente
-                        ? { rimborso: esistente }
-                        : { nuovoExtra: { ordineId: contextMenu.record.id, numero: contextMenu.record.numero } }
-                    );
-                    setContextMenu(null);
-                  }}
-                >
-                  {esistente ? `Rimborso ${statoRimborsoDef(esistente.stato).label.toLowerCase()}` : "Rimborsa extra"}
-                </Menu.Item>
-              );
-            })()}
-            <Menu.Item
-              leftSection={<IconGift size={15} />}
-              onClick={() => {
-                setSostituzione(contextMenu.record);
-                setContextMenu(null);
-              }}
-            >
-              Sostituzione prodotto
-            </Menu.Item>
-            <Menu.Divider />
-            <Menu.Label>Segnalazione</Menu.Label>
-            {MARCATORI.map((m) => (
-              <Menu.Item
-                key={m.value}
-                leftSection={<m.Ico size={15} color={`var(--mantine-color-${m.color}-6)`} />}
-                disabled={contextMenu.record.marcatore === m.value}
-                onClick={() => {
-                  segna(contextMenu.record, m.value);
-                  setContextMenu(null);
-                }}
-              >
-                Segna come {m.label.toLowerCase()}
-              </Menu.Item>
-            ))}
-            {contextMenu.record.marcatore && (
-              <Menu.Item
-                leftSection={<IconFlagOff size={15} />}
-                onClick={() => {
-                  segna(contextMenu.record, "");
-                  setContextMenu(null);
-                }}
-              >
-                Togli segnalazione
-              </Menu.Item>
-            )}
-            <Menu.Divider />
-            {contextMenu.record.stato === "Rifiutato" ? (
-              <Menu.Item
-                color="teal"
-                leftSection={<IconArrowBackUp size={15} />}
-                onClick={() => {
-                  ripristina(contextMenu.record);
-                  setContextMenu(null);
-                }}
-              >
-                Ripristina ordine
-              </Menu.Item>
-            ) : (
-              <Menu.Item
-                color="orange"
-                leftSection={<IconBan size={15} />}
-                onClick={async () => {
-                  const rec = contextMenu.record;
-                  setContextMenu(null);
-                  if (await rifiutaOrdine(rec)) carica();
-                }}
-              >
-                Rifiuta ordine
-              </Menu.Item>
-            )}
-            <Menu.Item
-              color="red"
-              leftSection={<IconTrash size={15} />}
-              onClick={() => {
-                const { record, x, y } = contextMenu;
-                setContextMenu(null);
-                elimina(record, { x, y });
-              }}
-            >
-              Elimina
-            </Menu.Item>
-          </Menu.Dropdown>
-        </Menu>
+        <ContextMenuPuntuale punto={contextMenu} onClose={() => setContextMenu(null)}>
+          <AzioniOrdineMenu
+            ordine={contextMenu.record}
+            rimborso={rimborsiExtra.get(contextMenu.record.id)}
+            onApri={() => {
+              apri(contextMenu.record.id, contextMenu.record.numero);
+              setContextMenu(null);
+            }}
+            onStampa={() => {
+              setContextMenu(null);
+              void stampaSchedaCliente(contextMenu.record);
+            }}
+            onPagamento={async () => {
+              await registraPagamento(contextMenu.record);
+              setContextMenu(null);
+            }}
+            onRimborso={(target) => {
+              setRimborsoExtra(target);
+              setContextMenu(null);
+            }}
+            onSostituzione={() => {
+              setSostituzione(contextMenu.record);
+              setContextMenu(null);
+            }}
+            onSegna={(marcatore) => {
+              segna(contextMenu.record, marcatore);
+              setContextMenu(null);
+            }}
+            onRipristina={() => {
+              ripristina(contextMenu.record);
+              setContextMenu(null);
+            }}
+            onRifiuta={async () => {
+              const record = contextMenu.record;
+              setContextMenu(null);
+              if (await rifiutaOrdine(record)) carica();
+            }}
+            onElimina={() => {
+              const { record, x, y } = contextMenu;
+              setContextMenu(null);
+              elimina(record, { x, y });
+            }}
+          />
+        </ContextMenuPuntuale>
       )}
     </Pagina>
   );

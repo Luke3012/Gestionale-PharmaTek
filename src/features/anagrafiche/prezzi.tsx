@@ -33,11 +33,14 @@ import { toast } from "../../ui/toast/store";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { useTabSelect } from "../../ui/tabCompleta";
 import { focusInvalidField } from "../../ui/focusInvalid";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 import {
   catturaOrigineCestino,
   volaNelCestino,
   type PuntoVoloCestino,
 } from "../../ui/volaCestino";
+import { opzioniRecordNome as opzioni } from "../../lib/opzioniRecord";
 
 const FONTE_LABEL: Record<PrezzoSuggerito["fonte"], string> = {
   medico_prodotto: "Regola medico + prodotto",
@@ -45,10 +48,6 @@ const FONTE_LABEL: Record<PrezzoSuggerito["fonte"], string> = {
   categoria: "Regola categoria",
   default: "Prezzo base del prodotto",
 };
-
-function opzioni(records: RecordDto[]) {
-  return records.map((r) => ({ value: r.id, label: (r.data.nome as string) || "(senza nome)" }));
-}
 
 // ---- Prova prezzo (card sopra la tabella prodotti) ----
 
@@ -358,10 +357,7 @@ function RegolaModal({
 }) {
   // Teniamo il contenuto montato durante l'animazione di uscita (smontarlo subito
   // farebbe collassare il modale su un riquadro vuoto mentre si chiude).
-  const [mostrato, setMostrato] = useState(opened);
-  useEffect(() => {
-    if (opened) setMostrato(true);
-  }, [opened]);
+  const [mostrato, clearMostrato] = useModalSnapshot(opened ? true : null);
 
   return (
     <Modal
@@ -378,7 +374,7 @@ function RegolaModal({
           <Text fw={700}>{regola ? "Modifica regola" : "Nuova regola di prezzo"}</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(false) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && (
         <RegolaForm
@@ -520,16 +516,14 @@ function RegolaForm({
           </Text>
         </Stack>
       </Box>
-      <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-        <div className="pt-modal-actions">
+      <FooterAzioniModale>
           <Button variant="default" onClick={onClose} disabled={salvando}>
             Annulla
           </Button>
           <Button color="accent" loading={salvando} onClick={salva}>
             Salva regola
           </Button>
-        </div>
-      </div>
+      </FooterAzioniModale>
     </Box>
   );
 }

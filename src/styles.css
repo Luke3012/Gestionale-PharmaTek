@@ -1951,13 +1951,9 @@ body,
   contain-intrinsic-size: auto 190px;
 }
 
-/* Le azioni suggerite non influenzano il layout delle schede vicine. Nelle liste
-   brevi il browser può inoltre saltare il paint delle righe sotto il viewport;
-   quelle lunghe vengono virtualizzate dal componente condiviso. */
+/* Involucro delle schede delle azioni suggerite. */
 .pt-suggerimento-card-shell {
-  contain: layout style;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 58px;
+  width: 100%;
 }
 
 .pt-suggerimenti-vuoto {
@@ -1981,83 +1977,67 @@ body,
   box-shadow: 0 7px 18px color-mix(in srgb, var(--mantine-color-violet-5) 13%, transparent);
 }
 
-.pt-galaxy-scan-button::before {
-  content: "";
-  position: absolute;
-  inset: -80% -25%;
-  z-index: -1;
-  opacity: 0;
-  background:
-    radial-gradient(circle at 24% 35%, rgba(255, 255, 255, 0.95) 0 1px, transparent 2px),
-    radial-gradient(circle at 68% 62%, rgba(255, 255, 255, 0.8) 0 1.2px, transparent 2.2px),
-    radial-gradient(circle at 82% 28%, rgba(255, 255, 255, 0.9) 0 0.8px, transparent 1.8px),
-    conic-gradient(from 25deg, transparent, rgba(133, 92, 246, 0.24), transparent 44%);
-  transform: rotate(0deg);
-}
-
-.pt-galaxy-scan-button[data-scanning="true"] {
-  animation: pt-galaxy-gradient 1.3s ease-in-out infinite;
-}
-
-.pt-galaxy-scan-button[data-scanning="true"]::before {
-  opacity: 1;
-  animation: pt-galaxy-cloud 1.65s linear infinite;
-}
-
 .pt-galaxy-scan-icon {
   position: relative;
-  display: grid;
-  place-items: center;
-  width: 18px;
+  display: block;
+  width: 19px;
   height: 18px;
 }
 
-.pt-galaxy-scan-icon b {
+.pt-galaxy-scan-star {
   position: absolute;
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--mantine-color-violet-5);
-  box-shadow: 0 0 7px currentColor;
-  opacity: 0;
+  transform-origin: center;
+  color: currentColor;
 }
 
-.pt-galaxy-scan-icon b { bottom: 0; right: 0; }
-
-[data-scanning="true"] .pt-galaxy-scan-icon > svg {
-  animation: pt-galaxy-star 1.05s ease-in-out infinite;
+.pt-galaxy-scan-star--1 {
+  bottom: 0;
+  left: 0;
+  width: 13px;
+  height: 13px;
 }
 
-[data-scanning="true"] .pt-galaxy-scan-icon b {
-  opacity: 1;
-  animation: pt-galaxy-orbit 0.95s ease-in-out infinite alternate;
+.pt-galaxy-scan-star--2 {
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
 }
 
-[data-scanning="true"] .pt-galaxy-scan-icon b { animation-delay: -0.45s; }
-
-@keyframes pt-galaxy-gradient {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
+.pt-galaxy-scan-star--3 {
+  right: 1px;
+  bottom: 0;
+  width: 6px;
+  height: 6px;
 }
 
-@keyframes pt-galaxy-cloud {
-  to { transform: rotate(360deg); }
+[data-scanning="true"] .pt-galaxy-scan-star {
+  animation: pt-galaxy-star-pulse 1.35s ease-in-out infinite;
 }
 
-@keyframes pt-galaxy-star {
-  0%, 100% { transform: rotate(0deg) scale(0.9); filter: drop-shadow(0 0 2px rgba(126, 87, 194, 0.35)); }
-  50% { transform: rotate(135deg) scale(1.18); filter: drop-shadow(0 0 6px rgba(92, 124, 250, 0.72)); }
+[data-scanning="true"] .pt-galaxy-scan-star--2 {
+  animation-delay: -0.9s;
 }
 
-@keyframes pt-galaxy-orbit {
-  from { transform: translate(-1px, 1px) scale(0.75); }
-  to { transform: translate(5px, -4px) scale(1.15); }
+[data-scanning="true"] .pt-galaxy-scan-star--3 {
+  animation-delay: -0.45s;
+}
+
+@keyframes pt-galaxy-star-pulse {
+  0%, 55%, 100% {
+    opacity: 0.72;
+    transform: scale(0.92);
+    filter: drop-shadow(0 0 1px rgba(126, 87, 194, 0.25));
+  }
+  24% {
+    opacity: 1;
+    transform: scale(1.14);
+    filter: drop-shadow(0 0 4px rgba(126, 87, 194, 0.58));
+  }
 }
 
 .pt-galaxy-scan-button[data-reduced="true"],
-.pt-galaxy-scan-button[data-reduced="true"]::before,
-.pt-galaxy-scan-button[data-reduced="true"] .pt-galaxy-scan-icon > svg,
-.pt-galaxy-scan-button[data-reduced="true"] .pt-galaxy-scan-icon b {
+.pt-galaxy-scan-button[data-reduced="true"] .pt-galaxy-scan-star {
   animation: none !important;
 }
 

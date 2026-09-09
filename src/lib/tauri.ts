@@ -31,6 +31,9 @@ import type {
   ComunicazioneCreaInput,
   DocumentoCacheSalvaInput,
   Comunicazione,
+  WhatsappDiagnostica,
+  WhatsappVerificaInput,
+  WhatsappVerificaProva,
   ModelloComunicazione,
   ModelloComunicazioneSalvaInput,
   ConfigurazioneEmail,
@@ -101,6 +104,10 @@ export type {
   ComunicazioneCreaInput,
   Comunicazione,
   ComunicazioneInvioErrore,
+  WhatsappDiagnostica,
+  WhatsappUltimoEsito,
+  WhatsappVerificaInput,
+  WhatsappVerificaProva,
   TipoModelloComunicazione,
   VariabileModelloComunicazione,
   ModelloComunicazione,
@@ -251,9 +258,6 @@ export const api = {
     invoke<string>("desktop_search_shortcut_create"),
   desktopSearchShortcutRemove: () =>
     invoke<boolean>("desktop_search_shortcut_remove"),
-  /** Mostra un balloon di sistema (notifica nuova mentre l'app è in background). */
-  notificaBalloon: (titolo: string, corpo: string) =>
-    invoke<void>("notifica_balloon", { titolo, corpo }),
   /** Invia al rilevatore notifiche Rust le preferenze correnti (utente + suono/balloon/
    *  soglia): da lì in poi può suonare/avvisare anche a finestra nascosta (FASE 6D). */
   notificheConfig: (
@@ -397,6 +401,14 @@ export const api = {
     invoke<Comunicazione>("comunicazione_annulla", { id }),
   comunicazioneWhatsappRiprendi: (id: string) =>
     invoke<Comunicazione>("comunicazione_whatsapp_riprendi", { id }),
+  whatsappDiagnosticaGet: () =>
+    invoke<WhatsappDiagnostica>("whatsapp_diagnostica_get"),
+  whatsappStatoGet: () =>
+    invoke<WhatsappDiagnostica>("whatsapp_stato_get"),
+  whatsappVerificaEInviaProva: (input: WhatsappVerificaInput) =>
+    invoke<WhatsappVerificaProva>("whatsapp_verifica_e_invia_prova", {
+      input,
+    }),
   comunicazioneElimina: (id: string) =>
     invoke<void>("comunicazione_elimina", { id }),
   comunicazioniElimina: (ids: string[]) =>
@@ -518,12 +530,12 @@ export const api = {
   produzioneLottoRigheSepara: (lotto: string) =>
     invoke<void>("produzione_lotto_righe_separa", { lotto }),
   /** Export Laboratorio (Immunoterapia) di un lotto in .xlsx (FASE 5C). Ritorna n° righe. */
-  fornitoreExport: (
+  laboratorioExport: (
     lotto: string,
     path: string,
     base: number,
     dataPrevista: string,
-  ) => invoke<number>("fornitore_export", { lotto, path, base, dataPrevista }),
+  ) => invoke<number>("laboratorio_export", { lotto, path, base, dataPrevista }),
   /** Export Diagnostica di un lotto in .xlsx (un blocco per ordine, FASE 5D). Ritorna n° ordini. */
   diagnosticaExport: (lotto: string, path: string) =>
     invoke<number>("diagnostica_export", { lotto, path }),
@@ -837,6 +849,9 @@ export const api = {
   /** Invalida la cache locale e ricalcola subito tutte le azioni correnti. */
   suggerimentiRigenera: () =>
     invoke<SuggerimentiBundle>("suggerimenti_rigenera"),
+  /** Ricalcolo manuale completo, senza applicare esclusioni o scrivere stato. */
+  suggerimentiRigeneraCompleta: () =>
+    invoke<SuggerimentiBundle>("suggerimenti_rigenera_completa"),
   /** Suggerimenti maturi per campanella/pop-up secondo le preferenze locali. */
   suggerimentiNotificheLista: (
     preferenze: SuggerimentiPreferenzeInput,

@@ -3,9 +3,8 @@
 // per finestra → ri-aprire porta in primo piano quella già aperta invece di
 // duplicarla. Riusa lo stesso `index.html` con un parametro nella query.
 import { inTauri, type Identity } from "../lib/tauri";
-import { opzioniGeometria } from "../lib/geometriaFinestre";
 import {
-  attendiCreazioneFinestra,
+  apriFinestraTauri,
   portaFinestraInPrimoPiano,
   queryIdentita,
 } from "../lib/finestreTauri";
@@ -13,46 +12,6 @@ import {
 export interface ComposeNotificaTarget {
   destId: string;
   destNome: string;
-}
-
-async function apriFinestraSemplice(
-  label: string,
-  query: string,
-  title: string,
-  /** Chiave di geometria ricordata (= il "tipo" di finestra). */
-  chiave: string,
-  width: number,
-  height: number,
-  minWidth = 360,
-  minHeight = 420
-): Promise<boolean> {
-  if (!inTauri) return false;
-  try {
-    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-    const esistente = await WebviewWindow.getByLabel(label);
-    if (esistente) {
-      // Già aperta: la portiamo in primo piano senza toccarne misura/posizione
-      // (rispetta dove e come l'utente l'aveva lasciata).
-      await portaFinestraInPrimoPiano(esistente);
-      return true;
-    }
-    const w = new WebviewWindow(label, {
-      url: `index.html?${query}`,
-      title,
-      minWidth,
-      minHeight,
-      ...(await opzioniGeometria(chiave, { width, height, minWidth, minHeight })),
-      visible: false,
-    });
-    const creata = await attendiCreazioneFinestra(w);
-    if (!creata) return false;
-    // La prima apertura non deve dipendere dal timing del mount React nella
-    // nuova webview: appena Tauri conferma la creazione la rendiamo visibile.
-    await portaFinestraInPrimoPiano(w);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export async function apriFinestraNotifiche(identity?: Identity, compose?: ComposeNotificaTarget): Promise<boolean> {
@@ -76,11 +35,25 @@ export async function apriFinestraNotifiche(identity?: Identity, compose?: Compo
     }
   }
 
-  return apriFinestraSemplice("notifiche", `notifiche=1${idp}${cp}`, "Notifiche", "notifiche", 420, 560);
+  return apriFinestraTauri({
+    label: "notifiche",
+    query: `notifiche=1${idp}${cp}`,
+    title: "Notifiche",
+    chiaveGeometria: "notifiche",
+    geometria: { width: 420, height: 560, minWidth: 360, minHeight: 420 },
+    mostraDopoCreazione: true,
+  });
 }
 
 export async function apriFinestraCestino(): Promise<boolean> {
-  return apriFinestraSemplice("cestino", "cestino=1", "Cestino", "cestino", 420, 560);
+  return apriFinestraTauri({
+    label: "cestino",
+    query: "cestino=1",
+    title: "Cestino",
+    chiaveGeometria: "cestino",
+    geometria: { width: 420, height: 560, minWidth: 360, minHeight: 420 },
+    mostraDopoCreazione: true,
+  });
 }
 
 export async function apriFinestraCentroComunicazioni(
@@ -104,18 +77,16 @@ export async function apriFinestraCentroComunicazioni(
       // Se la finestra non risponde, la ricreiamo col normale percorso.
     }
   }
-  return apriFinestraSemplice(
-    "comunicazioni",
-    `comunicazioni=1${
+  return apriFinestraTauri({
+    label: "comunicazioni",
+    query: `comunicazioni=1${
       evidenzia ? `&evidenzia=${encodeURIComponent(evidenzia)}` : ""
     }`,
-    "Cronologia comunicazioni",
-    "comunicazioni",
-    680,
-    600,
-    520,
-    440
-  );
+    title: "Cronologia comunicazioni",
+    chiaveGeometria: "comunicazioni",
+    geometria: { width: 680, height: 600, minWidth: 520, minHeight: 440 },
+    mostraDopoCreazione: true,
+  });
 }
 
 export async function apriFinestraInfo(target?: string): Promise<boolean> {
@@ -130,5 +101,12 @@ export async function apriFinestraInfo(target?: string): Promise<boolean> {
     }).catch(() => {});
   }
   const query = target ? `info=1&target=${encodeURIComponent(target)}` : "info=1";
-  return apriFinestraSemplice("info", query, "Info — PharmaTek", "info", 600, 450, 480, 380);
+  return apriFinestraTauri({
+    label: "info",
+    query,
+    title: "Info — PharmaTek",
+    chiaveGeometria: "info",
+    geometria: { width: 600, height: 450, minWidth: 480, minHeight: 380 },
+    mostraDopoCreazione: true,
+  });
 }

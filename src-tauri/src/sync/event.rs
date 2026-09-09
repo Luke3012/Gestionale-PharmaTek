@@ -6,7 +6,7 @@
 //!
 //! Formato sul disco: **una riga JSON per evento** (NDJSON), es.
 //! ```text
-//! {"id":"01J…","ts":"…","device":"PC-LIVIO","user":"Utente Demo","entity":"order","entityId":"01J…","op":"created"}
+//! {"id":"01J…","ts":"…","device":"PC-LIVIO","user":"Livio","entity":"order","entityId":"01J…","op":"created"}
 //! {"id":"01J…","ts":"…","device":"PC-UFFICIO","user":"Anna","entity":"order","entityId":"01J…","op":"field_set","field":"acconto","value":15000}
 //! ```
 //! I valori monetari in `value` sono **interi in centesimi**.
@@ -99,7 +99,7 @@ mod tests {
         let ev = Event::new(
             Hlc::new(1000, 0, "PC-A"),
             "PC-A",
-            "Utente Demo",
+            "Livio",
             "order",
             "01ORDER",
             EventBody::FieldSet {

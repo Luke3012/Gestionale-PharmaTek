@@ -40,52 +40,31 @@ import {
   type Icon,
 } from "@tabler/icons-react";
 import { api, type Distinta, type OrdineDaSpedire, type OrdineDto, type PagamentoVista, type Preventivo, type RecordDto, type Spedizione, type UserDto } from "../lib/tauri";
-import { oggiIso } from "../lib/date";
+import {
+  aggiungiGiorniIso as aggiungiGiorni,
+  aggiungiMesiIso as aggiungiMesi,
+  intervalloMeseIso,
+  intervalloSettimanaIso,
+  formattaDataIsoItaliana as dataIt,
+  isoLocale,
+  oggiIso,
+} from "../lib/date";
+import { formattaEuro as euro } from "../lib/money";
 import { statoDef } from "../features/giornaliero/stati";
 import { listaPromemoria, type Promemoria } from "../features/promemoria/promemoria";
 import { DEST_TUTTI, listaDestinatariMessaggi } from "../features/notifiche/messaggi";
 import { chiaviTop } from "./frecency";
 import { testoRicercaPreventivo } from "../features/preventivi/ricercaPreventivi";
+import type { DeepLink } from "./navigazione";
+
+type BersaglioNavigazione = Omit<DeepLink, "azione"> & {
+  t: "naviga";
+  azione?: Exclude<DeepLink["azione"], "ottimizza_database">;
+};
 
 /** Azione collegata a un risultato: la Spotlight la esegue al click/Invio. */
 export type Bersaglio =
-  | {
-      t: "naviga";
-      path: string;
-      tab?: string;
-      cerca?: string;
-      apriId?: string;
-      dal?: string;
-      al?: string;
-      stati?: string[];
-      spedito?: "spediti" | "non";
-      regione?: string;
-      agente?: string;
-      marcatori?: string[];
-      statiPagamento?: string[];
-      contoId?: string;
-      contoNome?: string;
-      contoIds?: string[];
-      spedizioneLotti?: string[];
-      agenteIds?: string[];
-      medicoIds?: string[];
-      linee?: string[];
-      corriereNomi?: string[];
-      rimborsoStati?: string[];
-      rimborsoOrigini?: string[];
-      produzioneAcconto?: "incassato" | "atteso";
-      mostraAltreSpedizioni?: boolean;
-      provvigioniOrdina?: "maturato" | "potenziale" | "nome";
-      agenteId?: string;
-      critici?: boolean;
-      azione?:
-        | "nuovo_rimborso"
-        | "nuova_distinta"
-        | "importa_giornaliero"
-        | "esporta_aruba"
-        | "pulizia_dati"
-        | "bollettazione_automatica";
-    }
+  | BersaglioNavigazione
   | { t: "sync" }
   | { t: "promemoria" }
   | { t: "promemoria_apri"; id: string }
@@ -262,17 +241,6 @@ function blobTelefono(valore: unknown): string {
   return `${telefono} ${telefono.replace(/\D/g, "")}`;
 }
 
-const EUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" });
-function euro(cent: number): string {
-  return EUR.format((cent || 0) / 100);
-}
-
-/** Date in formato italiano dd/mm/yyyy (per mostrarle nei risultati). */
-function dataIt(iso: string): string {
-  if (!iso || iso.length < 10) return iso || "";
-  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
-}
-
 /** Forme cercabili di una data ISO: sia "2025-04-10" sia "10/04/2025" (così un
  *  termine in uno dei due formati combacia). */
 function blobData(iso: string): string {
@@ -282,17 +250,6 @@ function blobData(iso: string): string {
 
 function blobLottiOrdine(o: OrdineDto): string {
   return (o.numeriLotto ?? []).join(" ");
-}
-
-function estremiSettimana(): { dal: string; al: string } {
-  const d = new Date();
-  const giorno = (d.getDay() + 6) % 7;
-  const lunedi = new Date(d);
-  lunedi.setDate(d.getDate() - giorno);
-  const domenica = new Date(lunedi);
-  domenica.setDate(lunedi.getDate() + 6);
-  const iso = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
-  return { dal: iso(lunedi), al: iso(domenica) };
 }
 
 function pagamentoPotenziale(p: PagamentoVista): boolean {
@@ -338,6 +295,28 @@ function conDedupe(v: VoceRicerca): VoceRicerca {
   return { ...v, dedupeKey: v.dedupeKey ?? chiaveBersaglio(v.bersaglio) };
 }
 
+function vocePromemoria(
+  promemoria: Promemoria,
+  prefissoId: string,
+  mostraPriorita = false,
+  dedupeKey?: string,
+): VoceRicerca {
+  const dettagli = [
+    promemoria.scadenza ? `scad. ${dataIt(promemoria.scadenza)}` : undefined,
+    promemoria.collegatoNome || undefined,
+    mostraPriorita ? `priorità ${promemoria.priorita}` : undefined,
+  ];
+  return conDedupe({
+    id: `${prefissoId}${promemoria.id}`,
+    gruppo: "Promemoria",
+    label: promemoria.testo || "Promemoria",
+    sub: dettagli.filter(Boolean).join(" · ") || undefined,
+    Ico: IconBell,
+    bersaglio: { t: "promemoria_apri", id: promemoria.id },
+    dedupeKey,
+  });
+}
+
 /** Icona del prodotto secondo la categoria (coerente con i registri). */
 function icoProdotto(r: RecordDto): Icon {
   const c = String(r.data.categoria ?? "");
@@ -377,14 +356,14 @@ const COMANDI: ComandoRicerca[] = [
   { id: "c-dist", gruppo: "Comandi rapidi", label: "Distinte corrieri", sub: "Filtra per corriere", completion: "distinte ", Ico: IconTruckDelivery, bersaglio: { t: "naviga", path: "/contabilita", tab: "distinte" } },
   { id: "c-provv", gruppo: "Comandi rapidi", label: "Provvigioni", sub: "Filtra per agente, periodo o ordinamento", completion: "provvigioni ", Ico: IconCashBanknote, bersaglio: { t: "naviga", path: "/contabilita", tab: "provvigioni" } },
   { id: "c-rimborsi", gruppo: "Comandi rapidi", label: "Rimborsi", sub: "Filtra per stato, origine o periodo", completion: "rimborsi ", Ico: IconReceiptRefund, bersaglio: { t: "naviga", path: "/contabilita", tab: "rimborsi" } },
-  { id: "c-fornitore-lavorazione", gruppo: "Comandi rapidi", label: "Laboratorio — ordini in lavorazione", sub: "Filtra per agente, acconto o periodo", completion: "fornitore ", Ico: IconTestPipe, bersaglio: { t: "naviga", path: "/produzione", tab: "in_lavorazione" } },
+  { id: "c-laboratorio-lavorazione", gruppo: "Comandi rapidi", label: "Laboratorio — ordini in lavorazione", sub: "Filtra per agente, acconto o periodo", completion: "laboratorio ", Ico: IconTestPipe, bersaglio: { t: "naviga", path: "/produzione", tab: "in_lavorazione" } },
   { id: "c-anag", label: "Vai a Anagrafiche", Ico: IconAddressBook, bersaglio: { t: "naviga", path: "/anagrafiche" } },
   { id: "c-impo", label: "Vai a Impostazioni", Ico: IconSettings, bersaglio: { t: "naviga", path: "/impostazioni" } },
   { id: "c-sync", label: "Forza sincronizzazione", Ico: IconRefresh, bersaglio: { t: "sync" } },
   { id: "c-importa-storici", label: "Importa clienti storici", Ico: IconDownload, bersaglio: { t: "naviga", path: "/impostazioni", azione: "importa_giornaliero" } },
   { id: "c-esporta-aruba", label: "Esporta clienti Aruba", Ico: IconDownload, bersaglio: { t: "naviga", path: "/impostazioni", azione: "esporta_aruba" } },
   { id: "c-pulizia-dati", label: "Mostra Pulizia dati", Ico: IconTrash, bersaglio: { t: "naviga", path: "/impostazioni", azione: "pulizia_dati" } },
-  { id: "c-flappy", label: "Gioca a Flappy Utente Demo", Ico: IconDeviceGamepad2, bersaglio: { t: "info", target: "gioco" } },
+  { id: "c-flappy", label: "Gioca a Flappy Livio", Ico: IconDeviceGamepad2, bersaglio: { t: "info", target: "gioco" } },
   { id: "c-check-agg", label: "Controlla aggiornamenti", Ico: IconDownload, bersaglio: { t: "info", target: "aggiornamenti" } },
   { id: "c-novita", label: "Novità di questa versione", Ico: IconInfoCircle, bersaglio: { t: "info", target: "novita" } },
 ];
@@ -652,34 +631,13 @@ function queryPromemoria(query: string): QueryPromemoria | null {
   return null;
 }
 
-function isoLocalDate(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function aggiungiGiorni(iso: string, giorni: number): string {
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + giorni);
-  return isoLocalDate(d);
-}
-
-function estremiMese(): { dal: string; al: string } {
-  const d = new Date();
-  const dal = new Date(d.getFullYear(), d.getMonth(), 1);
-  const al = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  return { dal: isoLocalDate(dal), al: isoLocalDate(al) };
-}
-
-function dataItDaIso(iso: string): string {
-  return dataIt(iso);
-}
-
 function parseDataPromemoria(raw: string): string | null {
   const v = raw.trim();
   const iso = v.match(/^((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})$/);
   const valida = (anno: string, mese: string, giorno: string) => {
     const out = `${anno}-${mese.padStart(2, "0")}-${giorno.padStart(2, "0")}`;
     const d = new Date(`${out}T00:00:00`);
-    return isoLocalDate(d) === out ? out : null;
+    return isoLocale(d) === out ? out : null;
   };
   if (iso) return valida(iso[1], iso[2], iso[3]);
   const it = v.match(/^(\d{1,2})[\/.-](\d{1,2})(?:[\/.-]((?:19|20)\d{2}))?$/);
@@ -698,14 +656,14 @@ interface PromemoriaPeriodo {
 }
 
 function periodiPromemoria(oggi: string): PromemoriaPeriodo[] {
-  const settimana = estremiSettimana();
-  const mese = estremiMese();
+  const settimana = intervalloSettimanaIso();
+  const mese = intervalloMeseIso();
   return [
-    { id: "oggi", label: "Oggi", sub: dataItDaIso(oggi), completion: "promemoria oggi", dal: oggi, al: oggi },
-    { id: "ieri", label: "Ieri", sub: dataItDaIso(aggiungiGiorni(oggi, -1)), completion: "promemoria ieri", dal: aggiungiGiorni(oggi, -1), al: aggiungiGiorni(oggi, -1) },
-    { id: "domani", label: "Domani", sub: dataItDaIso(aggiungiGiorni(oggi, 1)), completion: "promemoria domani", dal: aggiungiGiorni(oggi, 1), al: aggiungiGiorni(oggi, 1) },
-    { id: "settimana", label: "Questa settimana", sub: `${dataItDaIso(settimana.dal)} - ${dataItDaIso(settimana.al)}`, completion: "promemoria questa settimana", dal: settimana.dal, al: settimana.al },
-    { id: "mese", label: "Questo mese", sub: `${dataItDaIso(mese.dal)} - ${dataItDaIso(mese.al)}`, completion: "promemoria questo mese", dal: mese.dal, al: mese.al },
+    { id: "oggi", label: "Oggi", sub: dataIt(oggi), completion: "promemoria oggi", dal: oggi, al: oggi },
+    { id: "ieri", label: "Ieri", sub: dataIt(aggiungiGiorni(oggi, -1)), completion: "promemoria ieri", dal: aggiungiGiorni(oggi, -1), al: aggiungiGiorni(oggi, -1) },
+    { id: "domani", label: "Domani", sub: dataIt(aggiungiGiorni(oggi, 1)), completion: "promemoria domani", dal: aggiungiGiorni(oggi, 1), al: aggiungiGiorni(oggi, 1) },
+    { id: "settimana", label: "Questa settimana", sub: `${dataIt(settimana.dal)} - ${dataIt(settimana.al)}`, completion: "promemoria questa settimana", dal: settimana.dal, al: settimana.al },
+    { id: "mese", label: "Questo mese", sub: `${dataIt(mese.dal)} - ${dataIt(mese.al)}`, completion: "promemoria questo mese", dal: mese.dal, al: mese.al },
   ];
 }
 
@@ -715,7 +673,7 @@ function periodoDaTestoPromemoria(resto: string, oggi: string): PromemoriaPeriod
   if (periodo) return periodo;
   const data = parseDataPromemoria(resto);
   if (!data) return null;
-  return { id: `data-${data}`, label: `Il ${dataItDaIso(data)}`, sub: "Data specifica", dal: data, al: data };
+  return { id: `data-${data}`, label: `Il ${dataIt(data)}`, sub: "Data specifica", dal: data, al: data };
 }
 
 type TipoFiltroTemporale = "pagamenti" | "spedizioni";
@@ -749,43 +707,19 @@ function queryTemporale(query: string): QueryTemporale | null {
   return null;
 }
 
-function aggiungiMesi(iso: string, mesi: number): string {
-  const d = new Date(`${iso}T00:00:00`);
-  const giorno = d.getDate();
-  d.setDate(1);
-  d.setMonth(d.getMonth() + mesi);
-  const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(giorno, ultimo));
-  return isoLocalDate(d);
-}
-
-function estremiSettimanaDi(iso: string): { dal: string; al: string } {
-  const d = new Date(`${iso}T00:00:00`);
-  const giorno = (d.getDay() + 6) % 7;
-  const dal = aggiungiGiorni(iso, -giorno);
-  return { dal, al: aggiungiGiorni(dal, 6) };
-}
-
-function estremiMeseDi(iso: string, offset = 0): { dal: string; al: string } {
-  const d = new Date(`${iso}T00:00:00`);
-  const dal = new Date(d.getFullYear(), d.getMonth() + offset, 1);
-  const al = new Date(d.getFullYear(), d.getMonth() + offset + 1, 0);
-  return { dal: isoLocalDate(dal), al: isoLocalDate(al) };
-}
-
 function periodiTemporali(prefisso: TipoFiltroTemporale, oggi: string): PromemoriaPeriodo[] {
   const domani = aggiungiGiorni(oggi, 1);
-  const settimana = estremiSettimanaDi(oggi);
+  const settimana = intervalloSettimanaIso(oggi);
   const prossimaSettimana = {
     dal: aggiungiGiorni(settimana.dal, 7),
     al: aggiungiGiorni(settimana.al, 7),
   };
-  const mese = estremiMeseDi(oggi);
-  const prossimoMese = estremiMeseDi(oggi, 1);
+  const mese = intervalloMeseIso(oggi);
+  const prossimoMese = intervalloMeseIso(oggi, 1);
   const voce = (id: string, label: string, dal: string, al = dal): PromemoriaPeriodo => ({
     id,
     label,
-    sub: dal === al ? dataItDaIso(dal) : `${dataItDaIso(dal)} - ${dataItDaIso(al)}`,
+    sub: dal === al ? dataIt(dal) : `${dataIt(dal)} - ${dataIt(al)}`,
     completion: `${prefisso} ${label.toLowerCase()}`,
     dal,
     al,
@@ -813,7 +747,7 @@ function periodoRelativo(resto: string, oggi: string): PromemoriaPeriodo | null 
       : unita.startsWith("settiman")
         ? aggiungiGiorni(oggi, n * 7)
         : aggiungiMesi(oggi, n);
-    return { id: `tra-${n}-${unita}`, label: `Tra ${n} ${unita}`, sub: dataItDaIso(data), dal: data, al: data };
+    return { id: `tra-${n}-${unita}`, label: `Tra ${n} ${unita}`, sub: dataIt(data), dal: data, al: data };
   }
   const prossimi = q.match(/^prossim[io]\s+(\d+)\s+giorni$/);
   if (prossimi) {
@@ -822,7 +756,7 @@ function periodoRelativo(resto: string, oggi: string): PromemoriaPeriodo | null 
     return {
       id: `prossimi-${n}-giorni`,
       label: `Prossimi ${n} giorni`,
-      sub: `${dataItDaIso(oggi)} - ${dataItDaIso(aggiungiGiorni(oggi, n))}`,
+      sub: `${dataIt(oggi)} - ${dataIt(aggiungiGiorni(oggi, n))}`,
       dal: oggi,
       al: aggiungiGiorni(oggi, n),
     };
@@ -837,7 +771,7 @@ function periodoDaTestoTemporale(resto: string, ambito: TipoFiltroTemporale, ogg
   const relativo = periodoRelativo(resto, oggi);
   if (relativo) return relativo;
   const data = parseDataPromemoria(resto);
-  return data ? { id: `data-${data}`, label: `Il ${dataItDaIso(data)}`, sub: "Data specifica", dal: data, al: data } : null;
+  return data ? { id: `data-${data}`, label: `Il ${dataIt(data)}`, sub: "Data specifica", dal: data, al: data } : null;
 }
 
 function costruisciFiltriTemporali(query: string, dati: DatiRicerca): VoceRicerca[] {
@@ -900,7 +834,7 @@ function costruisciFiltriTemporali(query: string, dati: DatiRicerca): VoceRicerc
         creaVoce({
           id: `tra-${n}-${unita}`,
           label: `Tra ${n} ${unita}`,
-          sub: dataItDaIso(data),
+          sub: dataIt(data),
           completion: `${ambito} tra ${n} ${unita}`,
           dal: data,
           al: data,
@@ -1058,17 +992,7 @@ function costruisciPromemoriaDinamici(query: string, dati: DatiRicerca): VoceRic
           .filter((p) => priorita.size === 0 || priorita.has(p.priorita))
           .filter((p) => stati.size === 0 || (stati.has("aperti") && !p.fatto) || (stati.has("completati") && p.fatto))
           .slice(0, MAX_PER_GRUPPO)
-          .map((p) =>
-            conDedupe({
-              id: `smart-promem-${p.id}`,
-              gruppo: "Promemoria",
-              label: p.testo || "Promemoria",
-              sub: [p.scadenza ? `scad. ${dataIt(p.scadenza)}` : undefined, p.collegatoNome || undefined, `priorità ${p.priorita}`].filter(Boolean).join(" · "),
-              Ico: IconBell,
-              bersaglio: { t: "promemoria_apri", id: p.id },
-              dedupeKey: `promemoria:${p.id}`,
-            })
-          );
+          .map((p) => vocePromemoria(p, "smart-promem-", true, `promemoria:${p.id}`));
     const suggerimenti = suggerimentiFaccette(
       "promemoria",
       analisi.selezionate,
@@ -1139,17 +1063,7 @@ function costruisciPromemoriaDinamici(query: string, dati: DatiRicerca): VoceRic
       }),
     ];
   }
-  return prom.map((p) =>
-    conDedupe({
-      id: `smart-promem-${p.id}`,
-      gruppo: "Promemoria",
-      label: p.testo || "Promemoria",
-      sub: [p.scadenza ? `scad. ${dataIt(p.scadenza)}` : undefined, p.collegatoNome || undefined].filter(Boolean).join(" · ") || undefined,
-      Ico: IconBell,
-      bersaglio: { t: "promemoria_apri", id: p.id },
-      dedupeKey: `promemoria:${p.id}`,
-    })
-  );
+  return prom.map((p) => vocePromemoria(p, "smart-promem-", false, `promemoria:${p.id}`));
 }
 
 type TipoFaccetta =
@@ -1549,7 +1463,7 @@ function costruisciLaboratorioSmart(query: string, dati: DatiRicerca): VoceRicer
   ];
   return costruisciComandoAFaccette(
     query,
-    "fornitore",
+    "laboratorio",
     "Mostra ordini Laboratorio",
     IconTestPipe,
     faccette,
@@ -1655,7 +1569,7 @@ export function costruisciVoci(
     queryMessaggio(query) != null ||
     queryPromemoria(query) != null ||
     queryTemporale(query) != null ||
-    ["pagamenti", "distinte", "provvigioni", "rimborsi", "fornitore"].some((p) =>
+    ["pagamenti", "distinte", "provvigioni", "rimborsi", "laboratorio"].some((p) =>
       normalizzaTesto(query).startsWith(p)
     )
   ) {
@@ -1760,14 +1674,7 @@ export function costruisciVoci(
     if (p.fatto) continue;
     if (!okLower(blobIndicizzato(p, () => `${p.testo} ${p.collegatoNome ?? ""}`))) continue;
     nProm++;
-    out.push(conDedupe({
-      id: `promem-${p.id}`,
-      gruppo: "Promemoria",
-      label: p.testo || "Promemoria",
-      sub: [p.scadenza ? `scad. ${dataIt(p.scadenza)}` : undefined, p.collegatoNome || undefined].filter(Boolean).join(" · ") || undefined,
-      Ico: IconBell,
-      bersaglio: { t: "promemoria_apri", id: p.id },
-    }));
+    out.push(vocePromemoria(p, "promem-"));
   }
 
   // Corrieri → due scorciatoie: le sue distinte (Contabilità) e le sue spedizioni (Evasione).

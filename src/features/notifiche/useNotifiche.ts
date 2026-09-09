@@ -1,10 +1,10 @@
 // Hook centrale della campanella (FASE 6D). Carica i dati, deriva le notifiche
 // correnti, tiene gli stati per-utente (viste/scartate) e aggiorna il badge tray.
-// Il **suono e il balloon NON li fa il webview**: li gestisce il rilevatore Rust
+// Il **suono e i pop-up NON li decide il webview**: li gestisce il rilevatore Rust
 // (`src-tauri/src/notifiche.rs`), affidabile anche a finestra nascosta dove WebView2
-// congela JS+audio. Un solo "suonatore" (il Rust) ⇒ mai due volte. Qui ci limitiamo a
-// inviargli le preferenze (`notifiche_config`) e a stimolarlo a ogni ricarica
-// (`notifiche_check`). Una sola istanza dell'hook, in Topbar.
+// congela JS+audio. Un solo "suonatore" (il Rust) ⇒ mai due volte. La main configura
+// il core; questo hook della Topbar lo stimola a ogni ricarica (`notifiche_check`).
+// La finestra Notifiche riusa l'hook in modalità di sola lettura, senza coordinare il core.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, inTauri, type Identity } from "../../lib/tauri";
 import { usePrefs } from "../../lib/prefs";
@@ -13,6 +13,7 @@ import { listaMessaggi } from "./messaggi";
 import { riproduciSuono } from "./suoni";
 import { toast } from "../../ui/toast/store";
 import { attendiCreazioneFinestra } from "../../lib/finestreTauri";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
 import {
   caricaStati,
@@ -37,29 +38,40 @@ import {
  *  webview restava «morto» (renderer mai avviato → i pop-up non comparivano mai). Creandola
  *  qui, dalla finestra principale già viva, il renderer parte e riceve i `pt:notifiche-nuove`.
  *  Idempotente: se esiste già non fa nulla. La crea SOLO la finestra principale. */
+let creazioneOverlayInCorso: Promise<void> | null = null;
+
 export async function assicuraFinestraOverlay(): Promise<void> {
   if (!inTauri) return;
   if (typeof window !== "undefined" && window.location.search) return; // solo la main (no query)
+  if (creazioneOverlayInCorso) return creazioneOverlayInCorso;
+  const creazione = (async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      if (await WebviewWindow.getByLabel("overlay")) return;
+      const overlay = new WebviewWindow("overlay", {
+        url: "index.html?overlay",
+        title: "Notifiche — PharmaTek",
+        width: 380,
+        height: 120,
+        visible: false,
+        focus: false,
+        decorations: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        shadow: false,
+      });
+      await attendiCreazioneFinestra(overlay);
+    } catch {
+      /* creazione overlay non riuscita: i pop-up non compariranno, ma badge/suono restano */
+    }
+  })();
+  creazioneOverlayInCorso = creazione;
   try {
-    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-    if (await WebviewWindow.getByLabel("overlay")) return;
-    const overlay = new WebviewWindow("overlay", {
-      url: "index.html?overlay",
-      title: "Notifiche — PharmaTek",
-      width: 380,
-      height: 120,
-      visible: false,
-      focus: false,
-      decorations: false,
-      transparent: true,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      resizable: false,
-      shadow: false,
-    });
-    await attendiCreazioneFinestra(overlay);
-  } catch {
-    /* creazione overlay non riuscita: i pop-up non compariranno, ma badge/suono restano */
+    await creazione;
+  } finally {
+    if (creazioneOverlayInCorso === creazione) creazioneOverlayInCorso = null;
   }
 }
 
@@ -83,11 +95,12 @@ export interface NotificheState {
   scartaComunicazioniLocali: (ids: string[]) => void;
 }
 
-export function useNotifiche(identity?: Identity): NotificheState {
+export function useNotifiche(
+  identity?: Identity,
+  coordinaRilevatoreCentrale = true,
+): NotificheState {
   const {
     sogliaSolleciti,
-    balloonAttivo,
-    notifichePrimoPiano,
     suonoNotifica,
     preferenzeSuggerimenti,
   } = usePrefs();
@@ -165,10 +178,12 @@ export function useNotifiche(identity?: Identity): NotificheState {
         setStati(st);
       }
 
-      // Suono e pop-up li decide e li innesca SEMPRE il Rust (un solo suonatore, mai
-      // doppio): da vivi gli chiediamo solo una scansione immediata. Lui ci richiama via
-      // `pt:suona-notifica` se c'è da suonare.
-      if (inTauri) void api.notificheCheck().catch(() => {});
+      // Suono e pop-up li decide e li innesca il solo coordinatore della Shell
+      // principale: gli chiediamo una scansione immediata e lui ci richiama via
+      // `pt:suona-notifica` se c'è da suonare. Le finestre secondarie restano lettrici.
+      if (inTauri && coordinaRilevatoreCentrale) {
+        void api.notificheCheck().catch(() => {});
+      }
     } catch {
       // Fetch-then-render: in errore manteniamo lo stato precedente (niente flash).
     } finally {
@@ -179,6 +194,7 @@ export function useNotifiche(identity?: Identity): NotificheState {
     premium.enabled,
     preferenzeSuggerimenti,
     sogliaSolleciti,
+    coordinaRilevatoreCentrale,
   ]);
 
   useEffect(() => {
@@ -201,10 +217,10 @@ export function useNotifiche(identity?: Identity): NotificheState {
       EVENTO_STATO_COMUNICAZIONI_LOCALI,
       suEventoLocale,
     );
-    let attivo = true;
-    let off: (() => void) | undefined;
+    let disiscriviTauri: (() => void) | undefined;
     if (inTauri) {
-      void import("@tauri-apps/api/event")
+      disiscriviTauri = collegaDisiscrizioneAsincrona(
+        import("@tauri-apps/api/event")
         .then(({ listen }) =>
           listen<{ userId?: string }>(
             EVENTO_STATO_COMUNICAZIONI_LOCALI,
@@ -214,50 +230,18 @@ export function useNotifiche(identity?: Identity): NotificheState {
               }
             },
           ),
-        )
-        .then((unlisten) => {
-          if (attivo) off = unlisten;
-          else unlisten();
-        })
-        .catch(() => {});
+        ),
+      );
     }
     return () => {
-      attivo = false;
       window.removeEventListener("storage", suStorage);
       window.removeEventListener(
         EVENTO_STATO_COMUNICAZIONI_LOCALI,
         suEventoLocale,
       );
-      off?.();
+      disiscriviTauri?.();
     };
   }, [identity?.userId]);
-
-  // Tiene allineato il rilevatore Rust con le preferenze correnti (utente + suono/
-  // balloon/soglia). Al primo invio il Rust «semina» (niente raffica dell'arretrato);
-  // da lì in poi può suonare/avvisare anche a finestra nascosta.
-  useEffect(() => {
-    if (!inTauri) return;
-    const onboardingTimeStr = localStorage.getItem("pt.onboardingTime");
-    const onboardingTime = onboardingTimeStr ? Number(onboardingTimeStr) : 0;
-    void api
-      .notificheConfig(
-        identity?.userId ?? "",
-        suonoNotifica,
-        balloonAttivo,
-        sogliaSolleciti,
-        onboardingTime,
-        notifichePrimoPiano,
-        preferenzeSuggerimenti,
-      )
-      .catch(() => {});
-  }, [
-    identity?.userId,
-    suonoNotifica,
-    balloonAttivo,
-    sogliaSolleciti,
-    notifichePrimoPiano,
-    preferenzeSuggerimenti,
-  ]);
 
   // Ricarica sui cambi rilevanti emessi altrove + al ritorno a fuoco + a intervalli.
   useEffect(() => {
@@ -267,7 +251,7 @@ export function useNotifiche(identity?: Identity): NotificheState {
     document.addEventListener("visibilitychange", onFocus);
 
     // Crea l'overlay dei pop-up dalla finestra principale già viva (non da config).
-    void assicuraFinestraOverlay();
+    if (coordinaRilevatoreCentrale) void assicuraFinestraOverlay();
 
     let attivo = true;
     const disiscrizioni: Array<() => void> = [];
@@ -321,7 +305,7 @@ export function useNotifiche(identity?: Identity): NotificheState {
       document.removeEventListener("visibilitychange", onFocus);
       disiscrizioni.forEach((u) => u());
     };
-  }, [carica]);
+  }, [carica, coordinaRilevatoreCentrale]);
 
   const nonLette = useMemo(
     () =>
@@ -337,8 +321,10 @@ export function useNotifiche(identity?: Identity): NotificheState {
 
   // Riflette il conteggio non-lette nel tooltip dell'icona tray.
   useEffect(() => {
-    if (inTauri) void api.trayBadge(nonLette).catch(() => {});
-  }, [nonLette]);
+    if (inTauri && coordinaRilevatoreCentrale) {
+      void api.trayBadge(nonLette).catch(() => {});
+    }
+  }, [nonLette, coordinaRilevatoreCentrale]);
 
   const segna = useCallback(
     async (id: string) => {

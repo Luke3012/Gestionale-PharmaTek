@@ -11,6 +11,7 @@ use super::*;
 
 const ENTITA_STATO_SUGGERIMENTO: &str = "suggerimento_stato";
 const PREFISSO_SUGGERIMENTO: &str = "s14:";
+const PAUSA_TIPO_SUGGERIMENTO_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const TIPI_SUGGERIMENTO: [&str; 6] = [
     "rimborso",
     "distinta",
@@ -74,6 +75,22 @@ fn testo_importo(centesimi: i64) -> String {
         .collect::<Vec<_>>()
         .join(".");
     format!("{segno}€ {gruppi},{decimali:02}")
+}
+
+fn data_it(iso: &str) -> String {
+    let mut parti = iso.split('-');
+    match (parti.next(), parti.next(), parti.next(), parti.next()) {
+        (Some(anno), Some(mese), Some(giorno), None)
+            if anno.len() == 4 && mese.len() == 2 && giorno.len() == 2 =>
+        {
+            format!("{giorno}/{mese}/{anno}")
+        }
+        _ => iso.to_string(),
+    }
+}
+
+fn ordine_candidabile_produzione(stato: &str, ha_righe_spedite: bool) -> bool {
+    stato == "Confermato" && !ha_righe_spedite
 }
 
 fn priorita_con_anzianita(base: i64, data: &str, oggi: &str) -> i64 {
@@ -234,6 +251,17 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
 
     // Righe confermate, pagate e ancora fuori da un lotto: coincide con la
     // coda «Da produrre» e apre quel filtro, senza inventare un nuovo batch.
+    // Una spedizione gia' collegata a una qualunque riga rende l'intero ordine
+    // non proponibile: uno stato ordine rimasto temporaneamente «Confermato» non
+    // deve mai far preparare di nuovo merce gia' spedita.
+    let ordini_gia_spediti: HashSet<String> = p
+        .list("riga_ordine")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|riga| !str_field(&riga.data, "spedizione_id").is_empty())
+        .map(|riga| str_field(&riga.data, "ordine_id"))
+        .filter(|ordine_id| !ordine_id.is_empty())
+        .collect();
     let mut righe_pronte = Vec::new();
     let mut ordini_pronti = HashSet::new();
     let mut data_vecchia_produzione = String::new();
@@ -258,8 +286,10 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
         } else {
             matches!(categoria_ordine.as_str(), "Immunoterapia" | "Diagnostica")
         };
-        if str_field(&ordine.data, "stato") != "Confermato"
-            || !linee_rilevanti
+        if !ordine_candidabile_produzione(
+            &str_field(&ordine.data, "stato"),
+            ordini_gia_spediti.contains(&ordine_id),
+        ) || !linee_rilevanti
             || !acconti_incassati.contains_key(&ordine_id)
         {
             continue;
@@ -409,7 +439,7 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
                 });
         }
 
-        for (lotto, spedizioni) in per_lotto {
+        for (_lotto, spedizioni) in per_lotto {
             let clienti = spedizioni
                 .iter()
                 .map(|spedizione| spedizione.cliente_id.as_str())
@@ -442,14 +472,14 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
                     format!("Avvisa {clienti} clienti della spedizione")
                 },
                 dettaglio: format!(
-                    "{} {} senza avviso · lotto {}",
+                    "{} {} senza avviso · spedizione del {}",
                     spedizioni.len(),
                     if spedizioni.len() == 1 {
                         "collo"
                     } else {
                         "colli"
                     },
-                    lotto
+                    data_it(&data)
                 ),
                 azione_label: "Apri spedizione".into(),
                 priorita: priorita_con_anzianita(84, &data, &oggi),
@@ -496,8 +526,44 @@ fn valida_id_suggerimento(suggerimento_id: &str) -> AppResult<&str> {
     Ok(suggerimento_id)
 }
 
+fn tipo_suggerimento_da_id(suggerimento_id: &str) -> Option<&str> {
+    let tipo = suggerimento_id
+        .strip_prefix(PREFISSO_SUGGERIMENTO)?
+        .split(':')
+        .next()?;
+    TIPI_SUGGERIMENTO.contains(&tipo).then_some(tipo)
+}
+
+fn tipo_suggerimento_in_pausa(
+    suggerimento_id: &str,
+    tipo_salvato: &str,
+    ts: u64,
+    ora: u64,
+) -> Option<String> {
+    if ts == 0 || ora.saturating_sub(ts) >= PAUSA_TIPO_SUGGERIMENTO_MS {
+        return None;
+    }
+    if TIPI_SUGGERIMENTO.contains(&tipo_salvato) {
+        return Some(tipo_salvato.to_string());
+    }
+    tipo_suggerimento_da_id(suggerimento_id).map(str::to_owned)
+}
+
 impl AppState {
     pub fn suggerimenti_lista(&self) -> AppResult<SuggerimentiBundleDto> {
+        self.suggerimenti_lista_con_esclusioni(true)
+    }
+
+    /// Ricalcolo esplicito richiesto dall'utente: restituisce anche fotografie
+    /// nascoste e categorie in pausa, senza modificare i relativi record.
+    pub fn suggerimenti_lista_completa(&self) -> AppResult<SuggerimentiBundleDto> {
+        self.suggerimenti_lista_con_esclusioni(false)
+    }
+
+    fn suggerimenti_lista_con_esclusioni(
+        &self,
+        applica_esclusioni: bool,
+    ) -> AppResult<SuggerimentiBundleDto> {
         crate::premium::ensure_access(self)?;
         // Il report è l'unica fonte autorevole per maturazione, configurazioni,
         // IVA/spedizione e ordini già liquidati: lo riusiamo invece di replicarne
@@ -570,20 +636,49 @@ impl AppState {
                     });
                 }
 
-                let nascosti: HashSet<String> = p
-                    .list(ENTITA_STATO_SUGGERIMENTO)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|record| bool_field(&record.data, "nascosto"))
-                    .map(|record| str_field(&record.data, "suggerimento_id"))
-                    .filter(|id| !id.is_empty())
-                    .collect();
-                suggerimenti.retain(|suggerimento| !nascosti.contains(&suggerimento.id));
+                if !applica_esclusioni {
+                    return SuggerimentiBundleDto {
+                        suggerimenti: ordina(suggerimenti),
+                        nascosti: Vec::new(),
+                        tipi_in_pausa: Vec::new(),
+                    };
+                }
+
+                let ora = now_ms();
+                let mut nascosti = HashSet::new();
+                let mut tipi_in_pausa = HashSet::new();
+                for record in p.list(ENTITA_STATO_SUGGERIMENTO).unwrap_or_default() {
+                    if !bool_field(&record.data, "nascosto") {
+                        continue;
+                    }
+                    let id = str_field(&record.data, "suggerimento_id");
+                    if id.is_empty() {
+                        continue;
+                    }
+                    nascosti.insert(id.clone());
+                    let ts = record
+                        .data
+                        .get("ts")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    if let Some(tipo) =
+                        tipo_suggerimento_in_pausa(&id, &str_field(&record.data, "tipo"), ts, ora)
+                    {
+                        tipi_in_pausa.insert(tipo);
+                    }
+                }
+                suggerimenti.retain(|suggerimento| {
+                    !nascosti.contains(&suggerimento.id)
+                        && !tipi_in_pausa.contains(&suggerimento.tipo)
+                });
                 let mut nascosti: Vec<String> = nascosti.into_iter().collect();
                 nascosti.sort();
+                let mut tipi_in_pausa: Vec<String> = tipi_in_pausa.into_iter().collect();
+                tipi_in_pausa.sort();
                 SuggerimentiBundleDto {
                     suggerimenti: ordina(suggerimenti),
                     nascosti,
+                    tipi_in_pausa,
                 }
             }))
         })
@@ -598,13 +693,17 @@ impl AppState {
         if suggerimento_ids.len() > 512 {
             return Err("troppi suggerimenti".into());
         }
-        let mut suggerimento_ids = suggerimento_ids
+        let mut suggerimenti = suggerimento_ids
             .iter()
-            .map(|id| valida_id_suggerimento(id).map(str::to_owned))
+            .map(|id| {
+                let id = valida_id_suggerimento(id)?.to_owned();
+                let tipo = tipo_suggerimento_da_id(&id).unwrap_or_default().to_owned();
+                Ok((id, tipo))
+            })
             .collect::<AppResult<Vec<_>>>()?;
-        suggerimento_ids.sort();
-        suggerimento_ids.dedup();
-        if suggerimento_ids.is_empty() {
+        suggerimenti.sort();
+        suggerimenti.dedup();
+        if suggerimenti.is_empty() {
             return Ok(());
         }
         let identity = self
@@ -614,8 +713,8 @@ impl AppState {
         self.with_engine(|engine| {
             engine
                 .emit_built_checked(move |_| {
-                    let mut mutations = Vec::with_capacity(suggerimento_ids.len() * 6);
-                    for suggerimento_id in suggerimento_ids {
+                    let mut mutations = Vec::with_capacity(suggerimenti.len() * 7);
+                    for (suggerimento_id, tipo) in suggerimenti {
                         let record_id = format!(
                             "stato-suggerimento-v1|{}",
                             &communication::sha256_hex(&suggerimento_id)[..24]
@@ -627,6 +726,7 @@ impl AppState {
                         ));
                         for (field, value) in [
                             ("suggerimento_id", json!(suggerimento_id)),
+                            ("tipo", json!(tipo)),
                             ("nascosto", json!(true)),
                             ("ts", json!(ts)),
                             ("utente_id", json!(identity.user_id)),
@@ -680,6 +780,34 @@ mod tests {
             [("r1", "10"), ("r2", "20")],
         );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn produzione_esclude_qualsiasi_ordine_gia_spedito() {
+        assert!(ordine_candidabile_produzione("Confermato", false));
+        assert!(!ordine_candidabile_produzione("Confermato", true));
+        assert!(!ordine_candidabile_produzione("Spedito", false));
+        assert!(!ordine_candidabile_produzione("Chiuso", false));
+    }
+
+    #[test]
+    fn dettaglio_spedizione_usa_la_data_italiana() {
+        assert_eq!(data_it("2026-08-10"), "10/08/2026");
+    }
+
+    #[test]
+    fn categoria_ignorata_resta_in_pausa_per_un_giorno() {
+        let ora = 2 * PAUSA_TIPO_SUGGERIMENTO_MS;
+        let recente = ora - PAUSA_TIPO_SUGGERIMENTO_MS + 1;
+        let scaduto = ora - PAUSA_TIPO_SUGGERIMENTO_MS;
+        assert_eq!(
+            tipo_suggerimento_in_pausa("s14:rimborso:foto-1", "", recente, ora),
+            Some("rimborso".into())
+        );
+        assert_eq!(
+            tipo_suggerimento_in_pausa("s14:rimborso:foto-1", "rimborso", scaduto, ora),
+            None
+        );
     }
 
     #[test]

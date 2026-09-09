@@ -11,7 +11,6 @@ const cliente = (data: Record<string, unknown>): RecordDto => ({
   deleted: false,
   data,
 });
-const EMAIL_DEMO = ["cliente", ["example", "invalid"].join(".")].join("@");
 
 describe("controllo duplicati durante la creazione cliente", () => {
   it("riconosce nome invertito e indirizzo simile", () => {
@@ -45,8 +44,8 @@ describe("controllo duplicati durante la creazione cliente", () => {
       campiUnificazioneCliente(esistente, {
         nome: "Mario Rossi",
         telefono: "",
-        email: EMAIL_DEMO,
+        email: "",
       }),
-    ).toEqual({ email: EMAIL_DEMO });
+    ).toEqual({ email: "" });
   });
 });

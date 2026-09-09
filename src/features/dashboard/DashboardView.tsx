@@ -13,7 +13,6 @@ import {
 } from "react";
 import {
   Anchor,
-  Badge,
   Box,
   Button,
   Card,
@@ -27,9 +26,7 @@ import {
   SimpleGrid,
   Stack,
   Text,
-  TextInput,
   ThemeIcon,
-  Tooltip,
 } from "@mantine/core";
 import { AreaChart, BarChart } from "@mantine/charts";
 import {
@@ -48,7 +45,7 @@ import { AnimatePresence, motion, Variants } from "framer-motion";
 import { UnifiedBootScreen } from "../../ui/Brand";
 import { usePrefs, type PeriodoDash } from "../../lib/prefs";
 import { api, type DashboardPanels, type DashboardStats, type Identity } from "../../lib/tauri";
-import { isoLocale } from "../../lib/date";
+import { formattaDataItaliana, isoLocale } from "../../lib/date";
 import { intervalloPeriodo, descrizionePeriodo, ETICHETTE_PERIODO } from "./periodo";
 import { useAnimazioniRidotte } from "../../ui/motion";
 import { CountUp } from "./CountUp";
@@ -61,6 +58,9 @@ import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { consumaIntroOverlaySaltata, deveSaltareIntroOverlay } from "./introOverlay";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
+import { formattaEuro as euro } from "../../lib/money";
+import { BadgeStato } from "../../ui/BadgeStato";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
 
 const SuggerimentiPanel = lazy(() =>
   import("../suggerimenti/SuggerimentiPanel").then((module) => ({
@@ -87,8 +87,6 @@ const EVENTI_RICARICA = [
   "pt:comunicazione-stato-locale",
 ] as const;
 
-const EUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" });
-const euro = (cents: number) => EUR.format((cents || 0) / 100);
 const euro0 = (eur: number) =>
   eur.toLocaleString("it-IT", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
 
@@ -193,10 +191,12 @@ export function DashboardView({
   identity,
   forceIntro = false,
   testoIntro = "Preparo la tua dashboard…",
+  saltaIntro = false,
 }: {
   identity: Identity;
   forceIntro?: boolean;
   testoIntro?: string | null;
+  saltaIntro?: boolean;
 }) {
   const { dashboardPeriodo, ordineFinestra } = usePrefs();
   const premium = usePremiumAccess();
@@ -208,8 +208,8 @@ export function DashboardView({
   const [classifica, setClassifica] = useState<"agenti" | "regioni">("agenti");
 
   const ridotte = useAnimazioniRidotte();
-  const primaVoltaRef = useRef(!ridotte && (forceIntro || primaVoltaDash));
-  const skipIntroRef = useRef(deveSaltareIntroOverlay());
+  const primaVoltaRef = useRef(!saltaIntro && !ridotte && (forceIntro || primaVoltaDash));
+  const skipIntroRef = useRef(saltaIntro || deveSaltareIntroOverlay());
   const mostraIntroVisiva = testoIntro !== null;
   const [introAttiva, setIntroAttiva] = useState(primaVoltaRef.current && !skipIntroRef.current && mostraIntroVisiva);
   const [splashGone, setSplashGone] = useState(!primaVoltaRef.current || skipIntroRef.current);
@@ -544,17 +544,13 @@ export function DashboardView({
                     return (
                       <RigaCliccabile key={o.id} onClick={() => apriOrdine(o.id, o.numero)}>
                         <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
-                          <Tooltip label={s.label} withArrow>
-                            <Badge variant="light" color={s.color} leftSection={<s.Ico size={12} />}>
-                              {s.label}
-                            </Badge>
-                          </Tooltip>
+                          <BadgeStato definizione={s} />
                           <Box style={{ minWidth: 0 }}>
                             <Text fw={600} size="sm" className="tabular" truncate>
                               {o.numero} · {o.clienteNome || "—"}
                             </Text>
                             <Text size="xs" c="dimmed">
-                              {o.data}
+                              {formattaDataItaliana(o.data)}
                               {o.medicoNome ? ` · ${o.medicoNome}` : ""}
                             </Text>
                           </Box>
@@ -600,7 +596,7 @@ export function DashboardView({
                             {r.clienteNome || r.ordineNumero}
                           </Text>
                           <Text size="xs" c="dimmed">
-                            scaduto il {r.scadenza} · {r.ordineNumero}
+                            scaduto il {formattaDataItaliana(r.scadenza)} · {r.ordineNumero}
                           </Text>
                         </Box>
                       </Group>
@@ -768,22 +764,15 @@ function PeriodoControl({
             </Button>
           </SimpleGrid>
           <Divider label="Intervallo" labelPosition="center" />
-          <Group gap={6} grow wrap="nowrap">
-            <TextInput
-              type="date"
-              size="xs"
-              label="Dal"
-              value={r.dal ?? ""}
-              onChange={(e) => modificaData("dal", e.currentTarget.value)}
-            />
-            <TextInput
-              type="date"
-              size="xs"
-              label="Al"
-              value={r.al ?? ""}
-              onChange={(e) => modificaData("al", e.currentTarget.value)}
-            />
-          </Group>
+          <FiltroIntervalloDate
+            dal={r.dal ?? ""}
+            al={r.al ?? ""}
+            onDalChange={(value) => modificaData("dal", value)}
+            onAlChange={(value) => modificaData("al", value)}
+            gap={6}
+            wrap="nowrap"
+            size="xs"
+          />
         </Stack>
       </Popover.Dropdown>
     </Popover>

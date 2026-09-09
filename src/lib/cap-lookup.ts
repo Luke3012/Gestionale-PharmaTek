@@ -30,6 +30,14 @@ export function cercaPerCAP(cap: string): RisultatoCAP | null {
 }
 
 /**
+ * Distingue un CAP ancora incompleto (`undefined`) da uno completo ma ignoto (`null`).
+ * I form usano questa differenza per chiudere i suggerimenti soltanto mentre si digita.
+ */
+export function cercaCAPDigitato(cap: string): RisultatoCAP | null | undefined {
+  return /^\d{5}$/.test(cap) ? cercaPerCAP(cap) : undefined;
+}
+
+/**
  * Cerca comuni il cui nome inizia con o contiene la query (case-insensitive).
  * Restituisce max `limite` risultati, ordinati per rilevanza:
  * 1. Nomi che iniziano con la query (priorità)
@@ -64,6 +72,18 @@ export function cercaPerCitta(query: string, limite = 10): ComuneInfo[] {
   contiene.sort(ordina);
 
   return [...iniziaCon, ...contiene].slice(0, limite);
+}
+
+/** Etichette condivise dagli autocomplete città. */
+export function nomiCittaSuggeriti(query: string, limite = 10): string[] {
+  return cercaPerCitta(query, limite).map((comune) => comune.nome);
+}
+
+/** Mantiene la stessa risoluzione usata alla selezione di un suggerimento. */
+export function cercaCittaSelezionata(nome: string): ComuneInfo | undefined {
+  return cercaPerCitta(nome, 1).find(
+    (comune) => comune.nome.toLowerCase() === nome.toLowerCase(),
+  );
 }
 
 /**

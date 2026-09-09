@@ -23,6 +23,7 @@ import { api, type RecordDto } from "../../lib/tauri";
 import { usePrefs } from "../../lib/prefs";
 import { EsportaTabella, type ColonnaExport } from "../../ui/esporta/EsportaTabella";
 import { toast } from "../../ui/toast/store";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 import {
   clienteDaMigrareArubaLegacy,
   clienteGiaEsportatoAruba,
@@ -343,8 +344,7 @@ export function ExportArubaModal({
             </Stack>
           </Box>
 
-          <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-            <div className="pt-modal-actions">
+          <FooterAzioniModale>
               <Button variant="subtle" color="gray" onClick={onClose} radius="md">
                 Annulla
               </Button>
@@ -370,8 +370,7 @@ export function ExportArubaModal({
                 onExcelSuccess={marcaClientiEsportati}
                 onSuccess={onClose}
               />
-            </div>
-          </div>
+          </FooterAzioniModale>
         </Box>
       </motion.div>
     </Modal>

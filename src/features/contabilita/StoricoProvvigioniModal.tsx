@@ -35,6 +35,7 @@ import { Tabella, type DataTableColumn } from "../../ui/Tabella";
 import { modalTableHeight } from "../../ui/modalTableHeight";
 import { formattaDataItaliana } from "../../lib/date";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
+import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 
 const EVENTI_RICARICA = ["provv_pagamento:salvato"] as const;
 
@@ -246,13 +247,11 @@ export function StoricoProvvigioniModal({
           )}
         </Box>
 
-        <div className="pt-modal-footer" style={{ justifyContent: "flex-end" }}>
-          <div className="pt-modal-actions">
+        <FooterAzioniModale>
             <Button variant="subtle" color="gray" onClick={onClose}>
               Chiudi
             </Button>
-          </div>
-        </div>
+        </FooterAzioniModale>
       </Box>
     </Modal>
   );

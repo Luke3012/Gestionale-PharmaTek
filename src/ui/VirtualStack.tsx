@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, ScrollArea } from "@mantine/core";
+import { osservaRidimensionamento } from "./osservaRidimensionamento";
 import {
   calcolaLayoutVirtuale,
   calcolaRangeVirtuale,
@@ -57,10 +58,7 @@ export function VirtualStack<T>({
     const el = viewportRef.current;
     if (!el) return;
     const misura = () => setViewportHeight(el.clientHeight || 0);
-    misura();
-    const ro = new ResizeObserver(misura);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return osservaRidimensionamento(el, misura);
   }, [viewportHeightFissa]);
 
   const keys = useMemo(() => items.map(getKey), [items, getKey]);
@@ -157,10 +155,7 @@ function VirtualRow({
     const el = ref.current;
     if (!el) return;
     const misura = () => onMeasure(itemKey, el.getBoundingClientRect().height);
-    misura();
-    const ro = new ResizeObserver(misura);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return osservaRidimensionamento(el, misura);
   }, [itemKey, onMeasure]);
 
   return (

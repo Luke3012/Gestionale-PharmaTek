@@ -43,19 +43,19 @@ import {
 import { toast } from "../../ui/toast/store";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
+import { opzioniRecordNome } from "../../lib/opzioniRecord";
 import { focusInvalidField } from "../../ui/focusInvalid";
 import { VirtualFlow } from "../../ui/VirtualFlow";
 import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
 import { normalizzaColliPesoCorriere } from "./profiliCorriere";
 import { ordineHaDatiVaccino } from "./datiVaccino";
-
-const oggi = () => {
-  // Data locale (NON toISOString: in fuso positivo a notte fonda darebbe il giorno prima).
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
+import { oggiIso as oggi } from "../../lib/date";
 
 type Mezzo = "prepagato" | "contrassegno" | "assegno";
+export const OPZIONI_PAGAMENTO_CONSEGNA = [
+  { value: "prepagato", label: "Prepagato (nessuno)" }, { value: "contrassegno", label: "Contrassegno" },
+  { value: "assegno", label: "Assegno" },
+];
 
 /** Bozza per-riga proveniente dall'espansione inline «Da spedire» (FASE 7). */
 export interface BozzaRiga {
@@ -308,7 +308,7 @@ function Form({
   }, []);
 
   const corriereData = useMemo(
-    () => corrieri.map((c) => ({ value: c.id, label: (c.data.nome as string) || "(corriere)" })),
+    () => opzioniRecordNome(corrieri, "(corriere)"),
     [corrieri]
   );
   const profiloSelezionato = useMemo(
@@ -832,11 +832,7 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
           label="Pagamento alla consegna"
           size="xs"
           w={200}
-          data={[
-            { value: "prepagato", label: "Prepagato (nessuno)" },
-            { value: "contrassegno", label: "Contrassegno" },
-            { value: "assegno", label: "Assegno" },
-          ]}
+          data={OPZIONI_PAGAMENTO_CONSEGNA}
           value={perCollo.mezzo}
           onChange={(valore) =>
             onPatch(collo.key, { mezzo: (valore as Mezzo) || "prepagato" })

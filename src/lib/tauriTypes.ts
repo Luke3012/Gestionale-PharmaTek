@@ -139,6 +139,8 @@ export interface Comunicazione {
   allegati: AllegatoComunicazioneInput[];
   tentativi: number;
   ultimoErrore: string;
+  erroreCodice?: string;
+  erroreFase?: string;
   esitoAmbiguo: boolean;
   proprietarioUtenteId: string;
   proprietarioUtenteNome: string;
@@ -158,7 +160,44 @@ export interface ComunicazioneInvioErrore {
   destinatario: string;
   oggetto: string;
   messaggio: string;
+  erroreCodice?: string;
+  erroreFase?: string;
   esitoAmbiguo: boolean;
+}
+
+export interface WhatsappUltimoEsito {
+  riuscito: boolean;
+  codice: string;
+  fase: string;
+  messaggio: string;
+  esitoAmbiguo: boolean;
+  attivitaUtente: boolean;
+  durataMs: number;
+  avvenutoMs: number;
+}
+
+export interface WhatsappDiagnostica {
+  protocolloRegistrato: boolean;
+  finestraRilevata: boolean;
+  processo: string;
+  pacchetto: string;
+  versione: string;
+  identificazioneFallback: boolean;
+  campioniPrestazioni: number;
+  medianaMs: number;
+  percentile95Ms: number;
+  ultimoEsito: WhatsappUltimoEsito | null;
+}
+
+export interface WhatsappVerificaInput {
+  nome: string;
+  telefono: string;
+}
+
+export interface WhatsappVerificaProva {
+  testo: Comunicazione;
+  allegato: Comunicazione;
+  diagnostica: WhatsappDiagnostica;
 }
 
 export type TipoModelloComunicazione =
@@ -202,9 +241,7 @@ export interface ModelloComunicazioneSalvaInput {
 
 export type SicurezzaTrasportoEmail = "ssl_tls" | "starttls";
 
-export interface ConfigurazioneEmail {
-  revision: string;
-  configurata: boolean;
+export interface ConfigurazioneEmailCampi {
   nomeMittente: string;
   indirizzoMittente: string;
   smtpHost: string;
@@ -219,6 +256,11 @@ export interface ConfigurazioneEmail {
   imapPort: number;
   imapSicurezza: SicurezzaTrasportoEmail;
   destinatarioProva: string;
+}
+
+export interface ConfigurazioneEmail extends ConfigurazioneEmailCampi {
+  revision: string;
+  configurata: boolean;
   passwordPresenteLocale: boolean;
   passwordAltroUtenteLocale: boolean;
   aggiornataMs: number;
@@ -233,21 +275,7 @@ export interface ProvaEmail {
   avviso: string;
 }
 
-export interface ConfigurazioneEmailSalvaInput {
-  nomeMittente: string;
-  indirizzoMittente: string;
-  smtpHost: string;
-  smtpPort: number;
-  smtpSicurezza: SicurezzaTrasportoEmail;
-  smtpUsername: string;
-  replyToAbilitato: boolean;
-  replyTo: string;
-  firma: string;
-  salvaPostaInviata: boolean;
-  imapHost: string;
-  imapPort: number;
-  imapSicurezza: SicurezzaTrasportoEmail;
-  destinatarioProva: string;
+export interface ConfigurazioneEmailSalvaInput extends ConfigurazioneEmailCampi {
   /** Assente o vuota mantiene la password protetta già presente su questo PC. */
   password?: string;
 }
@@ -281,11 +309,7 @@ export type IndicazioneInvioPreventivo =
   | "inviato"
   | "modificato_dopo_invio";
 
-export interface ConfigurazioneDocumenti {
-  revision: string;
-  esiste: boolean;
-  aggiornataMs: number;
-  versioneModello: number;
+interface ConfigurazioneDocumentiCampi {
   denominazione: string;
   indirizzo: string;
   localita: string;
@@ -296,16 +320,17 @@ export interface ConfigurazioneDocumenti {
   condizioniDefault: string;
 }
 
-export interface ConfigurazioneDocumentiSalvaInput {
+export interface ConfigurazioneDocumenti
+  extends ConfigurazioneDocumentiCampi {
+  revision: string;
+  esiste: boolean;
+  aggiornataMs: number;
+  versioneModello: number;
+}
+
+export interface ConfigurazioneDocumentiSalvaInput
+  extends ConfigurazioneDocumentiCampi {
   revision?: string;
-  denominazione: string;
-  indirizzo: string;
-  localita: string;
-  telefono: string;
-  email: string;
-  sito: string;
-  validitaDefaultGiorni: number;
-  condizioniDefault: string;
 }
 
 export interface PreventivoRiga {
@@ -588,12 +613,8 @@ export interface RigaDaSpedire {
   numero: string;
 }
 
-/** Un ordine con righe da spedire + dati di destinazione (FASE 4). */
-export interface OrdineDaSpedire {
-  ordineId: string;
-  numero: string;
-  data: string;
-  stato: string;
+/** Recapito del collo, mostrato anche nel dettaglio della spedizione. */
+interface DatiDestinatarioSpedizione {
   clienteId: string;
   clienteNome: string;
   medicoNome: string;
@@ -605,6 +626,14 @@ export interface OrdineDaSpedire {
   regione: string;
   telefono: string;
   email: string;
+}
+
+/** Un ordine con righe da spedire + dati di destinazione (FASE 4). */
+export interface OrdineDaSpedire extends DatiDestinatarioSpedizione {
+  ordineId: string;
+  numero: string;
+  data: string;
+  stato: string;
   /** Residuo dell'ordine (totale − incassato), in centesimi. */
   residuo: number;
   /** Acconto totale ordine, usato per proporzionare il COD delle spedizioni parziali. */
@@ -660,6 +689,10 @@ export interface BollettazioneConflict {
   label: string;
   current: unknown;
   proposed: unknown;
+  /** Etichetta leggibile per i valori tecnici (es. ID prodotto), se disponibile. */
+  currentDisplay?: string;
+  /** Etichetta leggibile proposta dal file, se disponibile. */
+  proposedDisplay?: string;
   blocking: boolean;
 }
 
@@ -743,7 +776,7 @@ export interface SpedizioneRiga {
 }
 
 /** Una spedizione effettuata: un collo verso un destinatario (FASE 4). */
-export interface Spedizione {
+export interface Spedizione extends DatiDestinatarioSpedizione {
   id: string;
   /** Fotografia semantica dell'avviso di spedizione, calcolata una volta dal backend. */
   comunicazioneFingerprint?: string;
@@ -762,18 +795,6 @@ export interface Spedizione {
   /** Importo contrassegno/assegno in centesimi (anche parziale). */
   contrassegno: number;
   note: string;
-  clienteId: string;
-  clienteNome: string;
-  // Info collo (mostrate al click sul collo).
-  medicoNome: string;
-  agenteNome: string;
-  indirizzo: string;
-  cap: string;
-  citta: string;
-  prov: string;
-  regione: string;
-  telefono: string;
-  email: string;
   /** Profilo distinta del corriere: "gls" | "carrai". */
   corriereProfilo: string;
   /** True se la spedizione è stata fusa in un altro lotto (gruppo "unito", separabile). */
@@ -1068,6 +1089,7 @@ export interface Suggerimento {
 export interface SuggerimentiBundle {
   suggerimenti: Suggerimento[];
   nascosti: string[];
+  tipiInPausa: TipoSuggerimento[];
 }
 
 export interface SuggerimentiPreferenzeInput {

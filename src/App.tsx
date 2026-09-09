@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Center, Group, Stack, Text } from "@mantine/core";
 import { motion } from "framer-motion";
 import { api, inTauri, type Bootstrap, type Identity } from "./lib/tauri";
-import { usePrefs } from "./lib/prefs";
 import { LogoMark, Wordmark, SchermoBenvenuto, UnifiedBootScreen } from "./ui/Brand";
 import { Onboarding } from "./onboarding/Onboarding";
 import { Shell } from "./shell/Shell";
@@ -76,14 +75,19 @@ function FadePrimoIngressoDashboard({ attivo, children }: { attivo: boolean; chi
   );
 }
 
-function App({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstrap?: string | null }) {
-  const {
-    suonoNotifica,
-    balloonAttivo,
-    sogliaSolleciti,
-    notifichePrimoPiano,
-    preferenzeSuggerimenti,
-  } = usePrefs();
+function App({
+  boot,
+  erroreBootstrap,
+  avvioNascosto = false,
+  onBootstrapChange,
+}: {
+  boot: Bootstrap | null;
+  erroreBootstrap?: string | null;
+  avvioNascosto?: boolean;
+  onBootstrapChange?: (boot: Bootstrap) => void;
+}) {
+  const onBootstrapChangeRef = useRef(onBootstrapChange);
+  onBootstrapChangeRef.current = onBootstrapChange;
   const [stato, setStato] = useState<Stato>(() => {
     if (!inTauri) return { fase: "browser" };
     if (erroreBootstrap) return { fase: "errore", messaggio: erroreBootstrap };
@@ -109,6 +113,10 @@ function App({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstra
     let scollegaCoordinamento: (() => void) | undefined;
 
     const applicaBootstrap = (nextBoot: Bootstrap) => {
+      // Root resta la fonte usata da tray e scorciatoie anche quando il normale
+      // riallineamento e' gestito da App: non deve conservare una vecchia sessione
+      // valida dopo reset, ritiro del device o perdita della cartella dati.
+      onBootstrapChangeRef.current?.(nextBoot);
       const destinazione = destinazioneBootstrap(nextBoot);
       if (destinazione === "reconnect") {
         disattivaNotificheSessione();
@@ -328,33 +336,11 @@ function App({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstra
 
   useEffect(() => {
     if (!inTauri || stato.fase !== "pronto") return;
-    const onboardingTimeStr = localStorage.getItem("pt.onboardingTime");
-    const onboardingTime = onboardingTimeStr ? Number(onboardingTimeStr) : 0;
-
-    void api
-      .notificheConfig(
-        stato.identity.userId,
-        suonoNotifica,
-        balloonAttivo,
-        sogliaSolleciti,
-        onboardingTime,
-        notifichePrimoPiano,
-        preferenzeSuggerimenti,
-      )
-      .catch(() => {});
     void assicuraFinestraSpotlight();
     void import("./features/notifiche/useNotifiche")
       .then(({ assicuraFinestraOverlay }) => assicuraFinestraOverlay())
       .catch(() => {});
-    void api.notificheCheck().catch(() => {});
-  }, [
-    stato,
-    suonoNotifica,
-    balloonAttivo,
-    sogliaSolleciti,
-    notifichePrimoPiano,
-    preferenzeSuggerimenti,
-  ]);
+  }, [stato.fase]);
 
   if (stato.fase === "browser") {
     return (
@@ -463,7 +449,14 @@ function App({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstra
       <SchermoBenvenuto
         identity={stato.identity}
         onFinished={() => {
-          void preloadDashboardDopoOnboarding().finally(() => {
+          void preloadDashboardDopoOnboarding().finally(async () => {
+            // Root è l'unico proprietario della configurazione del rilevatore Rust:
+            // aggiorniamo il bootstrap soltanto al passaggio verso la home, senza
+            // configurarlo una seconda volta da App o dalla finestra Notifiche.
+            await api
+              .bootstrap()
+              .then((nextBoot) => onBootstrapChangeRef.current?.(nextBoot))
+              .catch(() => {});
             setStato({ fase: "pronto", identity: stato.identity, justOnboarded: true });
           });
         }}
@@ -479,6 +472,7 @@ function App({ boot, erroreBootstrap }: { boot: Bootstrap | null; erroreBootstra
         identity={stato.identity}
         skipChangelog={appenaConfigurato}
         forceDashboardIntro={appenaConfigurato}
+        saltaIntroDashboard={avvioNascosto}
         onIdentityChange={(newIdentity) => setStato({ fase: "pronto", identity: newIdentity })}
       />
     </FadePrimoIngressoDashboard>
@@ -496,11 +490,13 @@ function AvvioConNovita({
   onIdentityChange,
   skipChangelog = false,
   forceDashboardIntro = false,
+  saltaIntroDashboard = false,
 }: {
   identity: Identity;
   onIdentityChange: (identity: Identity) => void;
   skipChangelog?: boolean;
   forceDashboardIntro?: boolean;
+  saltaIntroDashboard?: boolean;
 }) {
   // Fuori da Tauri o alla prima configurazione non c'è da controllare nulla: entra direttamente.
   const [fase, setFase] = useState<"controllo" | "novita" | "pronto">(
@@ -556,6 +552,7 @@ function AvvioConNovita({
       onIdentityChange={onIdentityChange}
       forceDashboardIntro={forceDashboardIntro}
       testoDashboardLoader={forceDashboardIntro ? null : undefined}
+      saltaIntroDashboard={saltaIntroDashboard}
     />
   );
 }

@@ -54,6 +54,7 @@ import {
 import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { centsToEurStr } from "../../lib/money";
+import { formattaDataLocale } from "../../lib/date";
 import { FurgoncinoLoader } from "./FurgoncinoLoader";
 import {
   NoteSpedizionePopover,
@@ -74,6 +75,7 @@ import {
   apriComunicazione,
   datiPagamentoComunicazione,
   importoResiduoComunicazione,
+  variabiliNomeDestinatario,
 } from "../comunicazioni/apriComunicazione";
 import {
   rigaHaDatiVaccino,
@@ -715,9 +717,7 @@ const ColloRiga = memo(function ColloRiga({
         ...new Set(s.righe.map((riga) => riga.ordineNumero).filter(Boolean)),
       ];
       const data = s.data
-        ? new Intl.DateTimeFormat("it-IT").format(
-            new Date(`${s.data}T12:00:00`),
-          )
+        ? formattaDataLocale(new Date(`${s.data}T12:00:00`))
         : "";
       const conti = await api.recordsList("conto");
       const pagamenti = s.pagamenti.filter((pagamento) => !pagamento.saldato);
@@ -732,8 +732,7 @@ const ColloRiga = memo(function ColloRiga({
         origineId: s.id,
         origineFingerprint: s.comunicazioneFingerprint ?? "",
         variabili: {
-          nome_cliente: s.clienteNome,
-          ragione_sociale: s.clienteNome,
+          ...variabiliNomeDestinatario(s.clienteNome),
           nome_medico: s.medicoNome,
           nome_agente: s.agenteNome,
           riferimento_ordine: ordini.join(", "),

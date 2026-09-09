@@ -84,7 +84,7 @@ interface Prefs {
   /** Giorni di avviso anticipato proposti di default per i nuovi promemoria. */
   anticipoPromemoria: number;
   setAnticipoPromemoria: (v: number) => void;
-  /** Mostrare il balloon di sistema dalla tray per le notifiche nuove in background. */
+  /** Mostrare l'overlay custom per le notifiche nuove in background. */
   balloonAttivo: boolean;
   setBalloonAttivo: (v: boolean) => void;
   /** Mostrare i pop-up notifiche anche quando l'app è in primo piano (non solo in background). */
@@ -93,7 +93,7 @@ interface Prefs {
   /** Id del suono di notifica (vedi features/notifiche/suoni); "nessuno" = muto. */
   suonoNotifica: string;
   setSuonoNotifica: (v: string) => void;
-  /** Suoni del gioco "Flappy Utente Demo" disattivati (FASE 7B). */
+  /** Suoni del gioco "Flappy Livio" disattivati (FASE 7B). */
   giocoMuto: boolean;
   setGiocoMuto: (v: boolean) => void;
   /** In Spedizioni > Da spedire, mostrare anche gli ordini Diagnostica e Keriba. */
@@ -158,6 +158,7 @@ export function calcolaCambiPreferenze(
   for (const [key, value] of Object.entries(corrente)) {
     if (Object.is(precedente[key], value)) continue;
     const serializzato = JSON.stringify(value);
+    if (precedente[key] !== undefined && JSON.stringify(precedente[key]) === serializzato) continue;
     const remotoAtteso = valoriRemoti.get(key);
     valoriRemoti.delete(key);
     if (remotoAtteso !== serializzato) cambi.push({ source, key, value });
@@ -339,7 +340,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         if (typeof value === "boolean") setSpedizioniMostraAltre(value);
         break;
       case CHIAVI_PREFERENZE.preferenzeSuggerimenti:
-        setPreferenzeSuggerimenti(normalizzaPreferenzeSuggerimenti(value));
+        setPreferenzeSuggerimenti((prev) => {
+          const next = normalizzaPreferenzeSuggerimenti(value);
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+        });
         break;
     }
   }, []);
@@ -456,7 +460,10 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       setSpedizioniMostraAltre,
       preferenzeSuggerimenti,
       setPreferenzeSuggerimenti: (value: PreferenzeSuggerimenti) =>
-        setPreferenzeSuggerimenti(normalizzaPreferenzeSuggerimenti(value)),
+        setPreferenzeSuggerimenti((prev) => {
+          const next = normalizzaPreferenzeSuggerimenti(value);
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+        }),
     }),
     [sidebar, ridurreAnimazioni, zoomUI, ordineFinestra, anno, cestinoGiorni, backupAuto, dashboardPeriodo, filtriModo, densitaTabelle, hotkeyGlobale, avvisoTrayMostrato, sogliaSolleciti, giorniSollecitoPreventivi, anticipoPromemoria, balloonAttivo, notifichePrimoPiano, suonoNotifica, giocoMuto, spedizioniMostraAltre, preferenzeSuggerimenti]
   );

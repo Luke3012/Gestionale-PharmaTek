@@ -32,6 +32,7 @@ import {
 import { api, type Campi, type OrdineDto, type RecordDto } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { focusInvalidField } from "../../ui/focusInvalid";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { VirtualFlow } from "../../ui/VirtualFlow";
 import {
   campiProduzione,
@@ -108,7 +109,7 @@ export function patchDiagnostica(iniziale: CampiDiagnostica, corrente: CampiDiag
   if (tipoTest !== iniziale.tipoTest.trim()) patch.tipo_test = tipoTest;
   if (ml !== iniziale.ml.trim()) patch.ml = ml;
   if (corrente.qta !== iniziale.qta) patch.qta = corrente.qta;
-  if (codice !== iniziale.codice.trim()) patch.codice_fornitore = codice;
+  if (codice !== iniziale.codice.trim()) patch.codice_laboratorio = codice;
   return patch;
 }
 
@@ -126,10 +127,7 @@ export function CompilaProduzioneModal({
   /** Esegue l'invio delle sole righe confermate e segnala se è riuscito. */
   onConfirm: (righeIds: string[]) => Promise<boolean>;
 }) {
-  const [mostrato, setMostrato] = useState<CompilaTarget | null>(target);
-  useEffect(() => {
-    if (target) setMostrato(target);
-  }, [target]);
+  const [mostrato, clearMostrato] = useModalSnapshot(target);
 
   return (
     <Modal
@@ -147,7 +145,7 @@ export function CompilaProduzioneModal({
           <Text fw={700}>Prepara la produzione</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && (
         <Corpo target={mostrato} prodMap={prodMap} sugg={sugg} onClose={onClose} onConfirm={onConfirm} />

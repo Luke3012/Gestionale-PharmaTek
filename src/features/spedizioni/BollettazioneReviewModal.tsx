@@ -37,7 +37,8 @@ import {
   type BollettazioneRow,
   type BollettazioneRowStatus,
 } from "../../lib/tauri";
-import { formattaDataItaliana } from "../../lib/date";
+import { formattaDataItaliana, oggiIso } from "../../lib/date";
+import { osservaRidimensionamento } from "../../ui/osservaRidimensionamento";
 import { dur, easeOut, useAnimazioniRidotte } from "../../ui/motion";
 import { toast } from "../../ui/toast/store";
 import {
@@ -107,10 +108,7 @@ function AnimatedAutoHeight({
       const next = Math.ceil(node.getBoundingClientRect().height);
       setHeight((current) => (current === next ? current : next));
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
+    return osservaRidimensionamento(node, measure);
   }, []);
 
   return (
@@ -200,8 +198,8 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
                 {conflict.label}
               </Text>
               <Text size="xs" c="dimmed">
-                {readableValue(conflict.current)} ·{" "}
-                {readableValue(conflict.proposed)}
+                {conflict.currentDisplay ?? readableValue(conflict.current)} ·{" "}
+                {conflict.proposedDisplay ?? readableValue(conflict.proposed)}
               </Text>
             </Box>
           ))}
@@ -309,11 +307,11 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
                   <Stack gap={4}>
                     <Radio
                       value="current"
-                      label={`Mantieni il gestionale: ${readableValue(conflict.current)}`}
+                      label={`Mantieni il gestionale: ${conflict.currentDisplay ?? readableValue(conflict.current)}`}
                     />
                     <Radio
                       value="file"
-                      label={`Usa il file: ${readableValue(conflict.proposed)}`}
+                      label={`Usa il file: ${conflict.proposedDisplay ?? readableValue(conflict.proposed)}`}
                     />
                   </Stack>
                 </Radio.Group>
@@ -345,10 +343,7 @@ export function BollettazioneReviewModal({
     initialFilter(analysis),
   );
   const [saving, setSaving] = useState(false);
-  const [arrivalDate, setArrivalDate] = useState(() => {
-    const date = new Date();
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  });
+  const [arrivalDate, setArrivalDate] = useState(oggiIso);
   const [resolutions, setResolutions] = useState<
     Record<string, BollettazioneResolution>
   >(

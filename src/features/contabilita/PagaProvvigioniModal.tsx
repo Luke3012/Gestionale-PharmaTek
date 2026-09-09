@@ -3,7 +3,7 @@
 // incassato non ancora spediti), con selezione riga-per-riga e totale che si aggiorna
 // in tempo reale. Al conferma crea un record `provv_pagamento` con lo snapshot degli
 // importi: quegli ordini spariscono dalla schermata Provvigioni e finiscono nello storico.
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import {
   Alert,
   Badge,
@@ -27,7 +27,9 @@ import {
 } from "@tabler/icons-react";
 import { api, type ProvvigioneAgente } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { centsToEurStr } from "../../lib/money";
+import { setConToggle } from "../../lib/set";
 import type { PagamentoProvv } from "./provvigioniExport";
 import { DebouncedInput } from "../../ui/DebouncedInput";
 import { Tabella, type DataTableColumn } from "../../ui/Tabella";
@@ -52,10 +54,7 @@ export function PagaProvvigioniModal({
 }) {
   // Snapshot dell'agente: lo teniamo finché il modale è montato così la chiusura
   // animata non mostra un corpo vuoto (fetch-then-render).
-  const [mostrato, setMostrato] = useState<ProvvigioneAgente | null>(agente);
-  useEffect(() => {
-    if (agente) setMostrato(agente);
-  }, [agente]);
+  const [mostrato, clearMostrato] = useModalSnapshot(agente);
 
   return (
     <Modal
@@ -70,7 +69,7 @@ export function PagaProvvigioniModal({
           <Text fw={700}>Paga provvigioni — {mostrato?.agenteNome}</Text>
         </Group>
       }
-      transitionProps={{ transition: "fade", duration: 180, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 180, onExited: clearMostrato }}
     >
       {mostrato && <Corpo agente={mostrato} onClose={onClose} onPagato={onPagato} />}
     </Modal>
@@ -125,12 +124,7 @@ function Corpo({
   const alcuneSel = selezionati.length > 0 && !tutteSel;
 
   function toggleRiga(id: string) {
-    setEscluse((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setEscluse((corrente) => setConToggle(corrente, id));
   }
 
   function toggleTutte() {

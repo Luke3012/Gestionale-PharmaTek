@@ -2,7 +2,7 @@
 // finestre-pannello (?info in main.tsx). Due modalità nello stesso "vetro" a misura fissa:
 //  • INFO: marchio + versione + crediti + «Controlla aggiornamenti» (inline, qui).
 //  • GIOCO: premendo SPAZIO le scritte svaniscono, il cielo con le nuvole entra in
-//    dissolvenza, Utente Demo arriva da sinistra e gli ostacoli da destra (gioco "Flappy Utente Demo").
+//    dissolvenza, Livio arriva da sinistra e gli ostacoli da destra (gioco "Flappy Livio").
 //    Con ESC si torna alle info con un'animazione morbida.
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Anchor, Box, Button, Divider, Group, Stack, Text } from "@mantine/core";
@@ -11,6 +11,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { api, inTauri } from "../../lib/tauri";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
 import { usePrefs } from "../../lib/prefs";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
 import { LogoMark, Wordmark } from "../../ui/Brand";
 import { cercaAggiornamenti, type StatoUpdate } from "../../updater";
 import { StoricoChangelog } from "../changelog/StoricoChangelog";
@@ -62,8 +63,8 @@ export function InfoWindow() {
 
     if (!inTauri) return;
     let attivo = true;
-    let off: (() => void) | undefined;
-    import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) => listen<string>("info:navigate", (ev) => {
         if (!attivo) return;
         const dest = ev.payload;
@@ -75,15 +76,11 @@ export function InfoWindow() {
           setModalita("info");
           void controllaAggiornamentiEStatoRemoto();
         }
-      }))
-      .then((u) => {
-        if (attivo) off = u;
-        else u();
-      })
-      .catch(() => {});
+      })),
+    );
     return () => {
       attivo = false;
-      off?.();
+      disiscriviTauri();
     };
   }, []);
 
@@ -151,7 +148,7 @@ export function InfoWindow() {
   }, [modalita]);
 
   function apriSito() {
-    const url = "";
+    const url = "https://example.invalid";
     if (inTauri) api.apriUrl(url).catch(() => {});
     else window.open(url, "_blank");
   }
@@ -212,7 +209,7 @@ export function InfoWindow() {
                     Controlla aggiornamenti
                   </Button>
                   <Button variant="subtle" color="gray" leftSection={<IconExternalLink size={16} />} onClick={apriSito}>
-                    Sito non configurato
+                    example.invalid
                   </Button>
                 </Group>
               </Vola>

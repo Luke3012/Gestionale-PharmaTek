@@ -27,6 +27,9 @@ import {
   type Identity,
   type SuggerimentoCollegamento,
 } from "../lib/tauri";
+import { titoloProgressoAggiornamento } from "../lib/aggiornamentoUi";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
+import type { ProgressoAggiornamento } from "../updater";
 import { apriFinestraOrdine } from "../features/giornaliero/apriFinestra";
 import { apriFinestraPagamento } from "../features/contabilita/apriFinestraPagamento";
 import { apriRiepilogo, type TipoRiepilogo } from "./apriRiepilogo";
@@ -35,6 +38,7 @@ import { ComposerMessaggio } from "../features/notifiche/ComposerMessaggio";
 import { riproduciSuono } from "../features/notifiche/suoni";
 import {
   COLORE_URGENZA,
+  apriPopoverNotifichePrincipale,
   segnaLetta,
   TIPO_NOTIFICA,
   type TipoNotifica,
@@ -47,7 +51,10 @@ import {
   formattaStimaInvio,
   STIMA_INVIO_SECONDI,
 } from "../features/comunicazioni/stimaInvio";
-import { riepilogaProgressoComunicazioni } from "../features/comunicazioni/progressoComunicazioni";
+import {
+  contaMessaggiLogici,
+  riepilogaProgressoComunicazioni,
+} from "../features/comunicazioni/progressoComunicazioni";
 import { aggiornaStatoNotificheComunicazioniLocale } from "../features/notifiche/statoComunicazioniLocale";
 import { vaiAllaPrincipale } from "./navigazione";
 import { deepLinkSuggerimento } from "../features/suggerimenti/collegamento";
@@ -73,17 +80,25 @@ interface Toast {
   mittenteId: string;
   suggerimentoCollegamento?: SuggerimentoCollegamento;
   comunicazioneId?: string;
+  canaleComunicazione?: Comunicazione["canale"];
   campagnaId?: string;
   inCorso?: boolean;
   ripresaWhatsapp?: boolean;
   erroreComunicazione?: boolean;
   campagnaInPausa?: boolean;
   durataMs?: number;
+  mostraTimerScadenza?: boolean;
   stimaSecondi?: number;
   stimaAvvioMs?: number;
   progress?: number;
   installing?: boolean;
   forceInstall?: boolean;
+  /** Card riepilogativa di un batch: il click apre la campanella nella main. */
+  apriCampanella?: boolean;
+  /** Id applicativi rappresentati dalla card, usati per de-dup e rimozione. */
+  notificheIncluse?: string[];
+  /** Le riattivazioni manuali dalla Dashboard devono mostrare la card completa. */
+  mostraCompleta?: boolean;
 }
 
 const LARGHEZZA = 440; // px logici della finestra: card + spazio attorno per l'ombra
@@ -103,6 +118,16 @@ const DURATA_MESSAGGIO_MS = 180_000;
 const MAX_TOAST = 99; // cap di sicurezza: il mazzo mostra una card e mette il resto in coda
 const CARD_W = LARGHEZZA - PAD_X * 2;
 
+async function interrompiSeDisabilitatoDaRemoto(èAttivo: () => boolean): Promise<boolean> {
+  const controllo = await import("../remoteControl")
+    .then(({ controllaDisattivazioneRemota }) => controllaDisattivazioneRemota())
+    .catch(() => null);
+  if (!èAttivo()) return true;
+  if (!controllo?.disabled) return false;
+  await api.notificheDisattivaSessione().catch(() => {});
+  return true;
+}
+
 function pagamentoIdDaToast(t: Toast): string | undefined {
   if (t.tipo !== "sollecito") return undefined;
   return /^sollecito:([^:]+)/.exec(t.id)?.[1];
@@ -114,10 +139,59 @@ function prioritaToast(toast: Toast): number {
   return 2;
 }
 
+function BarraProgressoNotifica({ colore, durata, inPausa = false, progresso }: {
+  colore: string; durata?: number; inPausa?: boolean; progresso?: number;
+}) {
+  const temporizzata = durata !== undefined;
+  return (
+    <Box style={{ height: 3, width: "100%", background: `var(--mantine-color-${colore}-1)` }}>
+      <Box style={{
+        height: "100%",
+        width: temporizzata ? "100%" : `${progresso}%`,
+        background: `var(--mantine-color-${colore}-6)`,
+        ...(temporizzata
+          ? { transformOrigin: "left center", animation: `pt-toast-countdown ${durata}ms linear forwards`, animationPlayState: inPausa ? "paused" : "running" }
+          : { transition: "width 220ms ease" }),
+      }} />
+    </Box>
+  );
+}
+
 function ordinaToast(toasts: Toast[]): Toast[] {
   return [...toasts].sort(
     (a, b) => prioritaToast(a) - prioritaToast(b),
   );
+}
+
+function compattaNuoveNotifiche(nuove: Toast[]): Toast[] {
+  const complete = nuove.filter((notifica) => notifica.mostraCompleta);
+  const aggregabili = nuove.filter((notifica) => !notifica.mostraCompleta);
+  if (aggregabili.length <= 1) return [...complete, ...aggregabili];
+  const notificheIncluse = aggregabili.map((notifica) => notifica.id).sort();
+  const urgenza = aggregabili.some((notifica) => notifica.urgenza === "scaduto")
+    ? "scaduto"
+    : aggregabili.some((notifica) => notifica.urgenza === "oggi")
+      ? "oggi"
+      : aggregabili.some((notifica) => notifica.urgenza === "presto")
+        ? "presto"
+        : "info";
+  return [
+    ...complete,
+    {
+      id: `riepilogo-notifiche:${notificheIncluse.join("|")}`,
+      tipo: "riepilogo",
+      urgenza,
+      titolo: `${aggregabili.length} nuove notifiche`,
+      dettaglio: "Clicca per aprire la campanella e visualizzarle.",
+      collegatoTipo: "",
+      collegatoId: "",
+      collegatoNome: "",
+      promemoriaId: "",
+      mittenteId: "",
+      apriCampanella: true,
+      notificheIncluse,
+    },
+  ];
 }
 
 function toastDaStatoComunicazione(
@@ -139,6 +213,7 @@ function toastDaStatoComunicazione(
     promemoriaId: "",
     mittenteId: "",
     comunicazioneId: comunicazione.id,
+    canaleComunicazione: comunicazione.canale,
     campagnaId: comunicazione.campagnaId,
   };
   if (comunicazione.stato === "sospeso") {
@@ -197,13 +272,9 @@ function toastDaStatoComunicazione(
     };
   }
   if (["invio_azionato", "consegna_verificata"].includes(comunicazione.stato)) {
-    return {
-      ...base,
-      titolo: "Invio completato",
-      dettaglio: `${canale} · ${comunicazione.recapito}`,
-      progress: 100,
-      durataMs: 12_000,
-    };
+    // Per il singolo messaggio la scomparsa dell'avviso "in corso" e lo
+    // storico sono una conferma sufficiente: il riepilogo serve solo alle code.
+    return null;
   }
   return null;
 }
@@ -268,12 +339,16 @@ function toastDaStatoCampagna(comunicazioni: Comunicazione[]): Toast | null {
     // L'annullamento e una scelta esplicita dell'operatore: resta nello storico
     // del Centro comunicazioni, senza generare un'altra notifica di esito.
     if (riepilogo.annullate > 0) return null;
+    if (riepilogo.fallite === 0 && contaMessaggiLogici(comunicazioni) <= 1) {
+      return null;
+    }
     return {
       ...base,
       urgenza: riepilogo.fallite > 0 ? "scaduto" : "info",
       titolo: riepilogo.fallite > 0 ? "Invio concluso con errori" : "Invio completato",
       progress: 100,
-      durataMs: riepilogo.fallite > 0 ? undefined : 12_000,
+      durataMs: riepilogo.fallite > 0 ? undefined : 60_000,
+      mostraTimerScadenza: riepilogo.fallite === 0,
     };
   }
 
@@ -298,6 +373,7 @@ export function OverlayWindow() {
   const identityRef = useRef<Identity | null>(null);
   const contenutoRef = useRef<HTMLDivElement>(null);
   const ultimoPortaDavantiRef = useRef(0);
+  const aperturaCampanellaInCorsoRef = useRef(false);
 
   // Cap di altezza = area utile dello schermo (esclude la taskbar): oltre, la colonna
   // di card scorre invece di sforare lo schermo.
@@ -336,7 +412,6 @@ export function OverlayWindow() {
   useEffect(() => {
     if (!inTauri) return;
     let attivo = true;
-    let off: (() => void) | undefined;
     const versioniCampagna = new Map<string, number>();
 
     const aggiornaComunicazione = async (payload: Comunicazione) => {
@@ -415,18 +490,15 @@ export function OverlayWindow() {
       }
     };
 
-    void import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<Comunicazione>("pt:comunicazione-stato-locale", ({ payload }) => {
           if (!attivo) return;
           void aggiornaComunicazione(payload);
         }),
-      )
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
+      ),
+    );
 
     if (balloonAttivo) {
       void api
@@ -468,7 +540,7 @@ export function OverlayWindow() {
     }
     return () => {
       attivo = false;
-      off?.();
+      disiscriviTauri();
     };
   }, [balloonAttivo, nascondiOverlayDuranteWhatsapp, portaOverlayDavanti]);
 
@@ -528,14 +600,7 @@ export function OverlayWindow() {
 
         const { controllaAggiornamento, prenotaAvvisoAggiornamento, riallineaDedupVersioneInstallata } = await import("../updater");
         await riallineaDedupVersioneInstallata();
-        const controlloRemoto = await import("../remoteControl")
-          .then(({ controllaDisattivazioneRemota }) => controllaDisattivazioneRemota())
-          .catch(() => null);
-        if (!attivo) return;
-        if (controlloRemoto?.disabled) {
-          await api.notificheDisattivaSessione().catch(() => {});
-          return;
-        }
+        if (await interrompiSeDisabilitatoDaRemoto(() => attivo)) return;
         const trovato = await controllaAggiornamento();
         if (!attivo || !trovato) return;
         if (trovato.versione === versioneAvvisata) return;
@@ -626,14 +691,7 @@ export function OverlayWindow() {
 
     async function controlla() {
       try {
-        const controlloRemoto = await import("../remoteControl")
-          .then(({ controllaDisattivazioneRemota }) => controllaDisattivazioneRemota())
-          .catch(() => null);
-        if (!attivo) return;
-        if (controlloRemoto?.disabled) {
-          await api.notificheDisattivaSessione().catch(() => {});
-          return;
-        }
+        if (await interrompiSeDisabilitatoDaRemoto(() => attivo)) return;
 
         const identity = await api.whoami().catch(() => null);
         if (!attivo || !identity) return; // Non siamo loggati / onboarding attivo
@@ -674,6 +732,12 @@ export function OverlayWindow() {
     setToasts((cur) => cur.filter((x) => x.id !== id));
   }, []);
 
+  function aggiornaToast(id: string, patch: Partial<Toast>) {
+    setToasts((correnti) =>
+      correnti.map((toast) => toast.id === id ? { ...toast, ...patch } : toast),
+    );
+  }
+
   // Aprendo la campanella spariscono soltanto gli avvisi ordinari. Le card operative
   // sono anche i controlli della coda e devono sopravvivere a questa pulizia.
   const pulisci = useCallback(() => {
@@ -703,7 +767,15 @@ export function OverlayWindow() {
           }),
           w.listen<string[]>("pt:overlay-rimuovi-notifiche", (ev) => {
             const ids = new Set(ev.payload ?? []);
-            if (ids.size > 0) setToasts((cur) => cur.filter((t) => !ids.has(t.id)));
+            if (ids.size > 0) {
+              setToasts((cur) =>
+                cur.filter(
+                  (t) =>
+                    !ids.has(t.id) &&
+                    !t.notificheIncluse?.some((id) => ids.has(id)),
+                ),
+              );
+            }
           }),
           w.listen<string>("pt:suona-notifica", (ev) => {
             const suono = ev.payload || "campanello";
@@ -713,8 +785,12 @@ export function OverlayWindow() {
             const nuove = ev.payload ?? [];
             if (nuove.length > 0) void portaOverlayDavanti(true);
             setToasts((cur) => {
-              const presenti = new Set(cur.map((t) => t.id));
-              const aggiunte = nuove.filter((t) => !presenti.has(t.id));
+              const presenti = new Set(
+                cur.flatMap((t) => t.notificheIncluse ?? [t.id]),
+              );
+              const aggiunte = compattaNuoveNotifiche(
+                nuove.filter((t) => !presenti.has(t.id)),
+              );
               if (aggiunte.length === 0) return cur;
               return ordinaToast([...cur, ...aggiunte]).slice(0, MAX_TOAST);
             });
@@ -837,137 +913,83 @@ export function OverlayWindow() {
     }
   }
 
-  async function avviaAggiornamento(t: Toast) {
+  async function eseguiInstallazioneOverlay(
+    t: Toast,
+    installa: (onProgress: (progresso: ProgressoAggiornamento) => void) => Promise<unknown>,
+    forzata: boolean,
+  ) {
     if (localStorage.getItem("pt.aggiornando") === "1") return;
     localStorage.setItem("pt.aggiornando", "1");
-    setToasts((cur) =>
-      cur.map((x) =>
-        x.id === t.id
-          ? {
-              ...x,
-              titolo: "Aggiornamento in corso",
-              dettaglio: "Preparo l'aggiornamento...",
-              progress: 3,
-              installing: true,
-            }
-          : x
-      )
-    );
+    aggiornaToast(t.id, {
+      titolo: "Aggiornamento in corso",
+      dettaglio: "Preparo l'aggiornamento...",
+      progress: 3,
+      installing: true,
+    });
     try {
-      const { installaAggiornamento } = await import("../updater");
-      await installaAggiornamento(undefined, (p) => {
-        setToasts((cur) =>
-          cur.map((x) =>
-            x.id === t.id
-              ? {
-                  ...x,
-                  titolo:
-                    p.fase === "scarico"
-                      ? "Scarico l'aggiornamento"
-                      : p.fase === "installo"
-                        ? "Installo l'aggiornamento"
-                        : p.fase === "riavvio"
-                          ? "Riavvio in corso"
-                          : "Aggiornamento in corso",
-                  dettaglio: p.messaggio,
-                  progress: p.percentuale,
-                  installing: true,
-                }
-              : x
-          )
-        );
+      await installa((progresso) => {
+        aggiornaToast(t.id, {
+          titolo: titoloProgressoAggiornamento(progresso.fase),
+          dettaglio: progresso.messaggio,
+          progress: progresso.percentuale,
+          installing: true,
+        });
       });
+      if (forzata) {
+        aggiornaToast(t.id, {
+          titolo: "Aggiornamento installato",
+          dettaglio: "Riavvio il gestionale...",
+          progress: 100,
+          installing: true,
+        });
+      }
     } catch (e) {
-      localStorage.removeItem("pt.aggiornando");
-      setToasts((cur) =>
-        cur.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                titolo: "Aggiornamento fallito",
-                dettaglio: String(e),
-                progress: undefined,
-                installing: false,
-              }
-            : x
-        )
-      );
+      if (!forzata) localStorage.removeItem("pt.aggiornando");
+      aggiornaToast(t.id, {
+        titolo: "Aggiornamento fallito",
+        dettaglio: String(e),
+        progress: undefined,
+        installing: false,
+      });
+    } finally {
+      if (forzata) localStorage.removeItem("pt.aggiornando");
     }
+  }
+
+  async function avviaAggiornamento(t: Toast) {
+    await eseguiInstallazioneOverlay(
+      t,
+      async (onProgress) => {
+        const { installaAggiornamento } = await import("../updater");
+        await installaAggiornamento(undefined, onProgress);
+      },
+      false,
+    );
   }
 
   async function avviaInstallUltimaVersione(t: Toast) {
-    if (localStorage.getItem("pt.aggiornando") === "1") return;
-    localStorage.setItem("pt.aggiornando", "1");
-    setToasts((cur) =>
-      cur.map((x) =>
-        x.id === t.id
-          ? {
-              ...x,
-              titolo: "Aggiornamento in corso",
-              dettaglio: "Preparo l'aggiornamento...",
-              progress: 3,
-              installing: true,
-            }
-          : x
-      )
+    await eseguiInstallazioneOverlay(
+      t,
+      async (onProgress) => {
+        const { installaUltimaVersione } = await import("../updater");
+        await installaUltimaVersione(onProgress);
+      },
+      true,
     );
-    try {
-      const { installaUltimaVersione } = await import("../updater");
-      await installaUltimaVersione((p) => {
-        setToasts((cur) =>
-          cur.map((x) =>
-            x.id === t.id
-              ? {
-                  ...x,
-                  titolo:
-                    p.fase === "scarico"
-                      ? "Scarico l'aggiornamento"
-                      : p.fase === "installo"
-                        ? "Installo l'aggiornamento"
-                        : p.fase === "riavvio"
-                          ? "Riavvio in corso"
-                          : "Aggiornamento in corso",
-                  dettaglio: p.messaggio,
-                  progress: p.percentuale,
-                  installing: true,
-                }
-              : x
-          )
-        );
-      });
-      setToasts((cur) =>
-        cur.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                titolo: "Aggiornamento installato",
-                dettaglio: "Riavvio il gestionale...",
-                progress: 100,
-                installing: true,
-              }
-            : x
-        )
-      );
-    } catch (e) {
-      setToasts((cur) =>
-        cur.map((x) =>
-          x.id === t.id
-            ? {
-                ...x,
-                titolo: "Aggiornamento fallito",
-                dettaglio: String(e),
-                progress: undefined,
-                installing: false,
-              }
-            : x
-        )
-      );
-    } finally {
-      localStorage.removeItem("pt.aggiornando");
-    }
   }
 
   function onClick(t: Toast) {
+    if (t.apriCampanella) {
+      if (aperturaCampanellaInCorsoRef.current) return;
+      aperturaCampanellaInCorsoRef.current = true;
+      void apriPopoverNotifichePrincipale()
+        .then(() => rimuovi(t.id))
+        .catch(() => {})
+        .finally(() => {
+          aperturaCampanellaInCorsoRef.current = false;
+        });
+      return;
+    }
     if (t.forceInstall || t.id.startsWith("update-test:")) {
       void avviaInstallUltimaVersione(t);
       return;
@@ -1247,8 +1269,14 @@ function CardNotifica({
       !t.inCorso ||
       !t.comunicazioneId
     ) {
-      if (t.erroreComunicazione) onIgnora();
-      else onChiudi();
+      if (t.erroreComunicazione) {
+        onIgnora();
+      } else {
+        // La X e' solo una chiusura visiva per gli avvisi ordinari. Per i
+        // messaggi tra utenti, invece, equivale esplicitamente a «letto».
+        if (messaggio) onLetta();
+        onChiudi();
+      }
       return;
     }
     setErroreAzioneComunicazione("");
@@ -1419,11 +1447,15 @@ function CardNotifica({
               loading={riprovaInCorso}
               onClick={(event) => {
                 event.stopPropagation();
+                setErroreAzioneComunicazione("");
                 setRiprovaInCorso(true);
-                void api
-                  .comunicazioneMettiInCoda(t.comunicazioneId!)
-                  .then(() => onChiudi())
-                  .catch(() => setRiprovaInCorso(false));
+                const tentativo =
+                  t.canaleComunicazione === "whatsapp"
+                    ? api.comunicazioneWhatsappRiprendi(t.comunicazioneId!)
+                    : api.comunicazioneMettiInCoda(t.comunicazioneId!);
+                void tentativo
+                  .catch((error) => setErroreAzioneComunicazione(String(error)))
+                  .finally(() => setRiprovaInCorso(false));
               }}
             >
               Riprova
@@ -1490,23 +1522,15 @@ function CardNotifica({
           <IconX size={15} />
         </ActionIcon>
       </Group>
-      {progress != null && (
-        <Box
-          style={{
-            height: 3,
-            width: "100%",
-            background: `var(--mantine-color-${def.color}-1)`,
-          }}
-        >
-          <Box
-            style={{
-              height: "100%",
-              width: `${progress}%`,
-              background: `var(--mantine-color-${def.color}-6)`,
-              transition: "width 220ms ease",
-            }}
-          />
-        </Box>
+      {t.mostraTimerScadenza ? (
+        <BarraProgressoNotifica
+          key="timer-scadenza"
+          colore={def.color}
+          durata={durata}
+          inPausa={hover}
+        />
+      ) : progress != null && (
+        <BarraProgressoNotifica colore={def.color} progresso={progress} />
       )}
 
       <AnimatePresence initial={false}>

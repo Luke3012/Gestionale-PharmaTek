@@ -52,6 +52,11 @@ describe("persistenza stato notifiche", () => {
     mock.syncOverview.mockResolvedValue({ devices: [{ userId: "attivo" }] });
     expect(await riattivaNotifichePerUtenti(["promemoria:1"], ["ritirato", "attivo"])).toBe(1);
     expect(mock.recordCreateId).toHaveBeenCalledOnce();
+    expect(mock.recordCreateId).toHaveBeenCalledWith(
+      "notifica_letta",
+      "stato-notifica-v2|attivo|promemoria:1",
+      expect.objectContaining({ origine_riattivazione: "dashboard" }),
+    );
   });
 
   it("salva lo scarto con chiave deterministica e utente esplicito", async () => {
@@ -92,6 +97,7 @@ describe("persistenza stato notifiche", () => {
       "stato-notifica-v2|utente-corrente|msg:02DEF",
       expect.objectContaining({ user_id: "utente-corrente", letta: true })
     );
+    expect(mock.recordCreateId.mock.calls[0]?.[2]).not.toHaveProperty("scartata");
   });
 
   it("la chiusura può attendere una scrittura ancora in volo", async () => {

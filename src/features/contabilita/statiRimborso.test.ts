@@ -145,4 +145,21 @@ describe("rimborso collegato a un ordine in modifica", () => {
       })
     ).toEqual({ importoAttuale: 15_000, importoDopo: 15_500, esistente: true });
   });
+
+  it("usa lo stesso riepilogo per isolare ordine, origine e rimborso richiesto più recente", () => {
+    const vecchio = { ...rimborso("vecchio", 10_000, "richiesto"), dataRichiesta: "2026-07-15" };
+    const recente = { ...rimborso("recente", 15_000, "richiesto"), dataRichiesta: "2026-07-17" };
+    const manuale = { ...rimborso("manuale", 30_000, "effettuato"), origine: "manuale" as const };
+    const altroOrdine = { ...rimborso("altro", 30_000, "effettuato"), ordineId: "ordine-2" };
+
+    expect(
+      impattoRimborsoDopoIncasso({
+        ordineId: "ordine-1",
+        totale: 30_000,
+        incassatoPrima: 50_000,
+        nuovoIncasso: 500,
+        rimborsi: [vecchio, manuale, rimborso("emesso", 5_000, "effettuato"), altroOrdine, recente],
+      })
+    ).toEqual({ importoAttuale: 15_000, importoDopo: 15_500, esistente: true });
+  });
 });

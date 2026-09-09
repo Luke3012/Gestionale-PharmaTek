@@ -859,7 +859,7 @@ fn bootstrap_snapshot_valido_senza_eventi_resta_recuperabile() {
     let data_dir = data.path().to_str().unwrap();
     let identity = {
         let state = AppState::init(app.path().to_path_buf()).unwrap();
-        let identity = onboarda(&state, data_dir, "Utente Demo");
+        let identity = onboarda(&state, data_dir, "Livio");
         state
             .with_engine(|engine| engine.snapshot().map(|_| ()).map_err(es))
             .unwrap();
@@ -876,7 +876,6 @@ fn bootstrap_snapshot_valido_senza_eventi_resta_recuperabile() {
 }
 
 #[test]
-#[ignore = "test di temporizzazione OneDrive non deterministico su Windows"]
 fn log_del_pc_cancellato_mantiene_la_configurazione_finche_onedrive_lo_ripristina() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -898,7 +897,7 @@ fn log_del_pc_cancellato_mantiene_la_configurazione_finche_onedrive_lo_ripristin
     for _ in 0..2 {
         let riavviata = AppState::init(app.path().to_path_buf()).unwrap();
         let boot = riavviata.bootstrap();
-        assert_eq!(boot.data_dir_status, "ok");
+        assert_eq!(boot.data_dir_status, "missing_or_empty");
         assert_eq!(boot.data_dir.as_deref(), Some(data_dir));
         assert!(!boot.reconnect_required);
         assert_eq!(boot.identity.unwrap().user_id, identity.user_id);
@@ -918,7 +917,7 @@ fn bootstrap_utente_configurato_cancellato_disconnette_config_locale() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identity = onboarda(&state, data_dir, "Utente Demo");
+    let identity = onboarda(&state, data_dir, "Livio");
     let cliente = state
         .record_create("cliente", campi(&[("nome", json!("Farmacia"))]))
         .unwrap();
@@ -954,7 +953,7 @@ fn pulizia_ordini_inutili_anteprima_cascata() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cliente = state
         .record_create("cliente", campi(&[("nome", json!("Mario Rossi"))]))
@@ -1024,7 +1023,7 @@ fn pulizia_clienti_morti_non_tocca_clienti_reali() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let morto = state
         .record_create("cliente", campi(&[("nome", json!("Cliente morto"))]))
@@ -1091,7 +1090,7 @@ fn pulizia_periodo_blocca_spedizione_mista() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let o1 = state
         .record_create(
@@ -1152,7 +1151,7 @@ fn pulizia_esegui_backup_e_purge() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let ordine = state
         .record_create(
@@ -1190,7 +1189,7 @@ fn pulizia_condivisa_ignora_la_cronologia_comunicazioni_locale() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     state
         .with_engine(|engine| {
@@ -1259,7 +1258,7 @@ fn pulizia_non_tombstona_read_state_se_target_solo_temporaneamente_assente() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identity = onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    let identity = onboarda(&state, data.path().to_str().unwrap(), "Livio");
     let messaggio_id = "msg:arriva-dopo";
     let stato_id = format!("stato-notifica-v2|{}|{}", identity.user_id, messaggio_id);
 
@@ -1314,7 +1313,7 @@ fn pulizia_rimuove_notifiche_lette_orfane_e_conserva_tombstone_e_log() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let id = onboarda(&state, data_dir, "Utente Demo");
+    let id = onboarda(&state, data_dir, "Livio");
     let device = state.bootstrap().device_id;
 
     let ordine = state
@@ -1420,9 +1419,9 @@ fn onboarding_persistito_e_riavvio() {
 
     let id = {
         let state = AppState::init(app.path().to_path_buf()).unwrap();
-        onboarda(&state, data_dir, "Utente Demo")
+        onboarda(&state, data_dir, "Livio")
     };
-    assert_eq!(id.nome, "Utente Demo");
+    assert_eq!(id.nome, "Livio");
 
     // "Riavvio": un nuovo AppState sullo stesso app_dir deve risultare già onboarded.
     let state2 = AppState::init(app.path().to_path_buf()).unwrap();
@@ -1431,7 +1430,7 @@ fn onboarding_persistito_e_riavvio() {
         boot.onboarded,
         "dopo il riavvio deve essere già configurato"
     );
-    assert_eq!(boot.identity.unwrap().nome, "Utente Demo");
+    assert_eq!(boot.identity.unwrap().nome, "Livio");
 }
 
 #[test]
@@ -1443,7 +1442,7 @@ fn notifica_scartata_resta_scartata_dopo_il_riavvio() {
 
     let (user_id, stato_id) = {
         let state = AppState::init(app.path().to_path_buf()).unwrap();
-        let identity = onboarda(&state, data_dir, "Utente Demo");
+        let identity = onboarda(&state, data_dir, "Livio");
         state
             .record_create_with_id(
                 "notifica",
@@ -1551,7 +1550,7 @@ fn crud_anagrafiche_completo() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     // Crea agente
     let ag = state
@@ -1618,7 +1617,7 @@ fn prezzo_suggerito_applica_il_listino() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let agente = state
         .record_create("agente", campi(&[("nome", json!("Mario"))]))
@@ -1693,7 +1692,7 @@ fn giornaliero_numerazione_e_totali() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -1782,11 +1781,9 @@ fn corrieri_builtin_seminati_con_profilo() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let corrieri = state.records_list("corriere").unwrap();
-    assert!(corrieri.is_empty(), "la demo pubblica non semina corrieri nominativi");
-    return;
     let gls = corrieri
         .iter()
         .find(|c| c.id == CORRIERE_CORRIERE_B)
@@ -1824,7 +1821,7 @@ fn pagamenti_stato_verifica_e_automazione() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     // L'onboarding ha seminato i conti speciali built-in (non eliminabili).
     let conti = state.records_list("conto").unwrap();
@@ -2013,7 +2010,7 @@ fn pagamenti_attesi_saldo_e_rateizza() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -2446,7 +2443,7 @@ fn pagamenti_riallinea_aperti_proporzionale() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -2702,7 +2699,7 @@ fn scadenzario_ordine_generico_si_materializza_e_non_riscrive_incassi() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prodotto = state
         .record_create("prodotto", campi(&[("nome", json!("Vaccino"))]))
@@ -2855,7 +2852,7 @@ fn pagamento_overpayment_saldato_e_pulizia_attesi() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -2949,7 +2946,7 @@ fn rimborsi_richiesto_effettuato_e_extra() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let banca = state
         .record_create("conto", campi(&[("nome", json!("Banca Demo"))]))
@@ -3170,7 +3167,7 @@ fn distinte_corriere_accredito() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -3178,7 +3175,7 @@ fn distinte_corriere_accredito() {
             campi(&[("nome", json!("X")), ("prezzo_base_default", json!(1000))]),
         )
         .unwrap();
-    let conto_demo = state
+    let intesa = state
         .record_create("conto", campi(&[("nome", json!("Banca Demo"))]))
         .unwrap();
     let gls = state
@@ -3268,7 +3265,7 @@ fn distinte_corriere_accredito() {
             &gls.id,
             "2026-05-04",
             "2026-05-06",
-            &conto_demo.id,
+            &intesa.id,
             0,
             vec![p1.id.clone(), p2.id.clone()],
             None,
@@ -3322,7 +3319,7 @@ fn distinta_salda_attesi_e_importo_personalizzato() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -3330,7 +3327,7 @@ fn distinta_salda_attesi_e_importo_personalizzato() {
             campi(&[("nome", json!("X")), ("prezzo_base_default", json!(1000))]),
         )
         .unwrap();
-    let conto_demo = state
+    let intesa = state
         .record_create("conto", campi(&[("nome", json!("Banca Demo"))]))
         .unwrap();
     let o = state
@@ -3377,7 +3374,7 @@ fn distinta_salda_attesi_e_importo_personalizzato() {
             "",
             "2026-06-01",
             "2026-06-03",
-            &conto_demo.id,
+            &intesa.id,
             9500,
             vec![p.id.clone()],
             None,
@@ -3423,7 +3420,7 @@ fn distinta_blocca_pagamenti_cambiati_o_gia_accreditati() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -3431,7 +3428,7 @@ fn distinta_blocca_pagamenti_cambiati_o_gia_accreditati() {
             campi(&[("nome", json!("X")), ("prezzo_base_default", json!(1000))]),
         )
         .unwrap();
-    let conto_demo = state
+    let intesa = state
         .record_create("conto", campi(&[("nome", json!("Banca Demo"))]))
         .unwrap();
     let o = state
@@ -3466,7 +3463,7 @@ fn distinta_blocca_pagamenti_cambiati_o_gia_accreditati() {
         "",
         "2026-06-03",
         "2026-06-04",
-        &conto_demo.id,
+        &intesa.id,
         0,
         vec![p.id.clone()],
         Some(vec![PagamentoDistintaAtteso {
@@ -3487,7 +3484,7 @@ fn distinta_blocca_pagamenti_cambiati_o_gia_accreditati() {
             "",
             "2026-06-03",
             "2026-06-04",
-            &conto_demo.id,
+            &intesa.id,
             0,
             vec![p.id.clone()],
             Some(vec![PagamentoDistintaAtteso {
@@ -3518,7 +3515,7 @@ fn distinta_blocca_pagamenti_cambiati_o_gia_accreditati() {
         "",
         "2026-06-05",
         "2026-06-06",
-        &conto_demo.id,
+        &intesa.id,
         0,
         vec![p.id],
         None,
@@ -3534,7 +3531,7 @@ fn lock_cooperativo_blocca_due_operazioni_nello_stesso_processo() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     state.acquisisci_lock("preparazione_ripristino").unwrap();
     state.rinnova_lock("preparazione_ripristino").unwrap();
@@ -3561,7 +3558,7 @@ fn ripristino_coordinato_avanza_il_lock_e_applica_il_backup() {
     let data = tempfile::tempdir().unwrap();
     let destinazione = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cliente_backup = state
         .record_create("cliente", campi(&[("nome", json!("Nel backup"))]))
@@ -3944,7 +3941,7 @@ fn annullamento_ripristino_sblocca_solo_la_preparazione_corrente() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let coordinamento = state.restore_prepare().unwrap();
     state.restore_cancel(&coordinamento.restore_id).unwrap();
@@ -3975,7 +3972,7 @@ fn ottimizzazione_richiede_ack_di_tutte_le_postazioni_registrate() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identita = onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    let identita = onboarda(&state, data.path().to_str().unwrap(), "Livio");
     state
         .with_engine(|engine| {
             engine
@@ -4014,7 +4011,7 @@ fn ottimizzazione_forzata_pubblica_checkpoint_con_postazioni_senza_ack() {
     let app_offline = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identita = onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    let identita = onboarda(&state, data.path().to_str().unwrap(), "Livio");
     state
         .with_engine(|engine| {
             engine
@@ -4079,7 +4076,7 @@ fn ottimizzazione_generazionale_non_resuscita_tombstone_e_accetta_nuovi_eventi()
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identita = onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    let identita = onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let eliminato = state
         .record_create("cliente", campi(&[("nome", json!("Da eliminare"))]))
@@ -4190,7 +4187,7 @@ fn ottimizzazione_applica_la_stessa_deduplica_clienti_prima_dell_anchor() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let canonico = state
         .record_create(
@@ -4283,7 +4280,7 @@ fn crediti_stato_ordine_e_rifiutato_escluso() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -4398,7 +4395,7 @@ fn ordini_auto_chiudi_spedito_saldato_20gg() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     let prod = state
         .record_create(
@@ -4536,7 +4533,7 @@ fn provvigioni_calcolo_maturazione_e_filtri() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
 
     // Disabilita lo scorporo iva e detrazione spedizione per il test
     state
@@ -4657,7 +4654,7 @@ fn backup_genera_snapshot_aggiornato() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identity = onboarda(&state, data_dir, "Utente Demo");
+    let identity = onboarda(&state, data_dir, "Livio");
     state
         .record_create("cliente", campi(&[("nome", json!("Farmacia"))]))
         .unwrap();
@@ -4687,7 +4684,7 @@ fn backup_retention_purga_messaggi_vecchi_ma_non_notifiche_vive() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let id = onboarda(&state, data_dir, "Utente Demo");
+    let id = onboarda(&state, data_dir, "Livio");
     let old_ts = now_ms() - RETENZIONE_MESSAGGI_MS - 1_000;
     let fresh_ts = now_ms();
 
@@ -4791,7 +4788,7 @@ fn backup_retention_purga_solo_suggerimenti_ignorati_vecchi() {
     let data = tempfile::tempdir().unwrap();
     fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    let identity = onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    let identity = onboarda(&state, data.path().to_str().unwrap(), "Livio");
     let old_ts = now_ms() - RETENZIONE_SUGGERIMENTI_IGNORATI_MS - 1_000;
     let fresh_ts = now_ms();
 
@@ -4879,7 +4876,7 @@ fn cestino_restore_e_purge_terminale() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let c = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -4931,7 +4928,7 @@ fn pagamento_eliminato_definitivamente_non_entra_nel_cestino() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let pagamento = state
         .record_create(
@@ -4958,7 +4955,7 @@ fn eliminare_acconto_riporta_a_nuovo_solo_un_ordine_non_avanzato() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let ordine = state
         .record_create("ordine", campi(&[("stato", json!("Confermato"))]))
@@ -5012,7 +5009,7 @@ fn eliminare_acconto_non_retrocede_se_rimane_un_altro_incasso() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let ordine = state
         .record_create("ordine", campi(&[("stato", json!("Confermato"))]))
@@ -5259,7 +5256,7 @@ fn record_create_with_id_e_idempotente() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let id = "prom-SERIE-2026-07-01";
     let a = state
@@ -5313,7 +5310,7 @@ fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
     let state = AppState::init(app.path().to_path_buf()).unwrap();
     let device = state.bootstrap().device_id;
 
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
     state
         .record_create("cliente", campi(&[("nome", json!("Farmacia"))]))
         .unwrap();
@@ -5360,14 +5357,14 @@ fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
             data_dir: data_dir.to_string(),
             mode: "create".into(),
             user_id: Some("livio-dopo-ritiro".into()),
-            nome: "Utente Demo".into(),
+            nome: "Livio".into(),
             avatar_tipo: "iniziali".into(),
             avatar_valore: String::new(),
         })
         .unwrap();
     assert_eq!(nuova_identita.device_id, nuovo_device);
     assert_eq!(state.get_users().len(), 1);
-    assert_eq!(state.get_users()[0].nome, "Utente Demo");
+    assert_eq!(state.get_users()[0].nome, "Livio");
     assert!(state
         .sync_overview()
         .unwrap()
@@ -5435,7 +5432,7 @@ fn ritiro_dispositivo_corrente_genera_nuovo_device_e_conserva_i_dati() {
     // ma il proprio marker piu' recente deve continuare a superare quello vecchio.
     let restore_storico = "RESTORE-STORICO-PRIMA-RITIRO";
     semina_restore_storico_gestito(&state, app.path(), data.path(), restore_storico);
-    let id = onboarda(&state, data_dir, "Utente Demo");
+    let id = onboarda(&state, data_dir, "Livio");
     let projection = app.path().join("projection.sqlite");
     state
         .record_create("cliente", campi(&[("nome", json!("Farmacia"))]))
@@ -5759,7 +5756,7 @@ fn reset_completo_riporta_allo_stato_iniziale() {
         data.path(),
         "RESTORE-STORICO-PRIMA-RESET-COMPLETO",
     );
-    onboarda(&state, data_dir, "Utente Demo");
+    onboarda(&state, data_dir, "Livio");
     state
         .record_create("cliente", campi(&[("nome", json!("X"))]))
         .unwrap();
@@ -6175,7 +6172,7 @@ fn due_dispositivi_condividono_le_anagrafiche() {
 }
 
 #[test]
-fn suggerimento_nascosto_converge_e_una_sorgente_modificata_lo_riattiva() {
+fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let app_a = tempfile::tempdir().unwrap();
@@ -6233,24 +6230,33 @@ fn suggerimento_nascosto_converge_e_una_sorgente_modificata_lo_riattiva() {
         campi(&[("importo", json!(12_000))]),
     )
     .unwrap();
-    let riattivato_su_b = b
-        .suggerimenti_lista()
-        .unwrap()
+    let dopo_modifica_su_b = b.suggerimenti_lista().unwrap();
+    assert!(dopo_modifica_su_b
         .suggerimenti
-        .into_iter()
-        .find(|voce| voce.tipo == "rimborso")
-        .unwrap();
-    assert_ne!(riattivato_su_b.id, prima.id);
+        .iter()
+        .all(|voce| voce.tipo != "rimborso"));
+    assert!(dopo_modifica_su_b
+        .tipi_in_pausa
+        .contains(&"rimborso".to_string()));
+
+    let controllo_completo = b.suggerimenti_lista_completa().unwrap();
+    assert!(controllo_completo
+        .suggerimenti
+        .iter()
+        .any(|voce| voce.tipo == "rimborso"));
+    assert!(controllo_completo.nascosti.is_empty());
+    assert!(controllo_completo.tipi_in_pausa.is_empty());
 
     a.force_sync().unwrap();
-    let riattivato_su_a = a
-        .suggerimenti_lista()
-        .unwrap()
+    let dopo_modifica_su_a = a.suggerimenti_lista().unwrap();
+    assert!(dopo_modifica_su_a
         .suggerimenti
-        .into_iter()
-        .find(|voce| voce.tipo == "rimborso")
-        .unwrap();
-    assert_eq!(riattivato_su_a.id, riattivato_su_b.id);
+        .iter()
+        .all(|voce| voce.tipo != "rimborso"));
+    assert_eq!(
+        dopo_modifica_su_a.tipi_in_pausa,
+        dopo_modifica_su_b.tipi_in_pausa
+    );
 }
 
 #[test]
@@ -6339,7 +6345,7 @@ fn spedizioni_evasione_parziale_e_stato() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -6561,7 +6567,7 @@ fn diagnostica_non_conserva_numero_vaccino_o_colli() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prodotto = state
         .record_create("prodotto", campi(&[("nome", json!("Test diagnostico"))]))
@@ -6621,7 +6627,7 @@ fn rimozione_prodotto_ricalcola_contrassegno_parziale_con_acconto() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -6707,7 +6713,7 @@ fn rata_spostata_in_contrassegno_riallinea_la_distinta_spedizione() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let banca = state
         .record_create(
@@ -6829,7 +6835,7 @@ fn annullo_spedizione_da_ordine_chiuso_ripristina_stato_precedente() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create("prodotto", campi(&[("nome", json!("Vaccino"))]))
@@ -6908,7 +6914,7 @@ fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create("prodotto", campi(&[("nome", json!("Vaccino"))]))
@@ -6997,7 +7003,7 @@ fn scadenze_si_ancorano_alla_spedizione() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -7346,7 +7352,7 @@ fn crea_spedizione_ripartisce_il_residuo_sulle_rate_rimanenti() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let banca = state
         .record_create(
@@ -7456,7 +7462,7 @@ fn diagnostica_destinatario_e_il_medico() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -7539,7 +7545,7 @@ fn ordine_annullato_sparisce_da_crediti_e_spedizioni_e_torna_al_ripristino() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let agente = state
         .record_create("agente", campi(&[("nome", json!("Agente Demo 003"))]))
@@ -7637,7 +7643,7 @@ fn ordine_ripristina_torna_attivo_per_acconto() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Verdi"))]))
@@ -7723,7 +7729,7 @@ fn ordine_rifiutato_eliminato_va_nel_cestino_come_annullato() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Verdi"))]))
@@ -7771,7 +7777,7 @@ fn ordini_lista_espone_le_linee_per_categoria() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let immuno = state
         .record_create(
@@ -7857,7 +7863,7 @@ fn produzione_acconto_incassato_e_avanzamento_stato() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -7956,7 +7962,7 @@ fn produzione_lotti_invio_annulla_unisci_separa() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -8050,7 +8056,7 @@ fn produzione_per_riga_stato_ordine_derivato() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -8141,7 +8147,7 @@ fn produzione_compila_righe_non_lascia_aggiornamenti_parziali() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let ordine = state
         .record_create("ordine", campi(&[("stato", json!("Confermato"))]))
@@ -8189,11 +8195,11 @@ fn produzione_compila_righe_non_lascia_aggiornamenti_parziali() {
 }
 
 #[test]
-fn fornitore_export_assegna_numeri_e_somma_acconti() {
+fn laboratorio_export_assegna_numeri_e_somma_acconti() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -8286,9 +8292,9 @@ fn fornitore_export_assegna_numeri_e_somma_acconti() {
         .produzione_invia(&[o1.id.clone(), o2.id.clone()], "2026-06-10")
         .unwrap();
 
-    let path = data.path().join("fornitore.xlsx");
+    let path = data.path().join("laboratorio.xlsx");
     let n = state
-        .fornitore_export(&lotto, path.to_str().unwrap(), 700, "3 giugno")
+        .laboratorio_export(&lotto, path.to_str().unwrap(), 700, "3 giugno")
         .unwrap();
     assert_eq!(n, 3, "tre righe paziente (2 da o1 + 1 da o2)");
     assert!(path.exists(), "il file .xlsx è stato creato");
@@ -8344,7 +8350,7 @@ fn fornitore_export_assegna_numeri_e_somma_acconti() {
 
     // Idempotenza: ri-esportare non cambia i numeri già assegnati.
     let n2 = state
-        .fornitore_export(&lotto, path.to_str().unwrap(), 999, "3 giugno")
+        .laboratorio_export(&lotto, path.to_str().unwrap(), 999, "3 giugno")
         .unwrap();
     assert_eq!(n2, 3);
     let numeri2: Vec<i64> = state
@@ -8368,7 +8374,7 @@ fn diagnostica_export_blocchi_per_ordine() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cli = state
         .record_create("cliente", campi(&[("nome", json!("Ospedale Reggio"))]))
@@ -8413,7 +8419,7 @@ fn catalogo_produzione_seminato_e_idempotente() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cat = state.records_list("prodotto_produzione").unwrap();
     let di = |t: &str| {
@@ -8443,21 +8449,10 @@ fn anagrafiche_default_seminate_e_idempotenti() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     // Agente interno Agente Demo 001 a provvigione 0%.
     let agenti = state.records_list("agente").unwrap();
-    assert!(agenti.is_empty(), "la demo pubblica non semina agenti");
-    assert!(state.records_list("medico").unwrap().is_empty());
-    assert!(state.records_list("conto").unwrap().iter().all(|record| {
-        matches!(record.data.get("tipo").and_then(|value| value.as_str()), Some("contrassegno" | "assegno"))
-    }));
-    let prodotti_demo = state.records_list("prodotto").unwrap();
-    assert!(prodotti_demo.iter().all(|record| {
-        record.data.get("prezzo_base_default") == Some(&json!(0))
-            && record.data.get("codice_fornitore").and_then(|value| value.as_str()).unwrap_or("").is_empty()
-    }));
-    return;
     let livio = agenti
         .iter()
         .find(|r| r.data.get("nome") == Some(&json!("Agente Demo 001")))
@@ -8499,10 +8494,10 @@ fn anagrafiche_default_seminate_e_idempotenti() {
         .find(|r| r.data.get("nome") == Some(&json!("Polimerizzato 2 fiale")))
         .expect("prodotto «Polimerizzato 2 fiale» mancante");
     assert_eq!(poli2.data.get("prezzo_base_default"), Some(&json!(40000)));
-    // Il catalogo diagnostico pubblico non contiene codici fornitore.
+    // Catalogo Diagnostica standard (Laboratorio) con codice: es. A-004 = Acarus siro.
     let acaro = prodotti
         .iter()
-        .find(|r| r.data.get("nome") == Some(&json!("Acarus siro")))
+        .find(|r| r.data.get("codice_laboratorio") == Some(&json!("A-004")))
         .expect("catalogo Diagnostica mancante");
     assert_eq!(acaro.data.get("categoria"), Some(&json!("Diagnostica")));
     assert_eq!(acaro.data.get("nome"), Some(&json!("Acarus siro")));
@@ -8568,7 +8563,7 @@ fn seed_rimuove_vecchi_prodotti_immuno_preservando_ordini() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
     // Simula un DB già esistente con un vecchio prodotto immuno builtin (nome di allergene)
     // e una riga d'ordine che lo referenzia.
     let vecchio_id = seed_id("prod", "Parietaria");
@@ -8707,7 +8702,7 @@ fn provvigioni_valore_per_categoria() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     // Disabilita lo scorporo iva e detrazione spedizione per il test
     state
@@ -8806,7 +8801,7 @@ fn lotto_unisci_fonde_piu_lotti_in_uno() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -8821,7 +8816,7 @@ fn lotto_unisci_fonde_piu_lotti_in_uno() {
         .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
         .unwrap();
     let carrai = state
-        .record_create("corriere", campi(&[("nome", json!("CORRIERE_A")), ("profilo", json!("carrai"))]))
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_A"))]))
         .unwrap();
 
     // Due ordini, ognuno con una riga: li spediamo in giorni/corrieri diversi (lotti diversi).
@@ -8930,7 +8925,7 @@ fn separare_spedizioni_non_rimette_nei_spediti_i_colli_rimossi() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let cliente = state
         .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
@@ -9020,7 +9015,7 @@ fn spedizione_riepilogo_per_conto_e_agente_esclude_acconti() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let ag = state
         .record_create("agente", campi(&[("nome", json!("Vitale"))]))
@@ -9031,7 +9026,7 @@ fn spedizione_riepilogo_per_conto_e_agente_esclude_acconti() {
             campi(&[("nome", json!("V")), ("prezzo_base_default", json!(100000))]),
         )
         .unwrap();
-    let conto_demo = state
+    let intesa = state
         .record_create(
             "conto",
             campi(&[("nome", json!("BANCA DEMO")), ("tipo", json!("banca"))]),
@@ -9079,7 +9074,7 @@ fn spedizione_riepilogo_per_conto_e_agente_esclude_acconti() {
                 ("tipo", json!("acconto")),
                 ("importo", json!(20000)),
                 ("saldato", json!(true)),
-                ("conto_id", json!(conto_demo.id)),
+                ("conto_id", json!(intesa.id)),
             ]),
         )
         .unwrap();
@@ -9136,7 +9131,7 @@ fn riga_mancante_aggiunge_riga_da_spedire() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -9200,7 +9195,7 @@ fn da_spedire_ordina_in_produzione_poi_confermato_poi_nuovo() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -9245,12 +9240,11 @@ fn da_spedire_ordina_in_produzione_poi_confermato_poi_nuovo() {
 }
 
 #[test]
-#[ignore = "il dataset operativo automatico non fa parte della variante pubblica"]
 fn demo_popola_crea_pagamenti_e_azzera_pulisce() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
     let stale = state
         .record_create(
             "spedizione",
@@ -9341,7 +9335,7 @@ fn dashboard_stats_kpi_serie_e_distribuzioni() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     let prod = state
         .record_create(
@@ -9475,7 +9469,7 @@ fn dashboard_da_saldare_esclude_preventivi_e_provv_pagate_maturano() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
-    onboarda(&state, data.path().to_str().unwrap(), "Utente Demo");
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
 
     // Disabilita lo scorporo iva e detrazione spedizione per il test
     state

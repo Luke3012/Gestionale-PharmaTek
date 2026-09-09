@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Gestionale PharmaTek Demo",
-  "version": "0.7.0",
-  "identifier": "it.pharmatek.gestionale.demo",
+  "productName": "Gestionale PharmaTek",
+  "version": "0.7.3",
+  "identifier": "it.pharmatek.gestionale",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Gestionale PharmaTek Demo",
+        "title": "Gestionale PharmaTek",
         "width": 1100,
         "height": 720,
         "minWidth": 900,
@@ -63,9 +63,9 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Luke3012/Gestionale-PharmaTek/releases/latest/download/latest.json"
+        "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/contents/.updater/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyQzlBNjgyRkEwRDIzMkYKUldRdkl3MzZncWJKa2x3VVBTU05qdjZ1NGx4UTI4WkFiS0hWTEtsRWE0ZFYxemEvcC9oc0E5OHkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERFMjAzODYyMTNFOUQ2QUUKUldTdTF1a1RZamdnM3RiL3plRnBtOE96MkxiN1FuME9paEtCWVJhK2xSMEVUc1BCbnZldmt6VmoK",
       "windows": {
         "installMode": "quiet"
       }

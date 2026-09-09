@@ -4,7 +4,30 @@
 // (campi sui record, condivise fra i PC).
 import type { RecordDto } from "../../lib/tauri";
 
-const TRANSITO = ["contrassegno", "assegno"];
+export function èContoTransito(tipo: unknown): boolean {
+  return tipo === "contrassegno" || tipo === "assegno";
+}
+
+function opzioneConto(conto: RecordDto) {
+  return {
+    value: conto.id,
+    label: (conto.data.nome as string) || "(conto)",
+  };
+}
+
+export function opzioniConti(conti: RecordDto[]) {
+  return conti.map(opzioneConto);
+}
+
+export function opzioniContiConTransito(conti: RecordDto[]) {
+  return conti.map((conto) => {
+    const opzione = opzioneConto(conto);
+    return {
+      ...opzione,
+      label: opzione.label + (èContoTransito(conto.data.tipo) ? " (transito)" : ""),
+    };
+  });
+}
 
 export function risolviContoPreferito(args: {
   conti: RecordDto[];
@@ -23,6 +46,6 @@ export function risolviContoPreferito(args: {
   }
   const pi = conti.find((c) => c.data.predefinito_incassi === true);
   if (pi) return pi.id;
-  const banca = conti.find((c) => !TRANSITO.includes((c.data.tipo as string) || ""));
+  const banca = conti.find((c) => !èContoTransito(c.data.tipo));
   return (banca ?? conti[0])?.id ?? "";
 }

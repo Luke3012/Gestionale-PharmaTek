@@ -3,7 +3,7 @@
 // crea una nuova distinta (spuntando i pagamenti coperti) e si apre il dettaglio di una
 // distinta esistente (pagamenti coperti) con possibilità di eliminarla → i pagamenti
 // tornano "in attesa di accredito".
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Badge, Box, Button, Group, Modal, Stack, Text, ThemeIcon } from "@mantine/core";
 import { IconPlus, IconSearch, IconTrash, IconTruckDelivery } from "@tabler/icons-react";
 import { api, type ContrassegnoAperto, type Distinta } from "../../lib/tauri";
@@ -15,11 +15,14 @@ import { usePaginaPronta } from "../../pages/Pagina";
 import { DistintaModal } from "./DistintaModal";
 import { usePrefs } from "../../lib/prefs";
 import { modalTableHeight } from "../../ui/modalTableHeight";
-import { durataSwitchTabelleMs } from "../../ui/motion";
+import { VistaTabellaParallela } from "../../ui/VistaTabellaParallela";
 import { formattaDataItaliana } from "../../lib/date";
 import { DataAdattiva } from "../../ui/DataAdattiva";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { DebouncedInput } from "../../ui/DebouncedInput";
+import { ordinaCopia } from "../../ui/ordinamento";
+import { useModalSnapshot } from "../../ui/useModalSnapshot";
+import { StatoVuotoContabilita, useListaContabilita } from "./listaContabilita";
 
 const EVENTI_RICARICA = [
   "distinta:salvato",
@@ -27,20 +30,31 @@ const EVENTI_RICARICA = [
   "corriere:salvato",
   "conto:salvato",
 ] as const;
+const GETTER_ORDINAMENTO: Record<string, (distinta: Distinta) => string | number> = {
+  importo: (distinta) => distinta.importo,
+  corriereNome: (distinta) => distinta.corriereNome,
+  contoNome: (distinta) => distinta.contoNome,
+  dataDistinta: (distinta) => distinta.dataDistinta,
+  dataAccredito: (distinta) => distinta.dataAccredito,
+};
+
+export interface FiltroDistinteIniziale {
+  nonce: number;
+  cerca: string;
+}
 
 export function DistinteView({
   filtroIniziale,
   apriNuova = 0,
   attiva = true,
 }: {
-  filtroIniziale?: { nonce: number; cerca: string };
+  filtroIniziale?: FiltroDistinteIniziale;
   apriNuova?: number;
   attiva?: boolean;
 }) {
   const { anno, ridurreAnimazioni } = usePrefs();
-  const [righe, setRighe] = useState<Distinta[]>([]);
+  const { righe, caricamento, carica } = useListaContabilita(api.distinteLista, "Caricamento distinte non riuscito");
   const [cerca, setCerca] = useState("");
-  const [caricamento, setCaricamento] = useState(true);
   const [nuova, setNuova] = useState(false);
   const [dettaglio, setDettaglio] = useState<Distinta | null>(null);
   const [sort, setSort] = useState<DataTableSortStatus<Distinta>>({
@@ -49,21 +63,6 @@ export function DistinteView({
   });
   const cercaDifferita = useDeferredValue(cerca);
   usePaginaPronta(caricamento);
-
-  const carica = useCallback(async (silente = false) => {
-    if (!silente) setCaricamento(true);
-    try {
-      setRighe(await api.distinteLista());
-    } catch (e) {
-      toast.error(`Caricamento distinte non riuscito: ${e}`);
-    } finally {
-      setCaricamento(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    carica(false);
-  }, [carica]);
   useRicaricaSuEventi(EVENTI_RICARICA, () => carica(true), 180);
 
   // Deep-link da Spotlight (ricerca corriere/distinta → filtra su quel corriere).
@@ -90,31 +89,8 @@ export function DistinteView({
   const totale = useMemo(() => filtrate.reduce((s, r) => s + r.importo, 0), [filtrate]);
 
   const ordinate = useMemo(() => {
-    const get = (d: Distinta): string | number => {
-      switch (sort.columnAccessor) {
-        case "importo":
-          return d.importo;
-        case "corriereNome":
-          return d.corriereNome;
-        case "contoNome":
-          return d.contoNome;
-        case "dataDistinta":
-          return d.dataDistinta;
-        default:
-          return d.dataAccredito;
-      }
-    };
-    const arr = [...filtrate];
-    arr.sort((a, b) => {
-      const va = get(a);
-      const vb = get(b);
-      const cmp =
-        typeof va === "number" && typeof vb === "number"
-          ? va - vb
-          : String(va).localeCompare(String(vb), "it", { numeric: true });
-      return sort.direction === "desc" ? -cmp : cmp;
-    });
-    return arr;
+    const get = GETTER_ORDINAMENTO[sort.columnAccessor] ?? GETTER_ORDINAMENTO.dataAccredito;
+    return ordinaCopia(filtrate, get, sort.direction);
   }, [filtrate, sort]);
 
 // Impaginazione: sostituita da Cluster Virtualization in Tabella.tsx
@@ -180,10 +156,7 @@ export function DistinteView({
           caricamento ? (
             <Box />
           ) : (
-            <Stack align="center" gap="xs" maw={460} ta="center" py={40}>
-              <ThemeIcon size={48} radius="xl" variant="light" color="gray">
-                <IconTruckDelivery size={24} />
-              </ThemeIcon>
+            <StatoVuotoContabilita icona={<IconTruckDelivery size={24} />}>
               <Text c="dimmed" size="sm" fw={600}>
                 Nessuna distinta presente.
               </Text>
@@ -191,7 +164,7 @@ export function DistinteView({
                 Quando un corriere versa il bonifico cumulativo dei contrassegni, crea una distinta
                 e spunta gli ordini coperti per accreditarli sul conto reale.
               </Text>
-            </Stack>
+            </StatoVuotoContabilita>
           )
         }
       />
@@ -199,17 +172,10 @@ export function DistinteView({
     [caricamento, cercaDifferita, columns, ordinate, sort]
   );
 
-  const nascosta = !attiva || (caricamento && righe.length === 0);
-
   return (
-    <Stack
-      gap="md"
-      style={{
-        height: "100%",
-        opacity: nascosta ? 0 : 1,
-        visibility: nascosta ? "hidden" : "visible",
-        transition: ridurreAnimazioni ? "none" : `opacity ${durataSwitchTabelleMs}ms ease-out`,
-      }}
+    <VistaTabellaParallela
+      nascosta={!attiva || (caricamento && righe.length === 0)}
+      ridurreAnimazioni={ridurreAnimazioni}
     >
       <Group justify="space-between" align="center">
         <Group gap="sm" wrap="nowrap">
@@ -255,7 +221,7 @@ export function DistinteView({
           carica();
         }}
       />
-    </Stack>
+    </VistaTabellaParallela>
   );
 }
 
@@ -271,11 +237,10 @@ function DettaglioModal({
   const [righe, setRighe] = useState<ContrassegnoAperto[]>([]);
   const [caricamento, setCaricamento] = useState(true);
   const [eliminando, setEliminando] = useState(false);
-  const [mostrato, setMostrato] = useState<Distinta | null>(distinta);
+  const [mostrato] = useModalSnapshot(distinta);
 
   useEffect(() => {
     if (!distinta) return;
-    setMostrato(distinta);
     setCaricamento(true);
     api
       .distintaRighe(distinta.id)

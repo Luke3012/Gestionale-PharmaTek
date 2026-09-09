@@ -9,27 +9,28 @@ import {
   Checkbox,
   Group,
   Modal,
-  NumberInput,
   SegmentedControl,
   Select,
   Stack,
   Text,
   TextInput,
   Textarea,
-  LoadingOverlay,
 } from "@mantine/core";
 import { IconTrash } from "@tabler/icons-react";
 import { motion } from "framer-motion";
 import { api, type Pagamento, type RecordDto, type Rimborso } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
-import { oggiIso as oggi } from "../../lib/date";
+import { EuroInput } from "../../ui/EuroInput";
+import { OverlaySalvataggioFinestra } from "../../ui/OverlaySalvataggioFinestra";
+import { aggiungiGiorniDaOggiIso as aggiungiGiorni, oggiIso as oggi } from "../../lib/date";
 import { mostraMonetina } from "../../ui/monetina";
 import { dialog } from "../../ui/dialog/store";
 import { useAnimazioniRidotte } from "../../ui/motion";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { TIPI_PAGAMENTO } from "./statiPagamento";
 import { impattoRimborsoDopoIncasso, mappaRimborsiExtra } from "./statiRimborso";
-import { risolviContoPreferito } from "./contoPreferito";
+import { èContoTransito, opzioniContiConTransito, risolviContoPreferito } from "./contoPreferito";
+import { offsetScadenzaDaSpedizione } from "../giornaliero/ordineScadenzario";
 import { riallineaPagamentiAperti } from "./riallineaSaldo";
 import {
   chiediCoperturaScadenzario,
@@ -45,7 +46,6 @@ import { focusInvalidField } from "../../ui/focusInvalid";
 import { mergeRealtimeSelettivo } from "../../lib/mergeRealtime";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 
-const TIPI_TRANSITO = ["contrassegno", "assegno"];
 const EVENTI_PAGAMENTO_APERTO = ["pagamento:salvato", "ordine:salvato"] as const;
 const EVENTI_CONTI_PAGAMENTO = ["conto:salvato"] as const;
 
@@ -103,26 +103,6 @@ export type PagamentoDraft = Pagamento;
 export type PagamentoChangedInfo = {
   prodottiAggiornati?: boolean;
 };
-
-function parseData(iso: string): Date {
-  const [y, m, d] = (iso || oggi()).split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
-}
-
-function toIso(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function aggiungiGiorni(iso: string, giorni: number): string {
-  const d = parseData(iso);
-  d.setDate(d.getDate() + giorni);
-  return toIso(d);
-}
-
-function offsetScadenzaSpedizione(contoTipo: string, rel = 0): number {
-  const base = TIPI_TRANSITO.includes(contoTipo) ? 30 : 7;
-  return base + Math.max(0, Math.floor(rel));
-}
 
 async function dataSpedizioneOrdine(ordineId: string): Promise<string> {
   if (!ordineId) return "";
@@ -277,18 +257,7 @@ export function PagamentoForm({
     p ? campiPagamentoRealtime(p) : null
   );
 
-  const campiLocaliRealtimeRef = useRef<CampiPagamentoRealtime>({
-    tipo,
-    importo: importo === "" ? 0 : eurToCents(Number(importo)),
-    saldato,
-    scadenza,
-    contoId,
-    data,
-    verificato,
-    scadDaSpedizione,
-    note,
-  });
-  campiLocaliRealtimeRef.current = {
+  const campiLocaliRealtime: CampiPagamentoRealtime = {
     tipo,
     importo: importo === "" ? 0 : eurToCents(Number(importo)),
     saldato,
@@ -299,6 +268,8 @@ export function PagamentoForm({
     scadDaSpedizione,
     note,
   };
+  const campiLocaliRealtimeRef = useRef(campiLocaliRealtime);
+  campiLocaliRealtimeRef.current = campiLocaliRealtime;
 
   const firmaPagamentoRemoto = p ? JSON.stringify(campiPagamentoRealtime(p)) : "";
   useEffect(() => {
@@ -333,7 +304,7 @@ export function PagamentoForm({
   );
   const contoTipoSelezionato = ((contoSelezionato?.data.tipo as string) || p?.contoTipo || "");
   const scadenzaDaSpedizione = !saldato && (tipo === "saldo" || tipo === "rata") && scadDaSpedizione;
-  const offsetSpedizione = offsetScadenzaSpedizione(contoTipoSelezionato, p?.scadRelGiorni ?? 0);
+  const offsetSpedizione = offsetScadenzaDaSpedizione(contoTipoSelezionato, p?.scadRelGiorni ?? 0);
   const draftPagamento = useMemo<PagamentoDraft | null>(() => {
     if (!ordineId) return null;
     const cents = importo === "" ? 0 : eurToCents(Number(importo));
@@ -388,15 +359,7 @@ export function PagamentoForm({
     setConti(await api.recordsList("conto"));
   }, 120);
 
-  const datiConti = useMemo(
-    () =>
-      conti.map((c) => {
-        const t = (c.data.tipo as string) || "";
-        const suffix = TIPI_TRANSITO.includes(t) ? " (transito)" : "";
-        return { value: c.id, label: ((c.data.nome as string) || "(conto)") + suffix };
-      }),
-    [conti]
-  );
+  const datiConti = useMemo(() => opzioniContiConTransito(conti), [conti]);
 
   async function preparaCopertura(cents: number): Promise<{
     ok: boolean;
@@ -527,7 +490,7 @@ export function PagamentoForm({
     }
     if (saldato) {
       const sel = conti.find((c) => c.id === contoId);
-      if (TIPI_TRANSITO.includes((sel?.data.tipo as string) || "")) {
+      if (èContoTransito(sel?.data.tipo)) {
         const ok = await dialog.confirm(
           "Incasso su conto di transito",
           "Contrassegno e Assegno di solito si accreditano con la distinta del corriere: " +
@@ -795,12 +758,7 @@ export function PagamentoForm({
 
   return (
     <div className="pt-modal-shell" style={{ position: "relative" }}>
-      <LoadingOverlay
-        visible={!!dentroFinestra && salvando && !eliminando}
-        zIndex={1400}
-        overlayProps={{ radius: "sm", backgroundOpacity: 0.4 }}
-        loaderProps={{ color: "yellow", type: "bars" }}
-      />
+      <OverlaySalvataggioFinestra visibile={!!dentroFinestra && salvando && !eliminando} />
       <div className="pt-modal-scroll">
         <fieldset
           disabled={bloccatoDaDistinta}
@@ -817,15 +775,10 @@ export function PagamentoForm({
               comboboxProps={{ withinPortal: true, zIndex: 1400 }}
             />
             <div data-pt-field="pagamento-importo">
-              <NumberInput
+              <EuroInput
                 label="Importo"
                 value={importo}
                 onChange={(v) => setImporto(v === "" ? "" : Number(v))}
-                prefix="€ "
-                decimalScale={2}
-                fixedDecimalScale
-                thousandSeparator="."
-                decimalSeparator=","
                 min={0}
               />
             </div>

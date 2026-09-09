@@ -2,9 +2,8 @@
 // finestra Tauri separata (FASE 6A): elenca i suoi ordini in attesa, da cui si
 // apre l'ordine o si va ai crediti. Riusa la stessa logica delle finestre Ordine.
 import { inTauri, type Identity } from "../lib/tauri";
-import { opzioniGeometria } from "../lib/geometriaFinestre";
 import {
-  attendiCreazioneFinestra,
+  apriFinestraTauri,
   portaFinestraInPrimoPiano,
   queryIdentita,
 } from "../lib/finestreTauri";
@@ -77,28 +76,13 @@ export async function apriFinestraRiepilogo(
   identity?: Identity
 ): Promise<boolean> {
   if (!inTauri) return false;
-  try {
-    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return apriFinestraTauri({
     // Label deterministico: ri-aprire la stessa entità porta in primo piano la
     // finestra già aperta invece di duplicarla.
-    const label = `riepilogo-${tipo}-${id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
-    const esistente = await WebviewWindow.getByLabel(label);
-    if (esistente) {
-      await portaFinestraInPrimoPiano(esistente);
-      return true;
-    }
-    const idp = queryIdentita(identity);
-    const qs = `riepilogo=${tipo}&id=${encodeURIComponent(id)}&ent=${encodeURIComponent(nome)}${idp}`;
-    const w = new WebviewWindow(label, {
-      url: `index.html?${qs}`,
-      title: nome || "Riepilogo",
-      minWidth: 560,
-      minHeight: 420,
-      ...(await opzioniGeometria("riepilogo", { width: 760, height: 620, minWidth: 560, minHeight: 420 })),
-      visible: false,
-    });
-    return await attendiCreazioneFinestra(w);
-  } catch {
-    return false;
-  }
+    label: `riepilogo-${tipo}-${id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`,
+    query: `riepilogo=${tipo}&id=${encodeURIComponent(id)}&ent=${encodeURIComponent(nome)}${queryIdentita(identity)}`,
+    title: nome || "Riepilogo",
+    chiaveGeometria: "riepilogo",
+    geometria: { width: 760, height: 620, minWidth: 560, minHeight: 420 },
+  });
 }

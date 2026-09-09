@@ -1,0 +1,11 @@
+{
+    "version":  "0.7.3",
+    "notes":  "Corretto bug nelle impostazioni",
+    "pub_date":  "2026-09-06T11:38:50Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2dzS1o2MzRVVlRjZHJoeDB6Q0J0YmpmRis5TWExU3pzSWVTQUNweDBzMEZLT1RKWU9kQjIzVHhoMmdXUDFRNWF5RmVENldlTUo4YlpyTTJEMXM0YWdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4Njk0NzIwCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC43LjNfeDY0LXNldHVwLmV4ZQo0c3lXRXhqdkRJdkd6NlU5VXJ4c1NmSWpEUG9nWXBjUnFmVkdEQ1l0YmIyQTg3TDgyRlRjb0VseXNDdG5RMHpubnpKZTNkWmU3djZBQ1drcTZabVJEQT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/547122190"
+                                         }
+                  }
+}

@@ -14,6 +14,7 @@ import {
   type DialogAttivo,
   type DialogTipo,
 } from "./store";
+import { useModalSnapshot } from "../useModalSnapshot";
 
 const META: Record<DialogTipo, { color: string; Icon: typeof IconInfoCircle }> = {
   info: { color: "#1971C2", Icon: IconInfoCircle },
@@ -44,11 +45,8 @@ export function DialogProvider() {
   const [dlg, setDlg] = useState<DialogAttivo | null>(null);
   // Contenuto mostrato: resta visibile durante l'animazione di chiusura (altrimenti
   // la modale "collassa" su un riquadro vuoto). Si azzera a transizione finita.
-  const [mostrato, setMostrato] = useState<DialogAttivo | null>(null);
+  const [mostrato, clearMostrato] = useModalSnapshot(dlg);
   useEffect(() => dialogStore.subscribe(setDlg), []);
-  useEffect(() => {
-    if (dlg) setMostrato(dlg);
-  }, [dlg]);
   useEffect(() => {
     if (!dlg) return;
     const precedente = document.body.getAttribute("data-mantine-stop-propagation");
@@ -110,7 +108,7 @@ export function DialogProvider() {
       }
       zIndex={4000}
       data-mantine-stop-propagation="true"
-      transitionProps={{ transition: "fade", duration: 150, onExited: () => setMostrato(null) }}
+      transitionProps={{ transition: "fade", duration: 150, onExited: clearMostrato }}
       title={
         mostrato && meta ? (
           <Group gap="sm">

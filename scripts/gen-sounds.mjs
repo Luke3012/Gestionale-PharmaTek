@@ -149,7 +149,7 @@ const SUONI = {
   }), 5500)),
 };
 
-// --- Suoni del gioco "Flappy Utente Demo" (FASE 7B) ----------------------------
+// --- Suoni del gioco "Flappy Livio" (FASE 7B) ----------------------------
 // Effetti corti e arcade-friendly: niente campane, qui servono blip vivaci.
 // Onda quadra addolcita (un filo di seconda armonica per "ciccia"). */
 const quadra = (f, t) => Math.tanh(3 * sin(f, t));

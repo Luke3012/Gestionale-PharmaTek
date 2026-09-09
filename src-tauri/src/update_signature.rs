@@ -3,7 +3,7 @@
 
 use base64::Engine;
 
-pub(crate) const APP_SIGNING_PUBKEY: &str = "untrusted comment: minisign public key: 92C9A682FA0D232F\nRWQvIw36gqbJklwUPSSNjv6u4lxQ28ZAbKHVLKlEa4dV1za/p/hsA98y\n";
+pub(crate) const APP_SIGNING_PUBKEY: &str = "untrusted comment: minisign public key: DE20386213E9D6AE\nRWSu1ukTYjgg3tb/zeFpm8Oz2Lb7Qn0OihKBYRa+lR0ETsPBnvevkzVj\n";
 
 pub(crate) fn verify_signed_payload(
     payload: &[u8],
@@ -27,6 +27,21 @@ pub(crate) fn verify_signed_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CONTROL_JSON: &[u8] = include_bytes!("../../.updater/control.json");
+    const CONTROL_SIGNATURE: &str = include_str!("../../.updater/control.json.sig");
+
+    #[test]
+    fn firma_reale_del_controllo_remoto_e_valida() {
+        verify_signed_payload(CONTROL_JSON, CONTROL_SIGNATURE, "test").unwrap();
+    }
+
+    #[test]
+    fn firma_rifiuta_un_payload_modificato() {
+        let mut modified = CONTROL_JSON.to_vec();
+        modified.push(b' ');
+        assert!(verify_signed_payload(&modified, CONTROL_SIGNATURE, "test").is_err());
+    }
 
     #[test]
     fn chiave_tauri_e_quella_usata_dalla_reinstallazione() {

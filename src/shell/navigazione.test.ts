@@ -33,7 +33,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
-import { ascoltaNavigazione, vaiAllaPrincipale } from "./navigazione";
+import { ascoltaNavigazione, richiediSpotlightAllaMain, vaiAllaPrincipale } from "./navigazione";
 
 describe("consegna navigazione alla main", () => {
   beforeEach(() => {
@@ -65,5 +65,12 @@ describe("consegna navigazione alla main", () => {
 
     expect(mocks.eventiEmessi).not.toContain("pt:naviga-ack:test");
     off();
+  });
+
+  it("consegna la hotkey di ricerca al coordinatore della main", async () => {
+    await richiediSpotlightAllaMain();
+
+    expect(mocks.ordine).toEqual(["emit"]);
+    expect(mocks.listeners.get("pt:apri-spotlight")).toBeUndefined();
   });
 });

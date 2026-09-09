@@ -3,10 +3,10 @@
 // Da qui si apre il singolo ordine (editor) o si va ai Crediti. Le note e i
 // promemoria collegati arriveranno con FASE 6C/6D (vedi sezione in fondo).
 import { useEffect, useMemo, useRef, useState } from "react";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 import {
   ActionIcon,
   Anchor,
-  Badge,
   Box,
   Button,
   Divider,
@@ -37,6 +37,8 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { api, inTauri, type Identity, type OrdineDto, type RecordDto } from "../lib/tauri";
+import { identityDaParametri } from "../lib/identityParams";
+import { formattaDataItaliana } from "../lib/date";
 import { useRicordaGeometria } from "../lib/geometriaFinestre";
 import { statoDef, isSpedito } from "../features/giornaliero/stati";
 import { apriFinestraOrdine } from "../features/giornaliero/apriFinestra";
@@ -58,11 +60,11 @@ import {
   urlNuovaEmail,
 } from "../features/comunicazioni/recapiti";
 import { toast } from "../ui/toast/store";
-import { AnagraficaEditorModal } from "../features/anagrafiche/AnagraficaEditorModal";
-import { REGISTRI } from "../features/anagrafiche/registri";
+import { RiepilogoEditorCliente } from "./RiepilogoEditorCliente";
+import { formattaEuro as euro } from "../lib/money";
+import { BadgeStato } from "../ui/BadgeStato";
+import { osservaRidimensionamento } from "../ui/osservaRidimensionamento";
 
-const EUR = new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" });
-const euro = (c: number) => EUR.format((c || 0) / 100);
 type AzioneClienteDettaglio = "whatsapp" | "email";
 type ClienteDettaglio = {
   label: string;
@@ -83,27 +85,13 @@ const META: Record<TipoRiepilogo, { label: string; color: string; Ico: typeof Ic
   medico: { label: "Medico", color: "teal", Ico: IconStethoscope, campo: "medicoId" },
   agente: { label: "Agente", color: "grape", Ico: IconUser, campo: "agenteId" },
 };
-const REGISTRO_CLIENTE = REGISTRI.find(
-  (registro) => registro.entity === "cliente",
-)!;
 
 export function RiepilogoWindow() {
   const params = new URLSearchParams(window.location.search);
   const tipo = (params.get("riepilogo") as TipoRiepilogo) || "cliente";
   const id = params.get("id") || "";
   const nome = params.get("ent") || "";
-  const uid = params.get("uid");
-  const identity: Identity | undefined = uid
-    ? {
-        userId: uid,
-        nome: params.get("nome") ?? "",
-        deviceId: params.get("dev") ?? "",
-        avatarTipo: "iniziali",
-        avatarValore: "",
-        deviceNome: "",
-        dataDir: "",
-      }
-    : undefined;
+  const identity = identityDaParametri(params);
 
   const [clienteDaModificare, setClienteDaModificare] =
     useState<RecordDto | null>(null);
@@ -117,12 +105,7 @@ export function RiepilogoWindow() {
         dentroFinestra
         onModificaCliente={setClienteDaModificare}
       />
-      <AnagraficaEditorModal
-        opened={!!clienteDaModificare}
-        registro={REGISTRO_CLIENTE}
-        record={clienteDaModificare}
-        onClose={() => setClienteDaModificare(null)}
-      />
+      <RiepilogoEditorCliente record={clienteDaModificare} onClose={() => setClienteDaModificare(null)} />
     </>
   );
 }
@@ -216,9 +199,8 @@ export function RiepilogoContenuto({
   // Chiude la finestra se il soggetto (cliente/medico/agente) viene eliminato altrove
   useEffect(() => {
     if (!id || !inTauri) return;
-    let attivo = true;
-    let off: (() => void) | undefined;
-    import("@tauri-apps/api/event")
+    return collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) => listen(`${tipo}:salvato`, async () => {
         try {
           const rec = await api.recordGet(tipo, id);
@@ -241,16 +223,8 @@ export function RiepilogoContenuto({
             void caricaAnagrafica();
           }
         } catch {}
-      }))
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
-    return () => {
-      attivo = false;
-      off?.();
-    };
+      })),
+    );
   }, [id, tipo, onSoggettoEliminato]);
 
   // In attesa = ordini ancora "vivi" (non chiusi, non rifiutati): il lavoro aperto.
@@ -346,7 +320,7 @@ export function RiepilogoContenuto({
     if (!url) {
       toast.warning(
         dettaglio.azione === "whatsapp"
-          ? "Il numero non è valido per WhatsApp."
+          ? "Il numero non può essere convertito nel formato usato da WhatsApp."
           : "L'indirizzo e-mail non è valido.",
       );
       return;
@@ -552,18 +526,14 @@ export function RiepilogoContenuto({
                 >
                   <Group justify="space-between" wrap="nowrap" gap="sm">
                     <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
-                      <Tooltip label={s.label} withArrow>
-                        <Badge variant="light" color={s.color} leftSection={<s.Ico size={12} />}>
-                          {s.label}
-                        </Badge>
-                      </Tooltip>
+                      <BadgeStato definizione={s} />
                       <Box style={{ minWidth: 0 }}>
                         <Text fw={600} size="sm" className="tabular">
                           {o.numero}
                         </Text>
                         <Group gap={6} wrap="wrap" style={{ rowGap: 2 }} onClick={(e) => e.stopPropagation()}>
                           <Text size="xs" c="dimmed">
-                            {o.data}
+                            {formattaDataItaliana(o.data)}
                           </Text>
                           {tipo !== "cliente" && o.clienteId && (
                             <EntitaLink ruolo="Cliente" tipo="cliente" id={o.clienteId} nome={o.clienteNome} onApri={apriEntita} />
@@ -767,10 +737,7 @@ function useTroncamento<T extends HTMLElement>(contenuto: string) {
     const elemento = ref.current;
     if (!elemento) return;
     const misura = () => setTroncato(elemento.scrollWidth > elemento.clientWidth + 1);
-    misura();
-    const observer = new ResizeObserver(misura);
-    observer.observe(elemento);
-    return () => observer.disconnect();
+    return osservaRidimensionamento(elemento, misura);
   }, [contenuto]);
   return [ref, troncato] as const;
 }

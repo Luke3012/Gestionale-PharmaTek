@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(not(test))]
 use tauri::Emitter;
 
@@ -29,6 +30,35 @@ const CAMPO_INTERRUZIONE_RICHIESTA: &str = "interruzione_richiesta";
 const INTERRUZIONE_SOSPENDI: &str = "sospendi";
 const INTERRUZIONE_ANNULLA: &str = "annulla";
 const INTERRUZIONE_RIPRENDI: &str = "riprendi";
+const DESTINATARIO_DIAGNOSTICA_WHATSAPP: &str = "diagnostica_whatsapp";
+
+fn classifica_errore_whatsapp(messaggio: &str) -> (String, String) {
+    let testo = messaggio.to_lowercase();
+    let (codice, fase) = if testo.contains("non si è aperto") || testo.contains("protocollo") {
+        ("protocollo_non_disponibile", "protocollo")
+    } else if testo.contains("pc in uso") || testo.contains("primo piano") {
+        ("pc_in_uso", "sicurezza")
+    } else if testo.contains("non risulta associato") || testo.contains("destinatario") {
+        ("chat_non_verificata", "chat")
+    } else if testo.contains("allegato")
+        || testo.contains("anteprima")
+        || testo.contains("didascalia")
+        || testo.contains("documento")
+    {
+        ("allegato_non_verificato", "allegato")
+    } else if testo.contains("pulsante invia") || testo.contains("comando invia") {
+        ("invio_non_verificato", "invio")
+    } else if testo.contains("compositore") || testo.contains("campo messaggio") {
+        ("compositore_non_verificato", "compositore")
+    } else if testo.contains("testo") || testo.contains("appunti") {
+        ("testo_non_verificato", "testo")
+    } else if testo.contains("finestra") || testo.contains("automation") {
+        ("finestra_non_verificata", "finestra")
+    } else {
+        ("esito_non_verificato", "verifica_finale")
+    };
+    (codice.into(), fase.into())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +230,8 @@ pub struct ComunicazioneDto {
     pub allegati: Vec<AllegatoComunicazioneInput>,
     pub tentativi: u64,
     pub ultimo_errore: String,
+    pub errore_codice: String,
+    pub errore_fase: String,
     pub esito_ambiguo: bool,
     pub proprietario_utente_id: String,
     pub proprietario_utente_nome: String,
@@ -222,6 +254,8 @@ struct ComunicazioneInvioErroreDto {
     destinatario: String,
     oggetto: String,
     messaggio: String,
+    errore_codice: String,
+    errore_fase: String,
     esito_ambiguo: bool,
 }
 
@@ -243,6 +277,7 @@ struct ComunicazionePreparata {
     origine_entita: String,
     origine_id: String,
     origine_revision: String,
+    origine_fingerprint: String,
     origini_correlate: Vec<OrigineCorrelataInput>,
     reinvio_di: String,
 }
@@ -253,6 +288,60 @@ pub struct DocumentoCacheSalvaInput {
     pub nome: String,
     pub mime: String,
     pub dati: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsappVerificaInput {
+    pub nome: String,
+    pub telefono: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsappVerificaProvaDto {
+    pub testo: ComunicazioneDto,
+    pub allegato: ComunicazioneDto,
+    #[cfg(target_os = "windows")]
+    pub diagnostica: crate::app::whatsapp_windows::WhatsappDiagnosticaDto,
+}
+
+fn pdf_diagnostico_whatsapp() -> Vec<u8> {
+    let contenuto = b"BT /F1 18 Tf 72 750 Td (Collaudo WhatsApp PharmaTek) Tj 0 -28 Td /F1 11 Tf (Documento diagnostico generato localmente.) Tj ET";
+    let oggetti = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        [
+            format!("<< /Length {} >>\nstream\n", contenuto.len()).into_bytes(),
+            contenuto.to_vec(),
+            b"\nendstream".to_vec(),
+        ]
+        .concat(),
+    ];
+    let mut pdf = b"%PDF-1.4\n%PTWA\n".to_vec();
+    let mut offset = Vec::with_capacity(oggetti.len());
+    for (indice, oggetto) in oggetti.iter().enumerate() {
+        offset.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", indice + 1).as_bytes());
+        pdf.extend_from_slice(oggetto);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", oggetti.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for value in offset {
+        pdf.extend_from_slice(format!("{value:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            oggetti.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
 }
 
 pub(super) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -283,21 +372,68 @@ pub(super) fn normalizza_email(value: &str) -> AppResult<String> {
     Ok(email)
 }
 
-fn normalizza_telefono(value: &str) -> AppResult<String> {
+fn normalizza_singolo_telefono(value: &str) -> Option<String> {
     let trimmed = value.trim();
     let mut cifre = trimmed
         .chars()
         .filter(|c| c.is_ascii_digit())
         .collect::<String>();
+    let internazionale = trimmed.starts_with('+') || cifre.starts_with("00");
     if cifre.starts_with("00") {
         cifre.drain(..2);
-    } else if !trimmed.starts_with('+') && cifre.len() == 10 && cifre.starts_with('3') {
-        cifre.insert_str(0, "39");
     }
+
+    if !internazionale {
+        let nazionale_italiano = (cifre.starts_with('0') && (6..=11).contains(&cifre.len()))
+            || (cifre.starts_with('3') && (9..=10).contains(&cifre.len()));
+        if nazionale_italiano {
+            cifre.insert_str(0, "39");
+        } else if !(cifre.starts_with("39") && cifre.len() >= 11)
+            && (!(8..=15).contains(&cifre.len()) || cifre.starts_with('0'))
+        {
+            return None;
+        }
+    }
+
     if !(8..=15).contains(&cifre.len()) || cifre.starts_with('0') {
-        return Err("numero WhatsApp non valido".into());
+        return None;
     }
-    Ok(format!("+{cifre}"))
+    Some(format!("+{cifre}"))
+}
+
+fn normalizza_telefono(value: &str) -> AppResult<String> {
+    // Nei dati storici fisso e cellulare possono convivere nello stesso campo.
+    // I separatori con spazi non spezzano formati come "081/1234567".
+    let caratteri = value.char_indices().collect::<Vec<_>>();
+    let mut segmenti = Vec::new();
+    let mut inizio = 0;
+    for (indice, (offset, carattere)) in caratteri.iter().copied().enumerate() {
+        let separatore_sempre = matches!(carattere, ';' | '|' | ',' | '\n');
+        let separatore_spaziato = matches!(carattere, '-' | '–' | '—' | '/')
+            && indice > 0
+            && indice + 1 < caratteri.len()
+            && caratteri[indice - 1].1.is_whitespace()
+            && caratteri[indice + 1].1.is_whitespace();
+        if separatore_sempre || separatore_spaziato {
+            segmenti.push(&value[inizio..offset]);
+            inizio = offset + carattere.len_utf8();
+        }
+    }
+    segmenti.push(&value[inizio..]);
+    let candidati = segmenti
+        .into_iter()
+        .filter_map(normalizza_singolo_telefono)
+        .collect::<Vec<_>>();
+    candidati
+        .iter()
+        .find(|numero| {
+            numero
+                .strip_prefix("+393")
+                .is_some_and(|resto| (8..=9).contains(&resto.len()))
+        })
+        .or_else(|| candidati.first())
+        .cloned()
+        .ok_or_else(|| "numero di telefono non utilizzabile per WhatsApp".into())
 }
 
 fn url_whatsapp(numero: &str) -> String {
@@ -564,6 +700,8 @@ fn prepara(
     fields.insert("stato".into(), json!(StatoComunicazione::Bozza.as_str()));
     fields.insert("tentativi".into(), json!(0));
     fields.insert("ultimo_errore".into(), json!(""));
+    fields.insert("errore_codice".into(), json!(""));
+    fields.insert("errore_fase".into(), json!(""));
     fields.insert("esito_ambiguo".into(), json!(false));
     fields.insert(CAMPO_INTERRUZIONE_RICHIESTA.into(), json!(""));
     fields.insert(
@@ -586,6 +724,7 @@ fn prepara(
         origine_entita,
         origine_id,
         origine_revision: input.origine_revision.trim().to_string(),
+        origine_fingerprint: input.origine_fingerprint.trim().to_string(),
         origini_correlate,
         reinvio_di: input.reinvio_di.trim().to_string(),
     })
@@ -657,6 +796,8 @@ fn dto(record: crate::projection::Record) -> AppResult<ComunicazioneDto> {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         ultimo_errore: str_field(&record.data, "ultimo_errore"),
+        errore_codice: str_field(&record.data, "errore_codice"),
+        errore_fase: str_field(&record.data, "errore_fase"),
         esito_ambiguo: record
             .data
             .get("esito_ambiguo")
@@ -1197,6 +1338,11 @@ impl AppState {
         #[cfg(target_os = "windows")]
         {
             let dispositivo = self.config().device_id;
+            let trattenute = self
+                .communication_startup_held
+                .lock()
+                .expect("communication startup gate poisoned")
+                .clone();
             let whatsapp_in_attesa = self
                 .comunicazioni_lista()
                 .map(|comunicazioni| {
@@ -1204,6 +1350,9 @@ impl AppState {
                         comunicazione.stato == StatoComunicazione::InCoda
                             && comunicazione.canale == CanaleComunicazione::Whatsapp
                             && comunicazione.proprietario_dispositivo_id == dispositivo
+                            && trattenute
+                                .as_ref()
+                                .is_some_and(|ids| !ids.contains(&comunicazione.id))
                     })
                 })
                 .unwrap_or(false);
@@ -1230,6 +1379,8 @@ impl AppState {
                     destinatario: comunicazione.recapito.clone(),
                     oggetto: comunicazione.oggetto.clone(),
                     messaggio: comunicazione.ultimo_errore.clone(),
+                    errore_codice: comunicazione.errore_codice.clone(),
+                    errore_fase: comunicazione.errore_fase.clone(),
                     esito_ambiguo: comunicazione.esito_ambiguo,
                 },
             );
@@ -1258,45 +1409,57 @@ impl AppState {
         )?;
         let id = preparata.id.clone();
         let id_closure = id.clone();
-        self.with_engine(|engine| {
-            engine.with_projection(|projection| {
-                projection
-                    .get(&preparata.destinatario_entita, &preparata.destinatario_id)
-                    .map_err(|error| error.to_string())?
-                    .filter(|record| !record.deleted)
-                    .ok_or_else(|| {
-                        "il destinatario non esiste più o è stato eliminato".to_string()
-                    })?;
-                if !preparata.origine_entita.is_empty() {
-                    let origine = projection
-                        .get(&preparata.origine_entita, &preparata.origine_id)
+        if preparata.destinatario_entita != DESTINATARIO_DIAGNOSTICA_WHATSAPP {
+            self.with_engine(|engine| {
+                engine.with_projection(|projection| {
+                    projection
+                        .get(&preparata.destinatario_entita, &preparata.destinatario_id)
                         .map_err(|error| error.to_string())?
                         .filter(|record| !record.deleted)
                         .ok_or_else(|| {
-                            "l'elemento collegato non esiste più o è stato eliminato".to_string()
+                            "il destinatario non esiste più o è stato eliminato".to_string()
                         })?;
-                    if !preparata.origine_revision.is_empty()
-                        && origine.updated_hlc.to_string() != preparata.origine_revision
-                    {
-                        return Err(
-                            "l'elemento collegato è cambiato durante la revisione: riapri l'invio"
-                                .into(),
-                        );
-                    }
-                    for correlata in &preparata.origini_correlate {
-                        projection
-                            .get(&preparata.origine_entita, &correlata.id)
+                    if !preparata.origine_entita.is_empty() {
+                        let origine = projection
+                            .get(&preparata.origine_entita, &preparata.origine_id)
                             .map_err(|error| error.to_string())?
                             .filter(|record| !record.deleted)
                             .ok_or_else(|| {
-                                "un elemento collegato non esiste più o è stato eliminato"
+                                "l'elemento collegato non esiste più o è stato eliminato"
                                     .to_string()
                             })?;
+                        let revisione_origine_cambiata = !preparata.origine_revision.is_empty()
+                            && origine.updated_hlc.to_string() != preparata.origine_revision;
+                        // L'esito di un invio aggiorna gli indicatori operativi del
+                        // preventivo e quindi anche la sua revisione. Un secondo invio
+                        // dalla stessa anteprima resta valido finché la fingerprint del
+                        // documento non è cambiata; una vera modifica commerciale viene
+                        // invece ancora respinta come concorrenza.
+                        let stesso_preventivo_semantico = preparata.origine_entita == "preventivo"
+                            && !preparata.origine_fingerprint.is_empty()
+                            && str_field(&origine.data, "fingerprint_corrente")
+                                == preparata.origine_fingerprint;
+                        if revisione_origine_cambiata && !stesso_preventivo_semantico {
+                            return Err(
+                            "l'elemento collegato è cambiato durante la revisione: riapri l'invio"
+                                .into(),
+                        );
+                        }
+                        for correlata in &preparata.origini_correlate {
+                            projection
+                                .get(&preparata.origine_entita, &correlata.id)
+                                .map_err(|error| error.to_string())?
+                                .filter(|record| !record.deleted)
+                                .ok_or_else(|| {
+                                    "un elemento collegato non esiste più o è stato eliminato"
+                                        .to_string()
+                                })?;
+                        }
                     }
-                }
-                Ok(())
-            })
-        })?;
+                    Ok(())
+                })
+            })?;
+        }
         if !preparata.reinvio_di.is_empty() {
             if preparata.reinvio_di == id {
                 return Err("una comunicazione non può reinviare se stessa".into());
@@ -1509,6 +1672,22 @@ impl AppState {
                                 value: json!(""),
                             },
                         ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_codice".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_fase".into(),
+                                value: json!(""),
+                            },
+                        ),
                     ])
                 })
                 .map_err(es)?;
@@ -1540,8 +1719,42 @@ impl AppState {
         }
         let comunicazione =
             self.comunicazione_cambia_stato(id, StatoComunicazione::InCoda, true)?;
+        self.rilascia_comunicazione_trattenuta_all_avvio(id);
         self.communication_wake.signal();
         Ok(comunicazione)
+    }
+
+    /// Congela esclusivamente in memoria le comunicazioni già in coda quando
+    /// parte il processo. Non cambia stato, non scrive eventi e non tocca i
+    /// backup: una nuova sessione non può quindi inviarle automaticamente.
+    pub(crate) fn comunicazioni_trattieni_coda_all_avvio(&self) -> AppResult<usize> {
+        let dispositivo = self.config().device_id;
+        let trattenute = self
+            .comunicazioni_lista()?
+            .into_iter()
+            .filter(|comunicazione| {
+                comunicazione.stato == StatoComunicazione::InCoda
+                    && comunicazione.proprietario_dispositivo_id == dispositivo
+            })
+            .map(|comunicazione| comunicazione.id)
+            .collect::<HashSet<_>>();
+        let totale = trattenute.len();
+        *self
+            .communication_startup_held
+            .lock()
+            .expect("communication startup gate poisoned") = Some(trattenute);
+        Ok(totale)
+    }
+
+    fn rilascia_comunicazione_trattenuta_all_avvio(&self, id: &str) {
+        if let Some(trattenute) = self
+            .communication_startup_held
+            .lock()
+            .expect("communication startup gate poisoned")
+            .as_mut()
+        {
+            trattenute.remove(id);
+        }
     }
 
     pub fn comunicazione_annulla(&self, id: &str) -> AppResult<ComunicazioneDto> {
@@ -2131,6 +2344,22 @@ impl AppState {
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
                             EventBody::FieldSet {
+                                field: "errore_codice".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_fase".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
                                 field: "esito_ambiguo".into(),
                                 value: json!(false),
                             },
@@ -2198,6 +2427,17 @@ impl AppState {
                         return Err("la comunicazione non è più in coda".into());
                     }
                     let now = now_ms();
+                    let canale = corrente
+                        .data
+                        .get("payload")
+                        .and_then(Value::as_object)
+                        .map(|payload| str_field(payload, "canale"))
+                        .unwrap_or_default();
+                    let (errore_codice, errore_fase) = if canale == "whatsapp" {
+                        classifica_errore_whatsapp(&messaggio)
+                    } else {
+                        (String::new(), String::new())
+                    };
                     Ok(vec![
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
@@ -2213,6 +2453,22 @@ impl AppState {
                             EventBody::FieldSet {
                                 field: "ultimo_errore".into(),
                                 value: json!(messaggio),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_codice".into(),
+                                value: json!(errore_codice),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_fase".into(),
+                                value: json!(errore_fase),
                             },
                         ),
                         Mutation::new(
@@ -2308,6 +2564,17 @@ impl AppState {
                     let copia_posta_inviata = ricevuta
                         .as_ref()
                         .is_some_and(|value| value.copia_posta_inviata);
+                    let canale = corrente
+                        .data
+                        .get("payload")
+                        .and_then(Value::as_object)
+                        .map(|payload| str_field(payload, "canale"))
+                        .unwrap_or_default();
+                    let (errore_codice, errore_fase) = if errore.is_some() && canale == "whatsapp" {
+                        classifica_errore_whatsapp(&ultimo_errore)
+                    } else {
+                        (String::new(), String::new())
+                    };
                     Ok(vec![
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
@@ -2323,6 +2590,22 @@ impl AppState {
                             EventBody::FieldSet {
                                 field: "ultimo_errore".into(),
                                 value: json!(ultimo_errore),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_codice".into(),
+                                value: json!(errore_codice),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "errore_fase".into(),
+                                value: json!(errore_fase),
                             },
                         ),
                         Mutation::new(
@@ -2588,6 +2871,9 @@ impl AppState {
         &self,
         comunicazione: &ComunicazioneDto,
     ) -> AppResult<String> {
+        if comunicazione.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP {
+            return Ok(comunicazione.destinatario_id.clone());
+        }
         self.with_engine(|engine| {
             let record = engine
                 .with_projection(|projection| {
@@ -2637,6 +2923,7 @@ impl AppState {
         &self,
         id: &str,
         autorizzazione_input: Option<u32>,
+        riprova_fallito: bool,
     ) -> AppResult<ComunicazioneDto> {
         crate::premium::ensure_access(self)?;
         let _invio_locale = self.communication_send_local.try_lock().map_err(|_| {
@@ -2644,7 +2931,7 @@ impl AppState {
         })?;
         let _attivita = self.begin_runtime_activity()?;
         self.force_sync()?;
-        let comunicazione = self
+        let mut comunicazione = self
             .comunicazioni_lista()?
             .into_iter()
             .find(|comunicazione| comunicazione.id == id)
@@ -2652,6 +2939,11 @@ impl AppState {
         if comunicazione.canale != CanaleComunicazione::Whatsapp {
             return Err("la comunicazione selezionata non è WhatsApp".into());
         }
+        if riprova_fallito && comunicazione.stato == StatoComunicazione::Fallito {
+            comunicazione =
+                self.comunicazione_cambia_stato(id, StatoComunicazione::InCoda, true)?;
+        }
+        self.rilascia_comunicazione_trattenuta_all_avvio(id);
         let destinatario = match self.nome_destinatario_comunicazione(&comunicazione) {
             Ok(destinatario) => destinatario,
             Err(messaggio) => {
@@ -2671,7 +2963,7 @@ impl AppState {
     }
 
     pub fn comunicazione_whatsapp_invia(&self, id: &str) -> AppResult<ComunicazioneDto> {
-        self.comunicazione_whatsapp_invia_con_autorizzazione(id, None)
+        self.comunicazione_whatsapp_invia_con_autorizzazione(id, None, false)
     }
 
     /// Ripresa esplicita dalla notifica. Il click che ha richiesto la ripresa è
@@ -2682,7 +2974,233 @@ impl AppState {
         let autorizzazione_input = crate::app::whatsapp_windows::marcatore_input_utente();
         #[cfg(not(target_os = "windows"))]
         let autorizzazione_input = None;
-        self.comunicazione_whatsapp_invia_con_autorizzazione(id, autorizzazione_input)
+        self.comunicazione_whatsapp_invia_con_autorizzazione(id, autorizzazione_input, true)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn whatsapp_diagnostica_get(
+        &self,
+    ) -> AppResult<crate::app::whatsapp_windows::WhatsappDiagnosticaDto> {
+        crate::premium::ensure_access(self)?;
+        self.completa_diagnostica_whatsapp(crate::app::whatsapp_windows::diagnostica_get())
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn whatsapp_stato_get(
+        &self,
+    ) -> AppResult<crate::app::whatsapp_windows::WhatsappDiagnosticaDto> {
+        crate::premium::ensure_access(self)?;
+        self.completa_diagnostica_whatsapp(crate::app::whatsapp_windows::diagnostica_rapida_get())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn completa_diagnostica_whatsapp(
+        &self,
+        mut diagnostica: crate::app::whatsapp_windows::WhatsappDiagnosticaDto,
+    ) -> AppResult<crate::app::whatsapp_windows::WhatsappDiagnosticaDto> {
+        if diagnostica.ultimo_esito.is_none() {
+            if let Some(collaudo) = self
+                .comunicazioni_lista()?
+                .into_iter()
+                .filter(|item| {
+                    item.canale == CanaleComunicazione::Whatsapp
+                        && item.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
+                })
+                .max_by_key(|item| item.stato_aggiornato_ms)
+            {
+                let riuscito = collaudo.stato.positivo();
+                diagnostica.ultimo_esito =
+                    Some(crate::app::whatsapp_windows::WhatsappUltimoEsitoDto {
+                        riuscito,
+                        codice: if riuscito {
+                            "collaudo_completato".into()
+                        } else if collaudo.errore_codice.is_empty() {
+                            "collaudo_non_completato".into()
+                        } else {
+                            collaudo.errore_codice
+                        },
+                        fase: if riuscito {
+                            "collaudo".into()
+                        } else if collaudo.errore_fase.is_empty() {
+                            "verifica_finale".into()
+                        } else {
+                            collaudo.errore_fase
+                        },
+                        messaggio: collaudo.ultimo_errore,
+                        esito_ambiguo: collaudo.esito_ambiguo,
+                        attivita_utente: false,
+                        durata_ms: 0,
+                        avvenuto_ms: collaudo.stato_aggiornato_ms,
+                    });
+            }
+        }
+        Ok(diagnostica)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn processa_elemento_collaudo_whatsapp(
+        &self,
+        id: &str,
+        destinatario: &str,
+    ) -> AppResult<ComunicazioneDto> {
+        let scadenza = Instant::now() + Duration::from_secs(4);
+        loop {
+            let mut adapter = WhatsappCommunicationAdapter {
+                state: self,
+                destinatario,
+                autorizzazione_input: crate::app::whatsapp_windows::marcatore_input_utente(),
+            };
+            let esito = self.comunicazione_processa_con_adattatore(id, &mut adapter)?;
+            if esito.stato != StatoComunicazione::InCoda {
+                return Ok(esito);
+            }
+            if Instant::now() >= scadenza {
+                return self.comunicazione_fallisce_prima_invio(
+                    id,
+                    "PC in uso durante il collaudo WhatsApp: riprova senza usare mouse o tastiera per alcuni secondi.",
+                );
+            }
+            // Nessuna pausa nel percorso riuscito. Solo dopo un differimento di
+            // sicurezza aspettiamo in modo adattivo la quiete richiesta dal
+            // driver, conservando la stessa bozza e la stessa intenzione.
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn whatsapp_verifica_e_invia_prova(
+        &self,
+        input: WhatsappVerificaInput,
+    ) -> AppResult<WhatsappVerificaProvaDto> {
+        let collaudo_iniziato = Instant::now();
+        crate::premium::ensure_access(self)?;
+        let nome = input.nome.trim().to_string();
+        if nome.is_empty() || nome.chars().count() > 160 || nome.chars().any(char::is_control) {
+            return Err("inserisci il nome del destinatario di collaudo".into());
+        }
+        let telefono = normalizza_telefono(&input.telefono)?;
+        let _invio_locale = self.communication_send_local.try_lock().map_err(|_| {
+            "questo PC sta già inviando un'altra comunicazione; attendi il suo esito".to_string()
+        })?;
+        let _ripristino_visibilita =
+            crate::app::whatsapp_windows::RipristinoVisibilitaDopoCollaudo::cattura();
+        let _attivita = self.begin_runtime_activity()?;
+        self.force_sync()?;
+
+        // Un arresto o una versione precedente del collaudo può aver lasciato
+        // una prova diagnostica in coda. Non deve essere ripresa più tardi dal
+        // worker ordinario, causando un invio o una minimizzazione fuori tempo.
+        let diagnostiche_pendenti = self
+            .comunicazioni_lista()?
+            .into_iter()
+            .filter(|item| {
+                item.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
+                    && item.stato == StatoComunicazione::InCoda
+            })
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        for id in diagnostiche_pendenti {
+            // Nessuna minimizzazione asincrona qui: potrebbe arrivare mentre
+            // il nuovo collaudo ha già riaperto WhatsApp.
+            let _ = self.comunicazione_cambia_stato(&id, StatoComunicazione::Annullato, false);
+        }
+
+        let sessione = ulid::Ulid::generate().to_string();
+        let crea = |suffisso: &str,
+                    corpo: &str,
+                    allegati: Vec<AllegatoComunicazioneInput>|
+         -> AppResult<ComunicazioneDto> {
+            self.comunicazione_crea_bozza(ComunicazioneCreaInput {
+                idempotency_key: format!("collaudo-whatsapp:{sessione}:{suffisso}"),
+                destinatario_entita: DESTINATARIO_DIAGNOSTICA_WHATSAPP.into(),
+                destinatario_id: nome.clone(),
+                canale: CanaleComunicazione::Whatsapp,
+                recapito: telefono.clone(),
+                oggetto: String::new(),
+                corpo: corpo.into(),
+                modello_id: String::new(),
+                modello_versione_id: String::new(),
+                modello_versione: 0,
+                origine_entita: String::new(),
+                origine_id: String::new(),
+                origine_revision: String::new(),
+                origine_fingerprint: String::new(),
+                origini_correlate: Vec::new(),
+                origine_snapshot: Value::Null,
+                tipo_modello: String::new(),
+                campagna_id: format!("collaudo-whatsapp:{sessione}"),
+                reinvio_di: String::new(),
+                allegati,
+            })
+        };
+
+        let testo = crea(
+            "testo",
+            "Collaudo WhatsApp PharmaTek — messaggio di verifica automatica.",
+            Vec::new(),
+        )?;
+        self.comunicazione_metti_in_coda(&testo.id)?;
+        let destinatario = nome.clone();
+        let testo = self.processa_elemento_collaudo_whatsapp(&testo.id, &destinatario)?;
+        if !testo.stato.positivo() {
+            let fase = if testo.errore_fase.is_empty() {
+                "sicurezza"
+            } else {
+                &testo.errore_fase
+            };
+            let messaggio = if testo.ultimo_errore.is_empty() {
+                "l'invio è stato differito prima del click su Invia"
+            } else {
+                &testo.ultimo_errore
+            };
+            return Err(format!(
+                "collaudo WhatsApp fallito nella fase {}: {}",
+                fase, messaggio
+            ));
+        }
+
+        std::thread::sleep(Duration::from_millis(650));
+        let allegato_cache = self.documento_cache_salva(DocumentoCacheSalvaInput {
+            nome: "collaudo-whatsapp-pharmatek.pdf".into(),
+            mime: "application/pdf".into(),
+            dati: pdf_diagnostico_whatsapp(),
+        })?;
+        let allegato = match crea(
+            "allegato",
+            "Collaudo WhatsApp PharmaTek — verifica allegato PDF.",
+            vec![allegato_cache.clone()],
+        ) {
+            Ok(comunicazione) => comunicazione,
+            Err(error) => {
+                let _ = self.documenti_cache_rilascia(&[allegato_cache]);
+                return Err(error);
+            }
+        };
+        self.comunicazione_metti_in_coda(&allegato.id)?;
+        let _ = self.documenti_cache_rilascia(&[allegato_cache]);
+        let allegato = self.processa_elemento_collaudo_whatsapp(&allegato.id, &destinatario)?;
+        if !allegato.stato.positivo() {
+            let fase = if allegato.errore_fase.is_empty() {
+                "sicurezza"
+            } else {
+                &allegato.errore_fase
+            };
+            let messaggio = if allegato.ultimo_errore.is_empty() {
+                "l'invio è stato differito prima del click su Invia"
+            } else {
+                &allegato.ultimo_errore
+            };
+            return Err(format!(
+                "collaudo WhatsApp fallito nella fase {}: {}",
+                fase, messaggio
+            ));
+        }
+        crate::app::whatsapp_windows::registra_collaudo_completato(collaudo_iniziato.elapsed());
+        Ok(WhatsappVerificaProvaDto {
+            testo,
+            allegato,
+            diagnostica: crate::app::whatsapp_windows::diagnostica_get(),
+        })
     }
 
     /// Crea una nuova intenzione collegata. Vale sia dopo la verifica di un
@@ -2842,14 +3360,26 @@ impl AppState {
         // riallineamento senza pubblicare lo storico e senza ripetere l'invio.
         let _ = self.riallinea_esiti_locali_in_attesa();
         let dispositivo = self.config().device_id;
+        let Some(trattenute_all_avvio) = self
+            .communication_startup_held
+            .lock()
+            .expect("communication startup gate poisoned")
+            .clone()
+        else {
+            // Fail closed: finché la fotografia iniziale non è disponibile il
+            // worker non può produrre alcun effetto esterno.
+            return Ok(None);
+        };
         let prossima = self
             .comunicazioni_lista()?
             .into_iter()
             .filter(|comunicazione| {
                 comunicazione.stato == StatoComunicazione::InCoda
                     && comunicazione.proprietario_dispositivo_id == dispositivo
+                    && !trattenute_all_avvio.contains(&comunicazione.id)
             })
             .min_by_key(|comunicazione| comunicazione.creata_ms);
+        #[cfg(all(target_os = "windows", not(test)))]
         let era_whatsapp = prossima
             .as_ref()
             .is_some_and(|comunicazione| comunicazione.canale == CanaleComunicazione::Whatsapp);
@@ -2862,7 +3392,7 @@ impl AppState {
             })
             .transpose();
 
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", not(test)))]
         if era_whatsapp
             && risultato
                 .as_ref()
@@ -2884,7 +3414,11 @@ impl AppState {
             if !altri_whatsapp_in_coda {
                 // Mai nascondere WhatsApp in caso di errore o di esito
                 // ambiguo: la finestra resta visibile per la verifica manuale.
-                crate::app::whatsapp_windows::minimizza_finestre();
+                // Dopo un successo lasciamo inoltre due secondi per vedere il
+                // messaggio appena inviato. Il controllo finale evita di
+                // minimizzare se nel frattempo è entrato un nuovo WhatsApp.
+                std::thread::sleep(Duration::from_secs(2));
+                self.minimizza_whatsapp_se_inattivo();
             }
         }
 
@@ -3002,6 +3536,7 @@ impl CommunicationAdapter for WhatsappCommunicationAdapter<'_> {
         &mut self,
         comunicazione: &ComunicazioneDto,
     ) -> Result<RicevutaAdattatore, ErroreAdattatore> {
+        let iniziato = Instant::now();
         if !allegati_whatsapp_supportati(&comunicazione.allegati) {
             return Err(ErroreAdattatore {
                 classe: ClasseErroreAdattatore::InvioNonAzionato,
@@ -3031,11 +3566,24 @@ impl CommunicationAdapter for WhatsappCommunicationAdapter<'_> {
                 messaggio: "Invio WhatsApp annullato.".into(),
             });
         }
-        if !crate::app::whatsapp_windows::bozza_contiene_marcatore(&marcatore_apertura) {
-            crate::platform::apri_url_sistema(&url).map_err(|_| ErroreAdattatore {
-                classe: ClasseErroreAdattatore::InvioNonAzionato,
-                messaggio: "WhatsApp non si è aperto: verifica che l'app Windows sia installata"
-                    .into(),
+        let bozza_gia_preparata =
+            crate::app::whatsapp_windows::bozza_contiene_marcatore(&comunicazione.corpo);
+        if !bozza_gia_preparata
+            && !crate::app::whatsapp_windows::bozza_contiene_marcatore(&marcatore_apertura)
+        {
+            crate::platform::apri_url_sistema(&url).map_err(|_| {
+                let messaggio =
+                    "WhatsApp non si è aperto: verifica che l'app Windows sia installata";
+                crate::app::whatsapp_windows::registra_errore_esterno(
+                    "protocollo_non_disponibile",
+                    "protocollo",
+                    messaggio,
+                    iniziato.elapsed(),
+                );
+                ErroreAdattatore {
+                    classe: ClasseErroreAdattatore::InvioNonAzionato,
+                    messaggio: messaggio.into(),
+                }
             })?;
         }
 
@@ -3148,6 +3696,17 @@ mod tests {
     use std::fs;
     use ulid::Ulid;
 
+    #[test]
+    fn pdf_diagnostico_whatsapp_e_autocontenuto() {
+        let pdf = pdf_diagnostico_whatsapp();
+        assert!(pdf.starts_with(b"%PDF-1.4"));
+        assert!(pdf
+            .windows(b"Collaudo WhatsApp PharmaTek".len())
+            .any(|finestra| { finestra == b"Collaudo WhatsApp PharmaTek" }));
+        assert!(pdf.ends_with(b"%%EOF\n"));
+        assert!(pdf.len() < 4_096);
+    }
+
     struct MockCommunicationAdapter {
         esito: Result<RicevutaAdattatore, ErroreAdattatore>,
         invocazioni: usize,
@@ -3244,17 +3803,13 @@ mod tests {
         }
     }
 
-    fn email_demo() -> String {
-        ["cliente", "example.invalid"].join("@").to_string()
-    }
-
     fn input_email(key: &str) -> ComunicazioneCreaInput {
         ComunicazioneCreaInput {
             idempotency_key: key.into(),
             destinatario_entita: "cliente".into(),
             destinatario_id: "c1".into(),
             canale: CanaleComunicazione::Email,
-            recapito: email_demo(),
+            recapito: "   ".into(),
             oggetto: "Avviso".into(),
             corpo: "Messaggio di prova".into(),
             modello_id: String::new(),
@@ -3305,24 +3860,35 @@ mod tests {
 
     #[test]
     fn normalizza_i_recapiti_senza_perdere_la_validazione() {
-        let email = ["cliente", "example.invalid"].join("@");
-        assert_eq!(normalizza_email(&format!("  {email}  ")).unwrap(), email);
         assert_eq!(
-            normalizza_telefono(concat!("333", " 123", " 4567")).unwrap(),
-            concat!("+39", "333", "123", "4567")
+            normalizza_email("  ").unwrap(),
+            ""
         );
         assert_eq!(
-            normalizza_telefono(concat!("00 39", " 333", " 123", " 4567")).unwrap(),
-            concat!("+39", "333", "123", "4567")
+            normalizza_telefono("333 123 4567").unwrap(),
+            "+393331234567"
+        );
+        assert_eq!(
+            normalizza_telefono("00 39 333 123 4567").unwrap(),
+            "+393331234567"
+        );
+        assert_eq!(normalizza_telefono("328 188 335").unwrap(), "+39328188335");
+        assert_eq!(
+            normalizza_telefono("081 123 4567").unwrap(),
+            "+390811234567"
+        );
+        assert_eq!(
+            normalizza_telefono("081 1234567 - 328 188 3355").unwrap(),
+            "+393281883355"
         );
         assert!(normalizza_email("cliente@localhost").is_err());
         assert!(normalizza_telefono("123").is_err());
         assert_eq!(
-            url_whatsapp(concat!("+39", " 333", " 123", " 4567")),
+            url_whatsapp("+39 333 123 4567"),
             "whatsapp://send?phone=393331234567"
         );
         assert_eq!(
-            url_whatsapp_con_testo(concat!("+39", " 333", " 123", " 4567"), "Ciao Luca — prova"),
+            url_whatsapp_con_testo("+39 333 123 4567", "Ciao Luca — prova"),
             "whatsapp://send?phone=393331234567&text=Ciao%20Luca%20%E2%80%94%20prova"
         );
     }
@@ -3441,10 +4007,10 @@ mod tests {
             .documento_cache_percorso_verificato(&allegato)
             .unwrap();
         let mut input = input_email("preventivo:esito:positivo");
-        input.destinatario_id = cliente.id;
+        input.destinatario_id = cliente.id.clone();
         input.origine_entita = "preventivo".into();
         input.origine_id = preventivo_id.into();
-        input.origine_revision = revision;
+        input.origine_revision = revision.clone();
         input.origine_fingerprint = "impronta-1".into();
         input.origine_snapshot = json!({"totale": 12345, "versioneModello": 1});
         input.tipo_modello = "sollecito_preventivo".into();
@@ -3532,6 +4098,185 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+
+        let mut secondo_invio = input_email("preventivo:esito:secondo");
+        secondo_invio.destinatario_id = cliente.id;
+        secondo_invio.origine_entita = "preventivo".into();
+        secondo_invio.origine_id = preventivo_id.into();
+        // È intenzionalmente la revisione precedente all'aggiornamento degli
+        // indicatori prodotto dal primo invio.
+        secondo_invio.origine_revision = revision;
+        secondo_invio.origine_fingerprint = "impronta-1".into();
+        secondo_invio.tipo_modello = "preventivo".into();
+        assert!(state.comunicazione_crea_bozza(secondo_invio).is_ok());
+    }
+
+    #[test]
+    fn reinvio_preventivo_rifiuta_una_fingerprint_semantica_superata() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Cliente preventivo modificato")),
+                    ("email".into(), json!("")),
+                ]),
+            )
+            .unwrap();
+        let preventivo_id = "preventivo/ordine-modificato";
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit("preventivo", preventivo_id, EventBody::Created)
+                    .map_err(es)?;
+                engine
+                    .emit(
+                        "preventivo",
+                        preventivo_id,
+                        EventBody::FieldSet {
+                            field: "fingerprint_corrente".into(),
+                            value: json!("impronta-iniziale"),
+                        },
+                    )
+                    .map(|_| ())
+                    .map_err(es)
+            })
+            .unwrap();
+        let revisione_iniziale = state
+            .with_engine(|engine| {
+                engine
+                    .with_projection(|projection| {
+                        projection
+                            .get("preventivo", preventivo_id)
+                            .ok()
+                            .flatten()
+                            .map(|record| record.updated_hlc.to_string())
+                    })
+                    .ok_or_else(|| "preventivo test mancante".to_string())
+            })
+            .unwrap();
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit(
+                        "preventivo",
+                        preventivo_id,
+                        EventBody::FieldSet {
+                            field: "fingerprint_corrente".into(),
+                            value: json!("impronta-modificata"),
+                        },
+                    )
+                    .map(|_| ())
+                    .map_err(es)
+            })
+            .unwrap();
+
+        let mut input = input_email("preventivo:fingerprint-superata");
+        input.destinatario_id = cliente.id;
+        input.origine_entita = "preventivo".into();
+        input.origine_id = preventivo_id.into();
+        input.origine_revision = revisione_iniziale;
+        input.origine_fingerprint = "impronta-iniziale".into();
+        input.tipo_modello = "preventivo".into();
+
+        assert_eq!(
+            state.comunicazione_crea_bozza(input).unwrap_err(),
+            "l'elemento collegato è cambiato durante la revisione: riapri l'invio"
+        );
+    }
+
+    #[test]
+    fn scheda_cliente_e_allegato_restano_validi_per_due_invii_consecutivi() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Cliente scheda")),
+                    ("email".into(), json!("")),
+                ]),
+            )
+            .unwrap();
+        let scheda_id = "scheda_cliente/ordine-scheda";
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit("scheda_cliente", scheda_id, EventBody::Created)
+                    .map_err(es)?;
+                engine
+                    .emit(
+                        "scheda_cliente",
+                        scheda_id,
+                        EventBody::FieldSet {
+                            field: "ordine_id".into(),
+                            value: json!("ordine-scheda"),
+                        },
+                    )
+                    .map(|_| ())
+                    .map_err(es)
+            })
+            .unwrap();
+        let revisione = state
+            .with_engine(|engine| {
+                engine
+                    .with_projection(|projection| {
+                        projection
+                            .get("scheda_cliente", scheda_id)
+                            .ok()
+                            .flatten()
+                            .map(|record| record.updated_hlc.to_string())
+                    })
+                    .ok_or_else(|| "scheda cliente test mancante".to_string())
+            })
+            .unwrap();
+        let allegato = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Scheda cliente.pdf".into(),
+                mime: "application/pdf".into(),
+                dati: b"%PDF-1.4\n%%EOF".to_vec(),
+            })
+            .unwrap();
+        let prepara_input = |key: &str| {
+            let mut input = input_email(key);
+            input.destinatario_id = cliente.id.clone();
+            input.origine_entita = "scheda_cliente".into();
+            input.origine_id = scheda_id.into();
+            input.origine_revision = revisione.clone();
+            input.allegati = vec![allegato.clone()];
+            input
+        };
+        let mut adapter = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: false,
+                riferimento_esterno: "smtp-scheda".into(),
+                copia_posta_inviata: true,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+
+        let primo = state
+            .comunicazione_crea_bozza(prepara_input("scheda-cliente:primo"))
+            .unwrap();
+        state.comunicazione_metti_in_coda(&primo.id).unwrap();
+        state
+            .documenti_cache_rilascia(std::slice::from_ref(&allegato))
+            .unwrap();
+        state
+            .comunicazione_processa_con_adattatore(&primo.id, &mut adapter)
+            .unwrap();
+
+        let secondo = state
+            .comunicazione_crea_bozza(prepara_input("scheda-cliente:secondo"))
+            .unwrap();
+        state.comunicazione_metti_in_coda(&secondo.id).unwrap();
+        state
+            .comunicazione_processa_con_adattatore(&secondo.id, &mut adapter)
+            .unwrap();
+
+        assert_eq!(adapter.invocazioni, 2);
+        assert!(state.documento_cache_leggi(&allegato).is_ok());
     }
 
     #[test]
@@ -3998,6 +4743,44 @@ mod tests {
     }
 
     #[test]
+    fn la_coda_trovata_all_avvio_resta_ferma_fino_a_una_scelta_esplicita() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([("nome".into(), json!("Cliente coda avvio"))]),
+            )
+            .unwrap();
+        let mut input = input_email("manuale:cliente:email:coda-avvio");
+        input.destinatario_id = cliente.id;
+        let bozza = state.comunicazione_crea_bozza(input).unwrap();
+        state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+
+        assert_eq!(state.comunicazioni_trattieni_coda_all_avvio().unwrap(), 1);
+        assert!(state.comunicazione_processa_prossima().unwrap().is_none());
+        assert_eq!(
+            state
+                .comunicazioni_lista()
+                .unwrap()
+                .into_iter()
+                .find(|item| item.id == bozza.id)
+                .unwrap()
+                .stato,
+            StatoComunicazione::InCoda,
+            "la protezione di avvio non deve cambiare né riscrivere lo stato"
+        );
+
+        state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+        assert!(!state
+            .communication_startup_held
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains(&bozza.id));
+    }
+
+    #[test]
     fn due_clienti_con_lo_stesso_numero_restano_due_invii_sequenziali() {
         let (_app, _data, state) = stato_test(true);
         let cliente_a = state
@@ -4016,12 +4799,12 @@ mod tests {
         let mut primo_input = input_email("campagna:duplicato:whatsapp:1");
         primo_input.destinatario_id = cliente_a.id;
         primo_input.canale = CanaleComunicazione::Whatsapp;
-        primo_input.recapito = concat!("+39", " 328", " 188", " 3355").into();
+        primo_input.recapito = "+39 328 188 3355".into();
         primo_input.oggetto.clear();
         let mut secondo_input = input_email("campagna:duplicato:whatsapp:2");
         secondo_input.destinatario_id = cliente_b.id;
         secondo_input.canale = CanaleComunicazione::Whatsapp;
-        secondo_input.recapito = concat!("+39", " 328", " 188", " 3355").into();
+        secondo_input.recapito = "+39 328 188 3355".into();
         secondo_input.oggetto.clear();
 
         let primo = state.comunicazione_crea_bozza(primo_input).unwrap();
@@ -4320,6 +5103,72 @@ mod tests {
             .unwrap_err()
             .contains("completi tutti i destinatari"));
         assert_eq!(adapter.invocazioni, 1);
+    }
+
+    #[test]
+    fn numero_whatsapp_inesistente_non_spezza_il_batch() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([("nome".into(), json!("Cliente batch WhatsApp"))]),
+            )
+            .unwrap();
+        let mut inesistente = input_email("campagna:wa-inesistente:1");
+        inesistente.canale = CanaleComunicazione::Whatsapp;
+        inesistente.recapito = "+999999999999".into();
+        inesistente.destinatario_id = cliente.id.clone();
+        inesistente.campagna_id = "campagna:wa-inesistente".into();
+        let mut successiva = input_email("campagna:wa-inesistente:2");
+        successiva.canale = CanaleComunicazione::Whatsapp;
+        successiva.recapito = "+393281883355".into();
+        successiva.destinatario_id = cliente.id;
+        successiva.campagna_id = "campagna:wa-inesistente".into();
+        let inesistente = state.comunicazione_crea_bozza(inesistente).unwrap();
+        let successiva = state.comunicazione_crea_bozza(successiva).unwrap();
+        state.comunicazione_metti_in_coda(&inesistente.id).unwrap();
+        state.comunicazione_metti_in_coda(&successiva.id).unwrap();
+
+        let mut errore_numero = MockCommunicationAdapter {
+            esito: Err(ErroreAdattatore {
+                classe: ClasseErroreAdattatore::InvioNonAzionato,
+                messaggio: "Il numero +999999999999 non risulta associato a WhatsApp. L'invio non è stato effettuato."
+                    .into(),
+            }),
+            invocazioni: 0,
+        };
+        let primo = state
+            .comunicazione_processa_con_adattatore(&inesistente.id, &mut errore_numero)
+            .unwrap();
+        assert_eq!(primo.stato, StatoComunicazione::Fallito);
+        assert_eq!(primo.errore_codice, "chat_non_verificata");
+        assert_eq!(primo.errore_fase, "chat");
+        assert!(!primo.esito_ambiguo);
+
+        let ancora_in_coda = state
+            .comunicazioni_lista()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == successiva.id)
+            .unwrap();
+        assert_eq!(ancora_in_coda.stato, StatoComunicazione::InCoda);
+
+        let mut invio_successivo = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: false,
+                riferimento_esterno: "whatsapp-successivo".into(),
+                copia_posta_inviata: false,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+        let secondo = state
+            .comunicazione_processa_con_adattatore(&successiva.id, &mut invio_successivo)
+            .unwrap();
+        assert_eq!(secondo.stato, StatoComunicazione::InvioAzionato);
+        assert_eq!(errore_numero.invocazioni, 1);
+        assert_eq!(invio_successivo.invocazioni, 1);
     }
 
     #[test]
@@ -5097,7 +5946,7 @@ mod tests {
                 }
             }
             if indice + 1 < targets.len() {
-                std::thread::sleep(std::time::Duration::from_millis(1_250));
+                std::thread::sleep(std::time::Duration::from_millis(650));
             }
         }
         crate::app::whatsapp_windows::minimizza_finestre();
@@ -5179,7 +6028,7 @@ mod tests {
     #[test]
     fn premium_blocca_comandi_specializzati_e_crud_generico() {
         let (_app, _data, state) = stato_test(false);
-        assert!(state.comunicazioni_lista().is_ok());
+        assert!(state.comunicazioni_lista().is_err());
         assert!(state
             .record_create(
                 ENTITA_COMUNICAZIONE,

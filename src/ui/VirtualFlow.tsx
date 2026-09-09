@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Box } from "@mantine/core";
+import { osservaRidimensionamento } from "./osservaRidimensionamento";
 import {
   calcolaLayoutVirtuale,
   calcolaRangeVirtuale,
@@ -148,10 +149,7 @@ function VirtualFlowItem({
     const el = ref.current;
     if (!el) return;
     const misura = () => onMeasure(itemKey, el.getBoundingClientRect().height);
-    misura();
-    const ro = new ResizeObserver(misura);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return osservaRidimensionamento(el, misura);
   }, [itemKey, onMeasure]);
 
   return (

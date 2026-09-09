@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager, State};
 
 use crate::app::communication::{
     AllegatoComunicazioneInput, ComunicazioneCreaInput, ComunicazioneDto, DocumentoCacheSalvaInput,
+    WhatsappVerificaInput, WhatsappVerificaProvaDto,
 };
 use crate::app::communication_config::{ConfigurazioneEmailDto, ConfigurazioneEmailSalvaInput};
 use crate::app::communication_templates::{
@@ -258,24 +259,6 @@ pub fn tray_badge(app: tauri::AppHandle, n: u32) -> Result<(), String> {
         tray.set_tooltip(Some(testo)).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-/// Mostra un balloon di sistema (FASE 6D): usato dal frontend quando l'app è in
-/// background per avvisare di una notifica nuova. Best-effort — se il sistema non
-/// può mostrarlo non è un errore per l'utente (resta comunque il badge in app/tray).
-#[tauri::command]
-pub fn notifica_balloon(
-    app: tauri::AppHandle,
-    titolo: String,
-    corpo: String,
-) -> Result<(), String> {
-    use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(titolo)
-        .body(corpo)
-        .show()
-        .map_err(|e| e.to_string())
 }
 
 /// Stato iniziale: onboarded?, identità, deviceId, cartella dati.
@@ -883,6 +866,53 @@ pub fn comunicazione_whatsapp_riprendi(
     )
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn whatsapp_diagnostica_get(
+    app: tauri::AppHandle,
+) -> Result<crate::app::whatsapp_windows::WhatsappDiagnosticaDto, String> {
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        task_app.state::<AppState>().whatsapp_diagnostica_get()
+    })
+    .await
+    .map_err(|error| format!("diagnostica WhatsApp interrotta: {error}"))?
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn whatsapp_stato_get(
+    state: State<'_, AppState>,
+) -> Result<crate::app::whatsapp_windows::WhatsappDiagnosticaDto, String> {
+    state.whatsapp_stato_get()
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn whatsapp_verifica_e_invia_prova(
+    input: WhatsappVerificaInput,
+    app: tauri::AppHandle,
+) -> Result<WhatsappVerificaProvaDto, String> {
+    let task_app = app.clone();
+    let risultato = tauri::async_runtime::spawn_blocking(move || {
+        task_app
+            .state::<AppState>()
+            .whatsapp_verifica_e_invia_prova(input)
+    })
+    .await
+    .map_err(|error| format!("collaudo WhatsApp interrotto: {error}"))?;
+
+    // Il deep-link porta necessariamente WhatsApp davanti. Quando il collaudo
+    // termina, positivo o negativo, restituiamo sempre il controllo visivo al
+    // gestionale senza dipendere dai tempi di rendering del frontend.
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+    risultato
+}
+
 #[tauri::command]
 pub fn comunicazione_elimina(
     id: String,
@@ -1342,6 +1372,15 @@ pub fn suggerimenti_rigenera(
     nt.suggerimenti_dashboard_rigenera()
 }
 
+/// Ricalcola tutte le azioni correnti ignorando, solo per questa lettura,
+/// fotografie nascoste e categorie sospese. Non invalida né modifica la cache.
+#[tauri::command]
+pub fn suggerimenti_rigenera_completa(
+    state: State<'_, AppState>,
+) -> Result<SuggerimentiBundleDto, String> {
+    state.suggerimenti_lista_completa()
+}
+
 /// Nasconde la fotografia corrente del suggerimento su tutte le postazioni Premium.
 #[tauri::command]
 pub fn suggerimento_nascondi(
@@ -1617,14 +1656,14 @@ pub fn produzione_lotto_righe_separa(
 
 /// Export Laboratorio (Immunoterapia) di un lotto in `.xlsx` (FASE 5C). Ritorna il n° di righe.
 #[tauri::command]
-pub fn fornitore_export(
+pub fn laboratorio_export(
     lotto: String,
     path: String,
     base: i64,
     data_prevista: String,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    state.fornitore_export(&lotto, &path, base, &data_prevista)
+    state.laboratorio_export(&lotto, &path, base, &data_prevista)
 }
 
 /// Export Diagnostica di un lotto in `.xlsx` (un blocco per ordine, FASE 5D). Ritorna n° ordini.

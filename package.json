@@ -1,9 +1,9 @@
 {
-  "name": "gestionale-pharmatek-demo",
+  "name": "pharmatek-gestionale",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.3",
   "type": "module",
-  "description": "Gestionale PharmaTek Demo - desktop local-first senza dati operativi preconfigurati",
+  "description": "Gestionale PharmaTek - desktop local-first su OneDrive (Tauri + React)",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -13,8 +13,7 @@
     "app:dev": "tauri dev",
     "clean:tauri": "cargo clean --manifest-path src-tauri/Cargo.toml",
     "app:build": "npm run clean:tauri && tauri build",
-    "changelog": "node scripts/changelog-editor.mjs",
-    "audit:public": "node scripts/audit-public.mjs ."
+    "changelog": "node scripts/changelog-editor.mjs"
   },
   "dependencies": {
     "@mantine/charts": "^9.5.1",

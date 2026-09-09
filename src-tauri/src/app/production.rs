@@ -653,7 +653,7 @@ impl AppState {
     /// alle righe che ancora non l'hanno: `next = max(esistenti, base−1) + 1` (idempotente:
     /// ri-esportare non cambia i numeri già assegnati). `data_prevista` (col J) è il default
     /// del lotto, sovrascritto dall'eventuale `data_prevista` salvata sulla riga.
-    pub fn fornitore_export(
+    pub fn laboratorio_export(
         &self,
         lotto: &str,
         path: &str,
@@ -833,7 +833,7 @@ impl AppState {
             Ok(out)
         })?;
 
-        crate::export::fornitore_xlsx(Path::new(path), &righe)?;
+        crate::export::laboratorio_xlsx(Path::new(path), &righe)?;
         Ok(righe.len())
     }
 
@@ -916,7 +916,7 @@ impl AppState {
                             ml: str_field(&r.data, "ml"),
                             qta: i64_field(&r.data, "qta"),
                             valore: (prezzo != 0).then(|| prezzo as f64 / 100.0),
-                            codice: str_field(&r.data, "codice_fornitore"),
+                            codice: str_field(&r.data, "codice_laboratorio"),
                         }
                     })
                     .collect();

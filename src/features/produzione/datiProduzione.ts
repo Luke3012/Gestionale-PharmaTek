@@ -112,7 +112,7 @@ export function campiDiagnostica(data: Record<string, unknown>): CampiDiagnostic
     tipoTest: (data.tipo_test as string) || "",
     ml: (data.ml as string) || "",
     qta: typeof data.qta === "number" ? (data.qta as number) : 0,
-    codice: (data.codice_fornitore as string) || "",
+    codice: (data.codice_laboratorio as string) || "",
   };
 }
 

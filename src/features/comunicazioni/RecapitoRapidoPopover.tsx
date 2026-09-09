@@ -254,7 +254,7 @@ export function RecapitoRapidoPopover({
               disabled={caricando}
               error={
                 telefonoNonValido
-                  ? "Inserisci un numero cellulare valido"
+                  ? "Inserisci un numero di telefono utilizzabile"
                   : undefined
               }
               onChange={(event) => setTelefono(event.currentTarget.value)}

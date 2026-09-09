@@ -268,8 +268,6 @@ pub fn run() {
         ))
         // Hotkey globale (Alt+P): registrata/gestita dal frontend, qui solo init.
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        // Balloon di sistema (FASE 6D): notifiche nuove quando l'app è in background.
-        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Il collegamento desktop di Spotlight usa volutamente un'icona diversa
             // ma punta allo stesso eseguibile. Su Windows, soprattutto in dev, quella
@@ -290,11 +288,17 @@ pub fn run() {
             if let Err(e) = state.comunicazioni_recupera_invii_interrotti() {
                 eprintln!("Errore recupero comunicazioni interrotte: {e}");
             }
+            if let Err(e) = state.comunicazioni_trattieni_coda_all_avvio() {
+                // Il gate resta chiuso: in caso di errore è preferibile non
+                // avviare alcun effetto esterno anziché riprendere una vecchia
+                // coda senza una scelta esplicita dell'utente.
+                eprintln!("Errore protezione coda comunicazioni all'avvio: {e}");
+            }
             app.manage(state);
 
-            // Outbox locale minimale: ogni PC riprende soltanto le proprie
-            // comunicazioni, una alla volta. Stato ed esito viaggiano già nel
-            // log condiviso; non servono coordinatori, lease o subentri.
+            // Outbox locale minimale: ogni PC elabora soltanto le comunicazioni
+            // accodate durante questa sessione o riattivate esplicitamente
+            // dall'utente. Quelle già pendenti all'avvio restano ferme.
             let app_outbox = app.handle().clone();
             std::thread::spawn(move || {
                 let state = app_outbox.state::<AppState>();
@@ -493,6 +497,9 @@ pub fn run() {
             commands::comunicazione_metti_in_coda,
             commands::comunicazione_annulla,
             commands::comunicazione_whatsapp_riprendi,
+            commands::whatsapp_diagnostica_get,
+            commands::whatsapp_stato_get,
+            commands::whatsapp_verifica_e_invia_prova,
             commands::comunicazione_elimina,
             commands::comunicazioni_elimina,
             commands::campagna_comunicazione_elimina,
@@ -543,7 +550,7 @@ pub fn run() {
             commands::produzione_lotto_righe_arrivate,
             commands::produzione_lotto_righe_unisci,
             commands::produzione_lotto_righe_separa,
-            commands::fornitore_export,
+            commands::laboratorio_export,
             commands::diagnostica_export,
             commands::cestino,
             commands::record_purge,
@@ -561,6 +568,7 @@ pub fn run() {
             commands::dashboard_pannelli,
             commands::suggerimenti_lista,
             commands::suggerimenti_rigenera,
+            commands::suggerimenti_rigenera_completa,
             commands::suggerimento_nascondi,
             commands::suggerimenti_nascondi,
             commands::provvigioni_export,
@@ -601,7 +609,6 @@ pub fn run() {
             commands::rimborso_segna_effettuato,
             commands::rimborso_extra_precompila,
             commands::tray_badge,
-            commands::notifica_balloon,
             notifiche::notifiche_config,
             notifiche::notifiche_check,
             notifiche::notifiche_overlay_pronto,

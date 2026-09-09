@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { resetLarghezzeTabella } from "../../ui/Tabella";
+import {
+  normalizzaStatoColonne,
+  useColonneConfigurabili,
+} from "../../ui/colonneConfigurabili";
 
 export const COLONNE_PREVENTIVI = [
   { key: "numeroPreventivo", label: "Preventivo", defaultVisible: true },
@@ -20,7 +24,6 @@ export const COLONNE_PREVENTIVI = [
 
 export type ChiaveColonnaPreventivi = (typeof COLONNE_PREVENTIVI)[number]["key"];
 
-const DEFINIZIONI = new Map(COLONNE_PREVENTIVI.map((colonna) => [colonna.key, colonna]));
 const STORAGE = "pt.preventivi.colonne.v2";
 const STORAGE_PRECEDENTE = "pt.preventivi.colonne.v1";
 export const STORE_LARGHEZZE_PREVENTIVI = "preventivi-v2";
@@ -30,113 +33,34 @@ export interface StatoColonnePreventivi {
   nascoste: ChiaveColonnaPreventivi[];
 }
 
-function predefinito(): StatoColonnePreventivi {
-  return {
-    ordine: COLONNE_PREVENTIVI.map((colonna) => colonna.key),
-    nascoste: COLONNE_PREVENTIVI
-      .filter((colonna) => !colonna.defaultVisible)
-      .map((colonna) => colonna.key),
-  };
-}
-
 export function normalizzaColonnePreventivi(salvato?: {
   ordine?: string[];
   nascoste?: string[];
 }): StatoColonnePreventivi {
-  if (!salvato) return predefinito();
-  const ordineSalvato = salvato.ordine ?? [];
-  const giaPresenti = new Set(ordineSalvato);
-  const ordine = [
-    ...ordineSalvato.filter(
-      (key): key is ChiaveColonnaPreventivi =>
-        DEFINIZIONI.has(key as ChiaveColonnaPreventivi),
-    ),
-    ...COLONNE_PREVENTIVI
-      .map((colonna) => colonna.key)
-      .filter((key) => !giaPresenti.has(key)),
-  ];
-  const nascoste = new Set(
-    (salvato.nascoste ?? []).filter(
-      (key): key is ChiaveColonnaPreventivi =>
-        DEFINIZIONI.has(key as ChiaveColonnaPreventivi),
-    ),
-  );
-  // Le colonne introdotte dopo il salvataggio rispettano il proprio default:
-  // quelle opzionali non compaiono improvvisamente sui PC già configurati.
-  for (const colonna of COLONNE_PREVENTIVI) {
-    if (!giaPresenti.has(colonna.key) && !colonna.defaultVisible) {
-      nascoste.add(colonna.key);
-    }
-  }
-  return { ordine, nascoste: [...nascoste] };
-}
-
-function carica(): StatoColonnePreventivi {
-  try {
-    const raw =
-      localStorage.getItem(STORAGE) ??
-      localStorage.getItem(STORAGE_PRECEDENTE);
-    if (!raw) return predefinito();
-    return normalizzaColonnePreventivi(
-      JSON.parse(raw) as { ordine?: string[]; nascoste?: string[] },
-    );
-  } catch {
-    return predefinito();
-  }
+  return normalizzaStatoColonne(COLONNE_PREVENTIVI, salvato, {
+    nascondiNuoveOpzionali: true,
+    deduplicaNascoste: true,
+  });
 }
 
 export function useColonnePreventivi() {
-  const [stato, setStato] = useState<StatoColonnePreventivi>(carica);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE, JSON.stringify(stato));
-  }, [stato]);
-
-  const nascoste = useMemo(() => new Set(stato.nascoste), [stato.nascoste]);
-  const tutte = useMemo(
-    () =>
-      stato.ordine.map((key) => ({
-        def: DEFINIZIONI.get(key)!,
-        visibile: !nascoste.has(key),
-      })),
-    [nascoste, stato.ordine],
-  );
+  const colonne = useColonneConfigurabili(COLONNE_PREVENTIVI, {
+    storage: STORAGE,
+    storagePrecedenti: [STORAGE_PRECEDENTE],
+    normalizza: normalizzaColonnePreventivi,
+    validaChiavi: true,
+    onReset: resetColonnePreventivi,
+  });
   const visibili = useMemo(
-    () => stato.ordine.filter((key) => !nascoste.has(key)),
-    [nascoste, stato.ordine],
+    () => colonne.visibili.map((colonna) => colonna.key),
+    [colonne.visibili],
   );
-
-  const riordina = useCallback((keys: string[]) => {
-    setStato((corrente) => ({
-      ...corrente,
-      ordine: keys.filter(
-        (key): key is ChiaveColonnaPreventivi => DEFINIZIONI.has(key as ChiaveColonnaPreventivi),
-      ),
-    }));
-  }, []);
-
-  const toggle = useCallback((key: string) => {
-    if (!DEFINIZIONI.has(key as ChiaveColonnaPreventivi)) return;
-    setStato((corrente) => {
-      const nascoste = new Set(corrente.nascoste);
-      const chiave = key as ChiaveColonnaPreventivi;
-      if (nascoste.has(chiave)) nascoste.delete(chiave);
-      else nascoste.add(chiave);
-      return { ...corrente, nascoste: [...nascoste] };
-    });
-  }, []);
-
-  const reset = useCallback(() => {
-    setStato(predefinito());
-    resetLarghezzeTabella(STORE_LARGHEZZE_PREVENTIVI);
-  }, []);
-
   return {
+    ...colonne,
     visibili,
-    tutte,
-    ordineKeys: stato.ordine,
-    riordina,
-    toggle,
-    reset,
   };
+}
+
+function resetColonnePreventivi(): void {
+  resetLarghezzeTabella(STORE_LARGHEZZE_PREVENTIVI);
 }

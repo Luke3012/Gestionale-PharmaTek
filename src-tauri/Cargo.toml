@@ -25,8 +25,6 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
-# Balloon di sistema dalla tray per le notifiche nuove in background (FASE 6D).
-tauri-plugin-notification = "2"
 # Riproduzione nativa del suono di notifica anche a finestra nascosta/non in primo
 # piano (FASE 6D): WebView2 congela l'audio JS in background → suona il Rust. Solo
 # il decoder WAV (i suoni bundlati sono .wav) per non tirarsi dietro symphonia/mp3.
@@ -46,7 +44,9 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_SystemInformation",
+  "Win32_System_Threading",
   "Win32_System_Variant",
+  "Win32_Storage_Packaging_Appx",
   "Win32_UI_Accessibility",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",

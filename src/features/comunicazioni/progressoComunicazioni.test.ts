@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Comunicazione, StatoComunicazione } from "../../lib/tauri";
-import { riepilogaProgressoComunicazioni } from "./progressoComunicazioni";
+import {
+  contaMessaggiLogici,
+  riepilogaProgressoComunicazioni,
+} from "./progressoComunicazioni";
 
 const comunicazione = (stato: StatoComunicazione): Comunicazione =>
   ({ id: crypto.randomUUID(), stato } as Comunicazione);
@@ -27,5 +30,36 @@ describe("progresso notifiche comunicazioni", () => {
       inviate: 1,
       fallite: 1,
     });
+  });
+
+  it("considera e-mail e WhatsApp dello stesso destinatario un solo messaggio", () => {
+    const stessoCliente = {
+      destinatarioEntita: "cliente",
+      destinatarioId: "cliente-1",
+      corpo: "Testo uguale",
+    };
+    expect(
+      contaMessaggiLogici([
+        { ...comunicazione("invio_azionato"), ...stessoCliente, canale: "email" },
+        { ...comunicazione("invio_azionato"), ...stessoCliente, canale: "whatsapp" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("conta separatamente i destinatari di una vera campagna", () => {
+    expect(
+      contaMessaggiLogici([
+        {
+          ...comunicazione("invio_azionato"),
+          destinatarioEntita: "cliente",
+          destinatarioId: "cliente-1",
+        },
+        {
+          ...comunicazione("invio_azionato"),
+          destinatarioEntita: "cliente",
+          destinatarioId: "cliente-2",
+        },
+      ]),
+    ).toBe(2);
   });
 });

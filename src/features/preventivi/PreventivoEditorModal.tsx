@@ -23,9 +23,9 @@ import {
   IconSend,
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { setConToggle } from "../../lib/set";
 import {
   api,
-  type ConfigurazioneDocumenti,
   type Preventivo,
   type PreventivoRigaSalvaInput,
   type Pagamento,
@@ -37,9 +37,7 @@ import { ProdottiOrdinePanel } from "../giornaliero/ProdottiOrdinePanel";
 import {
   azzeraRigaForm,
   mergeRigheOrdineRealtime,
-  nuovaRiga,
   totaleRigheForm,
-  type RigaForm,
 } from "../giornaliero/righeOrdine";
 import { SelettoreCategoriaNuovoOrdine } from "../giornaliero/categoriaOrdine";
 import {
@@ -80,13 +78,25 @@ import {
   offsetSpedizione,
 } from "../contabilita/rateizzazione";
 import { AnagraficaEditorModal } from "../anagrafiche/AnagraficaEditorModal";
-import { REGISTRI } from "../anagrafiche/registri";
+import { REGISTRO_CLIENTE } from "../anagrafiche/registri";
 import {
   accontoSuggeritoOrdine,
   preferenzeAccontoProdottiDaRecord,
 } from "../giornaliero/preferenzeEconomicheOrdine";
 import { oggiIso } from "../../lib/date";
-import type { BozzaPreventivoDaZero } from "./bozzaPreventivo";
+import { preventivoDaBozza, type BozzaPreventivoDaZero } from "./bozzaPreventivo";
+import {
+  applicaPatchPagamentoVirtuale,
+  campiContoPagamentoVirtuale,
+  giorniTraScadenze,
+  rigaVuotaPreventivo as rigaVuota,
+  righeDaPreventivo,
+  snapshotPreventivoEditor as snapshot,
+  testataDaPreventivo,
+  type PatchPagamentoVirtuale,
+  type RigaDraftPreventivo as RigaDraft,
+  type TestataDraftPreventivo as TestataDraft,
+} from "./preventivoEditorModel";
 import { avviaInvioRapidoPreventivo } from "./invioRapidoPreventivo";
 
 const EVENTI_PREVENTIVO_APERTO = [
@@ -103,201 +113,9 @@ const EVENTI_RIFERIMENTI_PREVENTIVO = [
   "prodotto_produzione:salvato",
   "conto:salvato",
 ] as const;
-const REGISTRO_CLIENTE = REGISTRI.find(
-  (registro) => registro.entity === "cliente",
-)!;
-
-type RigaDraft = RigaForm;
-
-interface PatchPagamentoVirtuale {
-  contoId?: string;
-  scadenza?: string;
-  scadDaSpedizione?: boolean;
-}
-
 interface PianoRateVirtuale {
   modalita: "sostituisci" | "aggiungi";
   righe: Pagamento[];
-}
-
-interface TestataDraft extends Record<string, unknown> {
-  validita: number;
-  condizioni: string;
-  introduzione: string;
-  note: string;
-  scontoPercentuale: number;
-  acconto: number;
-  linea: string;
-}
-
-function testataDaPreventivo(preventivo: Preventivo): TestataDraft {
-  return {
-    validita: preventivo.validitaGiorni,
-    condizioni: preventivo.condizioniPagamento,
-    introduzione: preventivo.introduzione,
-    note: preventivo.note,
-    scontoPercentuale: preventivo.scontoPercentuale,
-    acconto: preventivo.acconto,
-    linea: preventivo.linee[0] || "Immunoterapia",
-  };
-}
-
-function rigaVuota(linea = "Immunoterapia"): RigaDraft {
-  return nuovaRiga(linea === "Diagnostica");
-}
-
-function righeDaPreventivo(preventivo: Preventivo): RigaDraft[] {
-  return preventivo.righe.length
-    ? preventivo.righe.map((riga) => ({
-        key: riga.id,
-        id: riga.id,
-        revision: riga.revision,
-        prodottoId: riga.prodottoId,
-        prodottoNome: riga.prodottoNome,
-        qta: riga.qta,
-        prezzo: riga.prezzo / 100,
-        paziente: riga.paziente,
-        tipoTest: riga.tipoTest,
-        ml: riga.ml,
-        codice: riga.codice,
-        formulazione: riga.formulazione,
-        posologia: riga.posologia,
-        numero: riga.numero,
-        allergeni: riga.allergeni,
-      }))
-    : [rigaVuota(preventivo.linee[0])];
-}
-
-function testoRecord(record: RecordDto | undefined, campo: string): string {
-  return String(record?.data[campo] ?? "");
-}
-
-/** Snapshot esclusivamente locale usato per riutilizzare l'editor completo
- *  prima che esistano davvero ordine e preventivo. */
-function preventivoDaBozza(
-  bozza: BozzaPreventivoDaZero,
-  configurazione: ConfigurazioneDocumenti,
-  clienti: RecordDto[],
-  medici: RecordDto[],
-  agenti: RecordDto[],
-): Preventivo {
-  const cliente = clienti.find((record) => record.id === bozza.clienteId);
-  const medico = medici.find((record) => record.id === bozza.medicoId);
-  const agente = agenti.find((record) => record.id === bozza.agenteId);
-  const destinatario = cliente ?? medico;
-  const nomeDestinatario = testoRecord(destinatario, "nome");
-  const indirizzo = testoRecord(destinatario, "indirizzo");
-  const citta = testoRecord(destinatario, "citta");
-  const cap = testoRecord(destinatario, "cap");
-  const prov = testoRecord(destinatario, "prov");
-  const codiceFiscale = testoRecord(destinatario, "cf");
-  const telefono = testoRecord(destinatario, "telefono");
-  const email = testoRecord(destinatario, "email");
-  const totale = totaleRigheForm(bozza.righe);
-
-  return {
-    id: "",
-    revision: "",
-    esiste: false,
-    ordineId: "",
-    ordineRevision: "",
-    ordineNumero: "",
-    ordineData: bozza.data || oggiIso(),
-    creatoMs: 0,
-    ordineStato: "Nuovo",
-    linee: [bozza.linea],
-    clienteId: bozza.clienteId,
-    clienteNome: testoRecord(cliente, "nome"),
-    clienteIndirizzo: testoRecord(cliente, "indirizzo"),
-    clienteCitta: testoRecord(cliente, "citta"),
-    clienteCap: testoRecord(cliente, "cap"),
-    clienteProv: testoRecord(cliente, "prov"),
-    spedizioneNome: nomeDestinatario,
-    spedizioneIndirizzo: indirizzo,
-    spedizioneCitta: citta,
-    spedizioneCap: cap,
-    spedizioneProv: prov,
-    spedizioneEmail: email,
-    spedizioneTelefono: telefono,
-    spedizioneNote: testoRecord(destinatario, "note_spedizione"),
-    spedizioneCodiceFiscale: codiceFiscale,
-    fatturazioneNome: nomeDestinatario,
-    fatturazioneIndirizzo: indirizzo,
-    fatturazioneCitta: citta,
-    fatturazioneCap: cap,
-    fatturazioneProv: prov,
-    fatturazionePiva: testoRecord(destinatario, "piva"),
-    fatturazioneCodiceFiscale: codiceFiscale,
-    medicoId: bozza.medicoId,
-    medicoNome: testoRecord(medico, "nome"),
-    agenteId: bozza.agenteId,
-    agenteNome: testoRecord(agente, "nome"),
-    email,
-    telefono,
-    numeroPreventivo: "",
-    validitaGiorni: configurazione.validitaDefaultGiorni,
-    condizioniPagamento: "",
-    introduzione: "Come da accordi, riportiamo di seguito la nostra proposta.",
-    note: bozza.note,
-    scontoPercentuale: 0,
-    acconto: 0,
-    totale,
-    fingerprintCorrente: "",
-    ultimaModificaMs: 0,
-    ultimaModificaUtente: "",
-    ultimaModificaDispositivo: "",
-    ultimoInvioMs: 0,
-    ultimoInvioCanale: "",
-    ultimoInvioFingerprint: "",
-    ultimoInvioComunicazioneId: "",
-    ultimoSollecitoMs: 0,
-    indicazioneInvio: "mai_inviato",
-    versioneModello: configurazione.versioneModello,
-    righe: bozza.righe.map((riga) => ({
-      id: riga.key,
-      revision: "",
-      prodottoId: riga.prodottoId,
-      prodottoNome: riga.prodottoNome,
-      categoria: bozza.linea,
-      qta: riga.qta,
-      prezzo:
-        riga.prezzo === "" ? 0 : Math.round(Number(riga.prezzo) * 100),
-      paziente: riga.paziente,
-      tipoTest: riga.tipoTest,
-      ml: riga.ml,
-      codice: riga.codice,
-      formulazione: riga.formulazione,
-      posologia: riga.posologia,
-      numero: riga.numero,
-      allergeni: riga.allergeni,
-    })),
-    pagamenti: [],
-    utilizziProdotti: [],
-  };
-}
-
-function snapshot(
-  preventivo: Preventivo,
-  righe: RigaDraft[],
-  validita: number,
-  condizioni: string,
-  introduzione: string,
-  note: string,
-  scontoPercentuale: number,
-  acconto: number,
-  linea: string,
-) {
-  return JSON.stringify({
-    revision: preventivo.revision,
-    righe: righe.map(({ key: _key, ...riga }) => riga),
-    validita,
-    condizioni,
-    introduzione,
-    note,
-    scontoPercentuale,
-    acconto,
-    linea,
-  });
 }
 
 export function PreventivoEditorModal({
@@ -506,16 +324,7 @@ export function PreventivoEditorModal({
                 note: "",
                 scadDaSpedizione: true,
                 scadRelGiorni:
-                  indice === 0
-                    ? 0
-                    : Math.max(
-                        0,
-                        Math.round(
-                          (new Date(rata.scadenza).getTime() -
-                            new Date(inizio).getTime()) /
-                            86_400_000,
-                        ),
-                      ),
+                  indice === 0 ? 0 : giorniTraScadenze(inizio, rata.scadenza),
               }),
             ),
           });
@@ -847,15 +656,7 @@ export function PreventivoEditorModal({
         scadenza:
           patch?.scadenza ??
           (tipo === "acconto" ? preventivo?.ordineData || "" : ""),
-        contoId: conto?.id || "",
-        contoNome: String(conto?.data.nome || ""),
-        contoTipo: String(conto?.data.tipo || ""),
-        contoIban: String(conto?.data.iban || ""),
-        data: "",
-        verificato: false,
-        distintaId: "",
-        contoAccreditoNome: "",
-        note: "",
+        ...campiContoPagamentoVirtuale(conto?.id || "", conto),
         scadDaSpedizione:
           patch?.scadDaSpedizione ?? (tipo === "saldo"),
         scadRelGiorni: 0,
@@ -973,6 +774,8 @@ export function PreventivoEditorModal({
       ),
     [linea, prodotti],
   );
+  const prodottoDellaLinea = (nome: string) =>
+    prodottiDellaLineaByNome.get(nome.trim().toLocaleLowerCase("it"));
 
   function patchRiga(key: string, patch: Partial<RigaDraft>) {
     setRighe((correnti) =>
@@ -981,7 +784,7 @@ export function PreventivoEditorModal({
   }
 
   function digitaProdotto(key: string, nome: string) {
-    const record = prodottiDellaLineaByNome.get(nome.trim().toLocaleLowerCase("it"));
+    const record = prodottoDellaLinea(nome);
     const corrente = righe.find((riga) => riga.key === key);
     patchRiga(key, {
       prodottoNome: nome,
@@ -1060,7 +863,7 @@ export function PreventivoEditorModal({
   }
 
   function scegliProdotto(key: string, nome: string) {
-    const record = prodottiDellaLineaByNome.get(nome.trim().toLocaleLowerCase("it"));
+    const record = prodottoDellaLinea(nome);
     const corrente = righe.find((riga) => riga.key === key);
     const cambiato = !!record && corrente?.prodottoId !== record.id;
     patchRiga(key, {
@@ -1069,7 +872,7 @@ export function PreventivoEditorModal({
       prezzo: corrente?.prezzo ?? "",
       codice:
         diagnostica && record
-          ? corrente?.codice || String(record.data.codice_fornitore ?? "")
+          ? corrente?.codice || String(record.data.codice_laboratorio ?? "")
           : corrente?.codice ?? "",
     });
     if (!record) return;
@@ -1081,12 +884,7 @@ export function PreventivoEditorModal({
   }
 
   function toggleDatiProduzione(key: string) {
-    setDatiProduzioneAperti((correnti) => {
-      const prossimi = new Set(correnti);
-      if (prossimi.has(key)) prossimi.delete(key);
-      else prossimi.add(key);
-      return prossimi;
-    });
+    setDatiProduzioneAperti((correnti) => setConToggle(correnti, key));
   }
 
   function cambiaLinea(prossima: string) {
@@ -1114,43 +912,15 @@ export function PreventivoEditorModal({
         if (!corrente) return corrente;
         return {
           ...corrente,
-          righe: corrente.righe.map((pagamento) => {
-            if (pagamento.id !== key) return pagamento;
-            const conto = patch.contoId
-              ? contiById.get(patch.contoId)
-              : undefined;
-            return {
-              ...pagamento,
-              ...patch,
-              ...(conto
-                ? {
-                    contoNome: String(conto.data.nome || ""),
-                    contoTipo: String(conto.data.tipo || ""),
-                    contoIban: String(conto.data.iban || ""),
-                  }
-                : {}),
-            };
-          }),
+          righe: corrente.righe.map((pagamento) =>
+            applicaPatchPagamentoVirtuale(pagamento, key, patch, contiById)
+          ),
         };
       });
       setPagamentiVirtualiAggiunti((correnti) =>
-        correnti.map((pagamento) => {
-          if (pagamento.id !== key) return pagamento;
-          const conto = patch.contoId
-            ? contiById.get(patch.contoId)
-            : undefined;
-          return {
-            ...pagamento,
-            ...patch,
-            ...(conto
-              ? {
-                  contoNome: String(conto.data.nome || ""),
-                  contoTipo: String(conto.data.tipo || ""),
-                  contoIban: String(conto.data.iban || ""),
-                }
-              : {}),
-          };
-        }),
+        correnti.map((pagamento) =>
+          applicaPatchPagamentoVirtuale(pagamento, key, patch, contiById)
+        ),
       );
       return;
     }
@@ -1207,26 +977,12 @@ export function PreventivoEditorModal({
       importo: rata.importo,
       saldato: false,
       scadenza: rata.scadenza,
-      contoId,
-      contoNome: String(conto?.data.nome || ""),
-      contoTipo: String(conto?.data.tipo || ""),
-      contoIban: String(conto?.data.iban || ""),
-      data: "",
-      verificato: false,
-      distintaId: "",
-      contoAccreditoNome: "",
-      note: "",
+      ...campiContoPagamentoVirtuale(contoId, conto),
       scadDaSpedizione: daSpedizione,
-      scadRelGiorni: indice === 0
-        ? 0
-        : Math.max(
-            0,
-            Math.round(
-              (new Date(rata.scadenza).getTime() -
-                new Date(rate[0]?.scadenza || rata.scadenza).getTime()) /
-                86_400_000,
-            ),
-          ),
+      scadRelGiorni:
+        indice === 0
+          ? 0
+          : giorniTraScadenze(rate[0]?.scadenza || rata.scadenza, rata.scadenza),
     }));
     setPianoRateVirtuale((corrente) => ({
       modalita:

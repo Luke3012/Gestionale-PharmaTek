@@ -198,10 +198,12 @@ pub(super) fn ensure_parametri_globali_default(_engine: &Engine) -> AppResult<()
     Ok(())
 }
 
-/// Catalogo pubblico: nomi e categorie, senza valori economici preconfigurati.
+/// Prodotti di partenza: gli allergeni/ceppi dell'immunoterapia (il prezzo vero è
+/// per-medico → base di riserva 270€) e i tre Keriba a 60€/confezione. Id fissi.
 pub(super) fn ensure_prodotti_default(engine: &Engine) -> AppResult<()> {
     // Prodotti immunoterapia = **tipo di preparazione × n° fiale** (è ciò che ha un prezzo e si
-    // manda in produzione). I prezzi restano a zero finché l'utente non li configura.
+    // manda in produzione). Le tre famiglie e i prezzi base sono definiti dal catalogo dimostrativo.
+    // + storico). Prezzi in centesimi, editabili nel listino. (nome, prezzo_cent)
     const IMMUNO: &[(&str, i64)] = &[
         ("Sublinguale 2 fiale", 0),
         ("Sublinguale 3 fiale", 0),
@@ -328,7 +330,10 @@ pub(super) fn ensure_prodotti_default(engine: &Engine) -> AppResult<()> {
     Ok(())
 }
 
-/// Catalogo tecnico dimostrativo: nomi e categoria, senza codici o prezzi.
+/// Catalogo **Diagnostica** standard (estratti per prick test / intradermo): è il listino
+/// Laboratorio ufficiale, con **codice** (es. `A-004`) e nome dell'allergene/estratto. Seminato
+/// come `prodotto` categoria «Diagnostica» (id fisso sul codice), col `codice_laboratorio` salvato
+/// per l'export. Prezzo base 15€/fiala come riserva (editabile). Fonte: catalogo dimostrativo.
 pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {
     const DIAG: &[&str] = &[
         "DPF",
@@ -388,7 +393,7 @@ pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {
             &[
                 ("nome", json!(nome)),
                 ("categoria", json!("Diagnostica")),
-                ("codice_fornitore", json!("")),
+                ("codice_laboratorio", json!("")),
                 ("prezzo_base_default", json!(0)),
                 ("builtin", json!(true)),
             ],

@@ -25,7 +25,6 @@ import {
   Stack,
   TagsInput,
   Text,
-  TextInput,
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
@@ -37,7 +36,6 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconClipboardList,
-  IconDotsVertical,
   IconFileExport,
   IconFlask2,
   IconHammer,
@@ -58,9 +56,13 @@ import { Pagina, usePaginaPronta } from "../../pages/Pagina";
 import { FiltriPopover } from "../../ui/FiltriPopover";
 import { mostraFlourish } from "../../ui/monetina";
 import { DebouncedInput } from "../../ui/DebouncedInput";
+import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
+import { MenuAzioniRiga } from "../../ui/MenuAzioniRiga";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
 import { EsportaTabella, type ColonnaExport } from "../../ui/esporta/EsportaTabella";
 import { categoriaDef } from "../anagrafiche/categorie";
 import { centsToEurStr } from "../../lib/money";
+import { setConToggle } from "../../lib/set";
 import { statoDef } from "../giornaliero/stati";
 import { OrdineEditor, type EditorTarget } from "../giornaliero/OrdineEditor";
 import { apriFinestraOrdine } from "../giornaliero/apriFinestra";
@@ -74,11 +76,12 @@ import {
   suggerimentiProduzione,
   type Suggerimenti,
 } from "./datiProduzione";
+import { gruppiRigheIncomplete } from "./gruppiProduzione";
 import { CompilaProduzioneModal, type CompilaTarget } from "./CompilaProduzioneModal";
 import { InProduzioneFlourish } from "./InProduzioneFlourish";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
-import { formattaDataFileItaliana, oggiIso as oggi } from "../../lib/date";
+import { estremiPeriodoIso, formattaDataFileItaliana, formattaDataSeparataItaliana as dataIt, oggiIso as oggi } from "../../lib/date";
 import {
   DataConsegnaPrevistaModal,
   type DataConsegnaTarget,
@@ -207,29 +210,6 @@ type Periodo = "tutto" | "mese" | "scorso" | "custom";
 const TAB_STORAGE = "pt.produzione.tab";
 
 
-function dataIt(iso: string): string {
-  if (!iso) return "—";
-  const [y, m, d] = iso.split("-");
-  return y && m && d ? `${d}/${m}/${y}` : iso;
-}
-
-const pad = (n: number) => String(n).padStart(2, "0");
-const isoPrimo = (y: number, m0: number) => `${y}-${pad(m0 + 1)}-01`;
-const isoUltimo = (y: number, m0: number) => `${y}-${pad(m0 + 1)}-${pad(new Date(y, m0 + 1, 0).getDate())}`;
-
-/** Estremi [da, a] (inclusi, ISO) del periodo scelto, o null per "tutto". */
-function periodoBounds(periodo: Periodo, da: string, a: string): [string, string] | null {
-  if (periodo === "tutto") return null;
-  if (periodo === "custom") return [da || "0000-01-01", a || "9999-12-31"];
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  if (periodo === "mese") return [isoPrimo(y, m), isoUltimo(y, m)];
-  const py = m === 0 ? y - 1 : y;
-  const pm = m === 0 ? 11 : m - 1;
-  return [isoPrimo(py, pm), isoUltimo(py, pm)];
-}
-
 /** Una voce del resoconto (etichetta + valore), compatta. */
 function Info({ label, value }: { label: string; value: string }) {
   return (
@@ -241,6 +221,36 @@ function Info({ label, value }: { label: string; value: string }) {
         {value || "—"}
       </Text>
     </Box>
+  );
+}
+
+function BarraSelezione({
+  etichetta,
+  checked,
+  indeterminate,
+  onToggle,
+  selezionati,
+  onDeseleziona,
+  children,
+}: {
+  etichetta: string;
+  checked: boolean;
+  indeterminate: boolean;
+  onToggle: () => void;
+  selezionati: number;
+  onDeseleziona: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Paper withBorder p="xs" radius="md" bg="var(--mantine-color-default-hover)">
+      <Group justify="space-between" wrap="nowrap">
+        <Group gap="md" wrap="nowrap">
+          <Checkbox label={etichetta} checked={checked} indeterminate={indeterminate} onChange={onToggle} />
+          {selezionati > 0 && <Button size="compact-xs" variant="subtle" color="gray" onClick={onDeseleziona}>Deseleziona ({selezionati})</Button>}
+        </Group>
+        {children}
+      </Group>
+    </Paper>
   );
 }
 
@@ -266,6 +276,28 @@ function AccontoBadge({ o }: { o: OrdineDto }) {
     <Badge color="gray" variant="light">
       Nessun acconto
     </Badge>
+  );
+}
+
+function IdentitaOrdineProduzione({
+  principale,
+  colore,
+  etichetta,
+  secondario,
+  prefissoSecondario,
+}: {
+  principale: string;
+  colore: string;
+  etichetta: string;
+  secondario: string;
+  prefissoSecondario: string;
+}) {
+  return (
+    <>
+      <Text fw={600} truncate>{principale}</Text>
+      <Badge color={colore} variant="light" size="sm" style={{ flexShrink: 0 }}>{etichetta}</Badge>
+      {secondario && <Text size="sm" c="dimmed" truncate>{prefissoSecondario}{secondario}</Text>}
+    </>
   );
 }
 
@@ -394,7 +426,7 @@ function nomeFileLotto(prefisso: string, g: GruppoLotto, n: number, unita: strin
 // ---- Export per linea (FASE 5C/5D) ----------------------------------------------------
 // L'export riusa il **modale globale** `EsportaTabella` (anteprima + scelta path/orientamento):
 // le colonne sotto descrivono l'anteprima, mentre il file vero lo scrive il backend dedicato
-// (`fornitoreExport`/`diagnosticaExport`) via `salvaCustom`, così resta il formato Laboratorio (col C
+// (`laboratorioExport`/`diagnosticaExport`) via `salvaCustom`, così resta il formato Laboratorio (col C
 // sommata + n° produzione persistito) e quello Diagnostica. La «linea» è l'analogo del corriere
 // delle Spedizioni: lotto a una linea → bottone diretto; lotto misto → menu con le due voci.
 
@@ -424,7 +456,7 @@ interface RigaDiagPreview {
   valore: number | "";
 }
 
-const COL_FORNITORE: ColonnaExport<RigaLaboratorioPreview>[] = [
+const COL_LABORATORIO: ColonnaExport<RigaLaboratorioPreview>[] = [
   { key: "acconto", label: "Acconto", tipo: "euro", totale: true, valore: (r) => r.acconto },
   { key: "numero", label: "N° prod.", tipo: "numero", valore: (r) => r.numero },
   { key: "dataInvio", label: "Data invio", tipo: "data", valore: (r) => r.dataInvio },
@@ -640,7 +672,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
             r.data.numero,
             Array.isArray(r.data.allergeni) ? (r.data.allergeni as string[]).join(" ") : "",
             r.data.tipo_test,
-            r.data.codice_fornitore,
+            r.data.codice_laboratorio,
           ].join(" ")
         ),
       ]
@@ -756,7 +788,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   }, [codaGruppiData]);
 
   // ---- «In lavorazione»: raggruppa per lotto di invio, poi filtra per periodo ----
-  const bounds = periodoBounds(periodo, da, a);
+  const bounds = estremiPeriodoIso(periodo, da, a);
   const gruppi = useMemo(() => {
     if (vista !== "in_lavorazione") return [] as GruppoLotto[];
     const map = new Map<string, GruppoLotto>();
@@ -958,11 +990,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   const tuttiLottiSel = gruppi.length > 0 && selLottiVis.length === gruppi.length;
 
   function toggleSelLotto(lotto: string) {
-    setSelLotti((s) => {
-      const n = new Set(s);
-      n.has(lotto) ? n.delete(lotto) : n.add(lotto);
-      return n;
-    });
+    setSelLotti((corrente) => setConToggle(corrente, lotto));
   }
 
   function toggleTuttiLotti() {
@@ -970,19 +998,11 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   }
 
   function toggleEspandi(id: string) {
-    setEspansi((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
+    setEspansi((corrente) => setConToggle(corrente, id));
   }
 
   function toggleEspandiLotto(lotto: string) {
-    setLottiEspansi((s) => {
-      const n = new Set(s);
-      n.has(lotto) ? n.delete(lotto) : n.add(lotto);
-      return n;
-    });
+    setLottiEspansi((corrente) => setConToggle(corrente, lotto));
   }
 
   async function apri(
@@ -1275,26 +1295,20 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
       .filter((o): o is OrdineDto => !!o && isDiagnostica(o));
 
     // Immuno: dati produzione obbligatori SOLO sulle righe selezionate e incomplete.
-    const gruppi = immunoOrds
-      .map((o) => ({
-        ordine: o,
-        righe: (perOrd.get(o.id) ?? []).filter(
-          (r) => !rigaProduzioneCompleta(campiProduzione(r.data))
-        ),
-      }))
-      .filter((g) => g.righe.length > 0);
+    const gruppi = gruppiRigheIncomplete(
+      immunoOrds,
+      perOrd,
+      (riga) => !rigaProduzioneCompleta(campiProduzione(riga.data))
+    );
 
     // Acconto immuno: avviso soft. Diagnostica senza ML/quantità: compilazione facoltativa
     // nello stesso modale dei dati Immunoterapia.
     const senza = immunoOrds.filter((o) => !o.accontoIncassato);
-    const gruppiDiagnostica = diagOrds
-      .map((o) => ({
-        ordine: o,
-        righe: (perOrd.get(o.id) ?? []).filter((r) =>
-          diagnosticaIncompleta(campiDiagnostica(r.data))
-        ),
-      }))
-      .filter((g) => g.righe.length > 0);
+    const gruppiDiagnostica = gruppiRigheIncomplete(
+      diagOrds,
+      perOrd,
+      (riga) => diagnosticaIncompleta(campiDiagnostica(riga.data))
+    );
     const invia = () => inviaRighe(rigaIds);
 
     // Dati Immunoterapia obbligatori o Diagnostica facoltativi incompleti → unico modale di
@@ -1588,6 +1602,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   function renderCard(o: OrdineDto, contesto: "coda" | "lotto", rows: RecordDto[], lotto?: GruppoLotto) {
     const aperto = espansi.has(o.id);
     const generico = contesto === "coda" && rows.length === 0;
+    const diagnostica = isDiagnostica(o);
     const def = statoDef(o.stato);
     const tutteSel = contesto === "coda" && rows.length > 0 && rows.every((r) => selezione.has(r.id));
     const alcuneSel = contesto === "coda" && rows.some((r) => selezione.has(r.id));
@@ -1609,10 +1624,8 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         radius="md"
         bg={contesto === "lotto" && !evidenziata ? "transparent" : undefined}
         onContextMenu={(event) => {
-          event.preventDefault();
           setContextMenu({
-            x: event.clientX,
-            y: event.clientY,
+            ...puntoDaEventoContextMenu(event),
             order: o,
             contesto,
             rows,
@@ -1658,7 +1671,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
           {(() => {
             // Icona-categoria a colpo d'occhio: Immunoterapia (vaccino/blu) vs Diagnostica
             // (provetta/teal). Sostituisce il vecchio badge testuale «Diagnostica».
-            const cd = categoriaDef(isDiagnostica(o) ? "Diagnostica" : "Immunoterapia");
+            const cd = categoriaDef(diagnostica ? "Diagnostica" : "Immunoterapia");
             return (
               <Tooltip label={cd.label} withArrow>
                 <ThemeIcon variant="light" color={cd.color} size="lg" radius="md">
@@ -1678,50 +1691,20 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                     Prodotto mancante
                   </Badge>
                 )}
-                {isDiagnostica(o) ? (
-                  <>
-                    {/* Diagnostica: MEDICO in evidenza, poi AGENTE. */}
-                    <Text fw={600} truncate>
-                      {o.medicoNome || o.clienteNome || "—"}
-                    </Text>
-                    <Badge color={def.color} variant="light" size="sm" style={{ flexShrink: 0 }}>
-                      {def.label}
-                    </Badge>
-                    {o.agenteNome && (
-                      <Text size="sm" c="dimmed" truncate>
-                        Ag. {o.agenteNome}
-                      </Text>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {/* Immunoterapia: PAZIENTE/i in evidenza, poi MEDICO (niente agente a prima vista). */}
-                    <Text fw={600} truncate>
-                      {pazientiDi(o) || o.clienteNome || "—"}
-                    </Text>
-                    <Badge color={def.color} variant="light" size="sm" style={{ flexShrink: 0 }}>
-                      {def.label}
-                    </Badge>
-                    {o.medicoNome && (
-                      <Text size="sm" c="dimmed" truncate>
-                        Dr. {o.medicoNome}
-                      </Text>
-                    )}
-                  </>
-                )}
+                <IdentitaOrdineProduzione
+                  principale={diagnostica ? o.medicoNome || o.clienteNome || "—" : pazientiDi(o) || o.clienteNome || "—"}
+                  colore={def.color}
+                  etichetta={def.label}
+                  secondario={diagnostica ? o.agenteNome : o.medicoNome}
+                  prefissoSecondario={diagnostica ? "Ag. " : "Dr. "}
+                />
               </Group>
               <Group gap={8} wrap="nowrap" style={{ flexShrink: 0 }}>
                 <Text size="sm" fw={600} className="tabular">
                   € {centsToEurStr(o.totale)}
                 </Text>
-                {!isDiagnostica(o) && <AccontoBadge o={o} />}
-                <Menu position="bottom-end" withArrow>
-                  <Menu.Target>
-                    <ActionIcon variant="subtle" color="gray" onClick={(e) => e.stopPropagation()}>
-                      <IconDotsVertical size={16} />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+                {!diagnostica && <AccontoBadge o={o} />}
+                <MenuAzioniRiga>
                     <Menu.Item
                       leftSection={<IconPencil size={15} />}
                       onClick={() => generico ? completaOrdineGenerico(o) : apri(o.id, o.numero)}
@@ -1744,7 +1727,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                         Segna arrivato in Italia
                       </Menu.Item>
                     )}
-                    {contesto === "lotto" && lotto && !isDiagnostica(o) && (
+                    {contesto === "lotto" && lotto && !diagnostica && (
                       <Menu.Item
                         leftSection={<IconCalendar size={15} />}
                         onClick={() => apriDataConsegnaOrdine(lotto, o, rows)}
@@ -1761,8 +1744,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                         Riporta in coda
                       </Menu.Item>
                     )}
-                  </Menu.Dropdown>
-                </Menu>
+                </MenuAzioniRiga>
               </Group>
             </Group>
           </Box>
@@ -1862,13 +1844,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                 <span className="pt-azione-adattiva-label">Arrivato in Italia</span>
               </Button>
             )}
-            <Menu position="bottom-end" withArrow>
-              <Menu.Target>
-                <ActionIcon variant="subtle" color="gray" onClick={(e) => e.stopPropagation()}>
-                  <IconDotsVertical size={16} />
-                </ActionIcon>
-              </Menu.Target>
-              <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+            <MenuAzioniRiga>
                 {righeConsegna.length > 0 && (
                   <Menu.Item leftSection={<IconCalendar size={15} />} onClick={() => apriDataConsegnaLotto(g)}>
                     Data di consegna prevista
@@ -1886,8 +1862,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                 >
                   Annulla lotto (torna in coda)
                 </Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
+            </MenuAzioniRiga>
           </Group>
         </Group>
       </Box>
@@ -1922,33 +1897,14 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         : (() => {
             const nSel = selezionateDaProdurre.length;
             return (
-              <Paper withBorder p="xs" radius="md" bg="var(--mantine-color-default-hover)">
-                <Group justify="space-between" wrap="nowrap">
-                  <Group gap="md" wrap="nowrap">
-                    <Checkbox
-                      label="Seleziona tutti"
-                      checked={tuttiSelezionati}
-                      indeterminate={selVisibili.length > 0 && !tuttiSelezionati}
-                      onChange={toggleTutti}
-                    />
-                    {nSel > 0 && (
-                      <Button size="compact-xs" variant="subtle" color="gray" onClick={() => setSelezione(new Set())}>
-                        Deseleziona ({nSel})
-                      </Button>
-                    )}
-                  </Group>
-                  <Button
-                    size="xs"
-                    color="accent"
-                    leftSection={<IconHammer size={15} />}
-                    disabled={nSel === 0}
-                    loading={salvando}
-                    onClick={mandaInProduzione}
-                  >
-                    Manda in produzione{nSel > 0 ? ` (${nSel})` : ""}
-                  </Button>
-                </Group>
-              </Paper>
+              <BarraSelezione etichetta="Seleziona tutti" checked={tuttiSelezionati}
+                indeterminate={selVisibili.length > 0 && !tuttiSelezionati} onToggle={toggleTutti}
+                selezionati={nSel} onDeseleziona={() => setSelezione(new Set())}>
+                <Button size="xs" color="accent" leftSection={<IconHammer size={15} />}
+                  disabled={nSel === 0} loading={salvando} onClick={mandaInProduzione}>
+                  Manda in produzione{nSel > 0 ? ` (${nSel})` : ""}
+                </Button>
+              </BarraSelezione>
             );
           })()
       : gruppi.length === 0
@@ -1956,34 +1912,14 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         : (() => {
             const nSel = selLottiVis.length;
             return (
-              <Paper withBorder p="xs" radius="md" bg="var(--mantine-color-default-hover)">
-                <Group justify="space-between" wrap="nowrap">
-                  <Group gap="md" wrap="nowrap">
-                    <Checkbox
-                      label="Seleziona tutti i lotti"
-                      checked={tuttiLottiSel}
-                      indeterminate={nSel > 0 && !tuttiLottiSel}
-                      onChange={toggleTuttiLotti}
-                    />
-                    {nSel > 0 && (
-                      <Button size="compact-xs" variant="subtle" color="gray" onClick={() => setSelLotti(new Set())}>
-                        Deseleziona ({nSel})
-                      </Button>
-                    )}
-                  </Group>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="grape"
-                    leftSection={<IconArrowMerge size={15} />}
-                    disabled={nSel < 2}
-                    loading={salvando}
-                    onClick={unisciLotti}
-                  >
-                    Unisci lotti{nSel >= 2 ? ` (${nSel})` : ""}
-                  </Button>
-                </Group>
-              </Paper>
+              <BarraSelezione etichetta="Seleziona tutti i lotti" checked={tuttiLottiSel}
+                indeterminate={nSel > 0 && !tuttiLottiSel} onToggle={toggleTuttiLotti}
+                selezionati={nSel} onDeseleziona={() => setSelLotti(new Set())}>
+                <Button size="xs" variant="light" color="grape" leftSection={<IconArrowMerge size={15} />}
+                  disabled={nSel < 2} loading={salvando} onClick={unisciLotti}>
+                  Unisci lotti{nSel >= 2 ? ` (${nSel})` : ""}
+                </Button>
+              </BarraSelezione>
             );
           })();
 
@@ -2121,20 +2057,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                               ]}
                             />
                             {periodo === "custom" && (
-                              <Group gap="xs" mt="xs" grow>
-                                <TextInput
-                                  type="date"
-                                  label="Dal"
-                                  value={da}
-                                  onChange={(e) => setDa(e.currentTarget.value)}
-                                />
-                                <TextInput
-                                  type="date"
-                                  label="Al"
-                                  value={a}
-                                  onChange={(e) => setA(e.currentTarget.value)}
-                                />
-                              </Group>
+                              <FiltroIntervalloDate dal={da} al={a} onDalChange={setDa} onAlChange={setA} gap="xs" mt="xs" />
                             )}
                           </Box>
                         ),
@@ -2262,25 +2185,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
       />
 
       {contextMenu && (
-        <Menu
-          opened={!!contextMenu}
-          onClose={() => setContextMenu(null)}
-          position="bottom-start"
-          offset={0}
-        >
-          <Menu.Target>
-            <div
-              style={{
-                position: "fixed",
-                left: contextMenu.x,
-                top: contextMenu.y,
-                width: 1,
-                height: 1,
-                pointerEvents: "none",
-              }}
-            />
-          </Menu.Target>
-          <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+        <ContextMenuPuntuale punto={contextMenu} onClose={() => setContextMenu(null)}>
             <Menu.Item
               leftSection={<IconPencil size={15} />}
               onClick={() => {
@@ -2339,8 +2244,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                 </Menu.Item>
               </>
             )}
-          </Menu.Dropdown>
-        </Menu>
+        </ContextMenuPuntuale>
       )}
 
       <DataConsegnaPrevistaModal
@@ -2362,15 +2266,15 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         }}
         nomeBase={esporta?.linea === "immuno" ? nomeFileLotto("Laboratorio", esporta.g, rowsLaboratorio(esporta.g, esporta.dataPrev).length, "set") : "Laboratorio"}
         foglio="Produzione"
-        titolo="PRODUZIONE FORNITORE"
+        titolo="PRODUZIONE LABORATORIO"
         titoloModale="Esporta file Laboratorio (Immunoterapia)"
-        colonne={COL_FORNITORE}
+        colonne={COL_LABORATORIO}
         righe={esporta?.linea === "immuno" ? rowsLaboratorio(esporta.g, esporta.dataPrev) : []}
         salvaCustom={async (path) => {
           if (!esporta) return;
           // Legge il seme condiviso più fresco al momento dell'export (per-PC eliminato).
           const base = await leggiBaseProduzione();
-          await api.fornitoreExport(esporta.g.lotto, path, base, esporta.dataPrev);
+          await api.laboratorioExport(esporta.g.lotto, path, base, esporta.dataPrev);
           carica();
         }}
       />

@@ -2,23 +2,18 @@
 // richiesto/effettuato. Da qui si crea un nuovo rimborso (manuale o "extra" collegato a
 // un ordine pagato in eccesso), si apre il dettaglio/modifica e si segna un rimborso come
 // effettuato. Banda totali Richiesto/Effettuato in stile Provvigioni/Crediti.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Badge,
   Box,
   Button,
   Card,
   Group,
   MultiSelect,
-  Stack,
   Text,
-  TextInput,
   ThemeIcon,
-  Tooltip,
 } from "@mantine/core";
 import { IconCircleCheck, IconPlus, IconReceiptRefund } from "@tabler/icons-react";
 import { api, type Rimborso } from "../../lib/tauri";
-import { toast } from "../../ui/toast/store";
 import { centsToEurStr } from "../../lib/money";
 import { Tabella, type DataTableColumn, type DataTableSortStatus } from "../../ui/Tabella";
 import { FiltriPopover } from "../../ui/FiltriPopover";
@@ -27,10 +22,14 @@ import { usePrefs } from "../../lib/prefs";
 import { EsportaTabella, type ColonnaExport } from "../../ui/esporta/EsportaTabella";
 import { STATI_RIMBORSO, statoRimborsoDef, origineRimborsoLabel } from "./statiRimborso";
 import { RimborsoModal, SegnaEffettuatoModal, type RimborsoModalTarget } from "./RimborsoModal";
-import { durataSwitchTabelleMs } from "../../ui/motion";
+import { VistaTabellaParallela } from "../../ui/VistaTabellaParallela";
 import { DataAdattiva } from "../../ui/DataAdattiva";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { RiepilogoLink } from "../../shell/RiepilogoLink";
+import { ordinaCopia } from "../../ui/ordinamento";
+import { BadgeStatoAdattivo } from "../../ui/BadgeStato";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
+import { StatoVuotoContabilita, useListaContabilita } from "./listaContabilita";
 
 const STATI_FILTRO = STATI_RIMBORSO.map((s) => ({ value: s.value, label: s.label }));
 const ORIGINI_FILTRO = [
@@ -44,6 +43,13 @@ const EVENTI_RICARICA = [
   "cliente:salvato",
   "conto:salvato",
 ] as const;
+const GETTER_ORDINAMENTO: Record<string, (rimborso: Rimborso) => string | number> = {
+  importo: (rimborso) => rimborso.importo,
+  ragioneSociale: (rimborso) => rimborso.ragioneSociale,
+  stato: (rimborso) => rimborso.stato,
+  dataRimborso: (rimborso) => rimborso.dataRimborso,
+  dataRichiesta: (rimborso) => rimborso.dataRichiesta,
+};
 
 /** Etichetta dell'origine per tabella/export (con n° ordine se "extra"). */
 function origineTesto(r: Rimborso): string {
@@ -64,18 +70,25 @@ const COLONNE_EXPORT: ColonnaExport<Rimborso>[] = [
   { key: "conto", label: "Conto", valore: (r) => r.contoNome, preSel: false },
 ];
 
+export interface FiltroRimborsiIniziale {
+  nonce: number;
+  stati?: string[];
+  origini?: string[];
+  dal?: string;
+  al?: string;
+}
+
 export function RimborsiView({
   apriNuovo = 0,
   filtroIniziale,
   attiva = true,
 }: {
   apriNuovo?: number;
-  filtroIniziale?: { nonce: number; stati?: string[]; origini?: string[]; dal?: string; al?: string };
+  filtroIniziale?: FiltroRimborsiIniziale;
   attiva?: boolean;
 } = {}) {
   const { anno, ridurreAnimazioni } = usePrefs();
-  const [righe, setRighe] = useState<Rimborso[]>([]);
-  const [caricamento, setCaricamento] = useState(true);
+  const { righe, caricamento, carica } = useListaContabilita(api.rimborsiLista, "Caricamento rimborsi non riuscito");
   const [statiSel, setStatiSel] = useState<string[]>([]);
   const [originiSel, setOriginiSel] = useState<string[]>([]);
   const [dal, setDal] = useState("");
@@ -87,21 +100,6 @@ export function RimborsiView({
     direction: "desc",
   });
   usePaginaPronta(caricamento);
-
-  const carica = useCallback(async (silente = false) => {
-    if (!silente) setCaricamento(true);
-    try {
-      setRighe(await api.rimborsiLista());
-    } catch (e) {
-      toast.error(`Caricamento rimborsi non riuscito: ${e}`);
-    } finally {
-      setCaricamento(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    carica(false);
-  }, [carica]);
   useRicaricaSuEventi(EVENTI_RICARICA, () => carica(true), 180);
 
   // Comando «Nuovo rimborso» dalla ricerca globale → apre la modale di creazione.
@@ -137,31 +135,8 @@ export function RimborsiView({
   );
 
   const ordinate = useMemo(() => {
-    const get = (r: Rimborso): string | number => {
-      switch (sort.columnAccessor) {
-        case "importo":
-          return r.importo;
-        case "ragioneSociale":
-          return r.ragioneSociale;
-        case "stato":
-          return r.stato;
-        case "dataRimborso":
-          return r.dataRimborso;
-        default:
-          return r.dataRichiesta;
-      }
-    };
-    const arr = [...filtrate];
-    arr.sort((a, b) => {
-      const va = get(a);
-      const vb = get(b);
-      const cmp =
-        typeof va === "number" && typeof vb === "number"
-          ? va - vb
-          : String(va).localeCompare(String(vb), "it", { numeric: true });
-      return sort.direction === "desc" ? -cmp : cmp;
-    });
-    return arr;
+    const get = GETTER_ORDINAMENTO[sort.columnAccessor] ?? GETTER_ORDINAMENTO.dataRichiesta;
+    return ordinaCopia(filtrate, get, sort.direction);
   }, [filtrate, sort]);
 
 // Impaginazione: sostituita da Cluster Virtualization in Tabella.tsx
@@ -226,21 +201,7 @@ export function RimborsiView({
         resizable: true,
         render: (r) => {
           const d = statoRimborsoDef(r.stato);
-          return (
-            <Tooltip label={d.label} withArrow>
-              <Box className="pt-badge-adattivo">
-                <Badge
-                  size="sm"
-                  variant="light"
-                  color={d.color}
-                  leftSection={<d.Ico size={12} />}
-                  aria-label={d.label}
-                >
-                  <span className="pt-badge-adattivo-label">{d.label}</span>
-                </Badge>
-              </Box>
-            </Tooltip>
-          );
+          return <BadgeStatoAdattivo definizione={d} />;
         },
       },
       {
@@ -291,15 +252,12 @@ export function RimborsiView({
           caricamento ? (
             <Box />
           ) : (
-            <Stack align="center" gap="xs" maw={460} ta="center" py={40}>
-              <ThemeIcon size={48} radius="xl" variant="light" color="gray">
-                <IconReceiptRefund size={24} />
-              </ThemeIcon>
+            <StatoVuotoContabilita icona={<IconReceiptRefund size={24} />}>
               <Text c="dimmed" size="sm">
                 Nessun rimborso. Crea un rimborso manuale o, da un ordine pagato in eccesso, usa
                 «Rimborsa extra» per generarlo con importo e dati già compilati.
               </Text>
-            </Stack>
+            </StatoVuotoContabilita>
           )
         }
       />
@@ -307,17 +265,10 @@ export function RimborsiView({
     [caricamento, columns, ordinate, sort]
   );
 
-  const nascosta = !attiva || (caricamento && righe.length === 0);
-
   return (
-    <Stack
-      gap="md"
-      style={{
-        height: "100%",
-        opacity: nascosta ? 0 : 1,
-        visibility: nascosta ? "hidden" : "visible",
-        transition: ridurreAnimazioni ? "none" : `opacity ${durataSwitchTabelleMs}ms ease-out`,
-      }}
+    <VistaTabellaParallela
+      nascosta={!attiva || (caricamento && righe.length === 0)}
+      ridurreAnimazioni={ridurreAnimazioni}
     >
       <Group gap="sm" wrap="nowrap" align="flex-end">
         <Button leftSection={<IconPlus size={16} />} color="accent" onClick={() => setTarget({})}>
@@ -362,10 +313,7 @@ export function RimborsiView({
               chiave: "periodo",
               larghezza: 260,
               nodo: (
-                <Group grow gap="sm">
-                  <TextInput label="Dal" type="date" value={dal} onChange={(e) => setDal(e.currentTarget.value)} />
-                  <TextInput label="Al" type="date" value={al} onChange={(e) => setAl(e.currentTarget.value)} />
-                </Group>
+                <FiltroIntervalloDate dal={dal} al={al} onDalChange={setDal} onAlChange={setAl} />
               ),
             },
           ]}
@@ -419,6 +367,6 @@ export function RimborsiView({
           carica();
         }}
       />
-    </Stack>
+    </VistaTabellaParallela>
   );
 }

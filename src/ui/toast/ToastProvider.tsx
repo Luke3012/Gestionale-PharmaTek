@@ -149,7 +149,12 @@ function ToastCard({ item }: { item: ToastItem }) {
   );
 }
 
-export function ToastProvider() {
+export function ToastProvider({
+  riceviInoltri = false,
+}: {
+  /** Solo la finestra principale riceve i toast delle finestre di servizio. */
+  riceviInoltri?: boolean;
+}) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const [bloccati, setBloccati] = useState(toastBloccati);
   // La verifica sincrona copre anche il commit in cui loader e toast compaiono
@@ -157,7 +162,13 @@ export function ToastProvider() {
   const visibili = !bloccati && !toastBloccati();
   useEffect(() => toastStore.subscribe(setItems), []);
   useEffect(() => {
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    if (
+      !riceviInoltri ||
+      typeof window === "undefined" ||
+      !("__TAURI_INTERNALS__" in window)
+    ) {
+      return;
+    }
     let attivo = true;
     let off: (() => void) | undefined;
     void import("@tauri-apps/api/event")
@@ -178,7 +189,7 @@ export function ToastProvider() {
       attivo = false;
       off?.();
     };
-  }, []);
+  }, [riceviInoltri]);
   useEffect(() => {
     const aggiorna = () => setBloccati(toastBloccati());
     aggiorna();

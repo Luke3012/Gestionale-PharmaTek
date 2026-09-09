@@ -1,9 +1,21 @@
 import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { api, inTauri, type Identity } from "./tauri";
+import { opzioniGeometria, type DefaultGeometria } from "./geometriaFinestre";
 
 type FinestraAttivabile = Pick<WebviewWindow, "show" | "unminimize" | "setFocus">;
 type FinestraInCreazione = Pick<WebviewWindow, "label" | "once">;
 type FinestraNascondibile = Pick<WebviewWindow, "hide">;
+
+interface AperturaFinestraTauri {
+  label: string;
+  query: string;
+  title: string;
+  chiaveGeometria: string;
+  geometria: DefaultGeometria & { minWidth: number; minHeight: number };
+  riusa?: boolean;
+  primaDiRiutilizzare?: () => Promise<void>;
+  mostraDopoCreazione?: boolean;
+}
 
 async function finestraRegistrata(label: string): Promise<boolean> {
   try {
@@ -45,6 +57,40 @@ export async function portaFinestraInPrimoPiano(finestra: FinestraAttivabile): P
   await finestra.show();
   await finestra.unminimize();
   await finestra.setFocus();
+}
+
+/** Invia un evento solo dopo aver registrato l'ack e libera sempre listener e timeout. */
+export async function inviaEventoConConferma({
+  ack,
+  ascolta,
+  invia,
+  timeoutMs,
+  messaggioTimeout,
+}: {
+  ack: string;
+  ascolta: (evento: string, callback: () => void) => Promise<() => void>;
+  invia: () => Promise<void>;
+  timeoutMs: number;
+  messaggioTimeout: string;
+}): Promise<void> {
+  let conferma!: () => void;
+  const ricevuta = new Promise<void>((resolve) => {
+    conferma = resolve;
+  });
+  const off = await ascolta(ack, conferma);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await invia();
+    await Promise.race([
+      ricevuta,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(messaggioTimeout)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    off();
+  }
 }
 
 /** Parametri condivisi dalle finestre secondarie per evitare un secondo `whoami`. */
@@ -99,6 +145,44 @@ export function attendiCreazioneFinestra(
       }
     });
   });
+}
+
+/** Apre o riattiva una finestra secondaria conservandone la geometria. */
+export async function apriFinestraTauri({
+  label,
+  query,
+  title,
+  chiaveGeometria,
+  geometria,
+  riusa = true,
+  primaDiRiutilizzare,
+  mostraDopoCreazione = false,
+}: AperturaFinestraTauri): Promise<boolean> {
+  if (!inTauri) return false;
+  try {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    if (riusa) {
+      const esistente = await WebviewWindow.getByLabel(label);
+      if (esistente) {
+        await primaDiRiutilizzare?.();
+        await portaFinestraInPrimoPiano(esistente);
+        return true;
+      }
+    }
+    const finestra = new WebviewWindow(label, {
+      url: `index.html?${query}`,
+      title,
+      minWidth: geometria.minWidth,
+      minHeight: geometria.minHeight,
+      ...(await opzioniGeometria(chiaveGeometria, geometria)),
+      visible: false,
+    });
+    if (!(await attendiCreazioneFinestra(finestra))) return false;
+    if (mostraDopoCreazione) await portaFinestraInPrimoPiano(finestra);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function chiudiFinestraCorrente(): Promise<void> {

@@ -1,9 +1,7 @@
 // Periodi della dashboard (FASE 6B). I widget con mini-filtro hanno la propria
 // finestra temporale; qui la convertiamo in `[dal, al]` (YYYY-MM-DD) per il backend.
 import type { PeriodoDash } from "../../lib/prefs";
-
-const ISO = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+import { isoLocale } from "../../lib/date";
 
 export interface Intervallo {
   dal: string | null;
@@ -15,7 +13,7 @@ export function intervalloPeriodo(p: PeriodoDash, oggi = new Date(), annoG = 0):
   const y = oggi.getFullYear();
   switch (p) {
     case "giorno":
-      return { dal: ISO(oggi), al: ISO(oggi) };
+      return { dal: isoLocale(oggi), al: isoLocale(oggi) };
     case "settimana": {
       // Settimana lun–dom (getDay: 0=dom).
       const g = oggi.getDay();
@@ -23,10 +21,13 @@ export function intervalloPeriodo(p: PeriodoDash, oggi = new Date(), annoG = 0):
       lun.setDate(oggi.getDate() - ((g + 6) % 7));
       const dom = new Date(lun);
       dom.setDate(lun.getDate() + 6);
-      return { dal: ISO(lun), al: ISO(dom) };
+      return { dal: isoLocale(lun), al: isoLocale(dom) };
     }
     case "mese":
-      return { dal: ISO(new Date(y, oggi.getMonth(), 1)), al: ISO(new Date(y, oggi.getMonth() + 1, 0)) };
+      return {
+        dal: isoLocale(new Date(y, oggi.getMonth(), 1)),
+        al: isoLocale(new Date(y, oggi.getMonth() + 1, 0)),
+      };
     case "anno": {
       const a = annoG !== 0 ? annoG : y;
       return { dal: `${a}-01-01`, al: `${a}-12-31` };

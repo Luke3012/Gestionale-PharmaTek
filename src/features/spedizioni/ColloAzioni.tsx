@@ -1,6 +1,6 @@
 // Azioni compatte sul singolo collo (FASE 4B): note di spedizione (popover, per non
 // invadere l'UI). Salvate sulla spedizione e usate nella distinta corriere.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActionIcon,
   Autocomplete,
@@ -23,10 +23,12 @@ import { IconCurrencyEuro, IconEdit, IconNote } from "@tabler/icons-react";
 import { api, type Spedizione } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { eurToCents } from "../../lib/money";
+import { aggiungiGiorniIso } from "../../lib/date";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import {
   cercaPerCAP,
-  cercaPerCitta,
+  cercaCittaSelezionata,
+  nomiCittaSuggeriti,
   type ComuneInfo,
 } from "../../lib/cap-lookup";
 import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
@@ -36,6 +38,9 @@ import {
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
 import { ripartisciImportoProporzionale } from "../contabilita/riallineaSaldo";
+import { EuroInput } from "../../ui/EuroInput";
+import { èContoTransito } from "../contabilita/contoPreferito";
+import { useAggiornaLayoutPopover } from "../../ui/usePopoverVerticalLayout";
 
 type DatiSpedizioneForm = {
   cliente: string;
@@ -127,16 +132,7 @@ export function DatiSpedizionePopover({
     setCapCittaMultiplo(null);
   }, [spedizione, aperto]);
 
-  useLayoutEffect(() => {
-    if (!aperto) return;
-    aggiornaLayout();
-    const frame = window.requestAnimationFrame(aggiornaLayout);
-    window.addEventListener("resize", aggiornaLayout);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", aggiornaLayout);
-    };
-  }, [aperto, aggiornaLayout]);
+  useAggiornaLayoutPopover(aperto, aggiornaLayout);
 
   useCloseOnScroll(aperto, setAperto);
 
@@ -185,7 +181,7 @@ export function DatiSpedizionePopover({
     setForm((s) => ({ ...s, lotti: { ...s.lotti, [rigaId]: numero } }));
 
   const applicaComune = (nome: string) => {
-    const info = cercaPerCitta(nome, 1).find((c) => c.nome.toLowerCase() === nome.toLowerCase());
+    const info = cercaCittaSelezionata(nome);
     if (!info) return;
     setForm((s) => ({
       ...s,
@@ -406,7 +402,7 @@ export function DatiSpedizionePopover({
               value={form.citta}
               onChange={(v) => {
                 setF("citta", v);
-                setSuggerimentiCitta(v.length >= 2 ? cercaPerCitta(v, 10).map((c) => c.nome) : []);
+                setSuggerimentiCitta(nomiCittaSuggeriti(v, 10));
               }}
               onOptionSubmit={applicaComune}
               onKeyDown={(e) => {
@@ -572,36 +568,15 @@ export function NoteSpedizionePopover({
             maxRows={5}
             placeholder="Cosa vuole il cliente?"
           />
-          <Group justify="flex-end" gap="xs">
-            <Button size="compact-sm" variant="default" onClick={() => setAperto(false)}>
-              Annulla
-            </Button>
-            <Button size="compact-sm" color="accent" loading={salvando} onClick={salva}>
-              Salva
-            </Button>
-          </Group>
+          <AzioniSalvataggioPopover salvando={salvando} onAnnulla={() => setAperto(false)} onSalva={salva} />
         </Stack>
       </Popover.Dropdown>
     </Popover>
   );
 }
 
-function parseData(iso: string): Date {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
-}
-
-function toIso(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const g = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${g}`;
-}
-
 function aggiungiGiorni(iso: string, giorni: number): string {
-  const d = parseData(iso || new Date().toISOString().split("T")[0]);
-  d.setDate(d.getDate() + giorni);
-  return toIso(d);
+  return aggiungiGiorniIso(iso || new Date().toISOString().split("T")[0], giorni);
 }
 
 export function ContrassegnoSpedizionePopover({
@@ -652,14 +627,14 @@ export function ContrassegnoSpedizionePopover({
         const pi = allConti.find((c) => c.data.predefinito_incassi === true);
         const defaultBankConto =
           pi ||
-          allConti.find((c) => !["contrassegno", "assegno"].includes((c.data.tipo as string) || ""));
+          allConti.find((c) => !èContoTransito(c.data.tipo));
         const defaultBankContoId = defaultBankConto?.id || "";
 
         if (unpaid.length > 0) {
           if (mezzoSelezionato === "") {
             // Cambia tutti i pagamenti attesi di transito a defaultBankContoId e data = spedizione + 7gg
             for (const p of unpaid) {
-              if (p.contoTipo === "contrassegno" || p.contoTipo === "assegno") {
+              if (èContoTransito(p.contoTipo)) {
                 const newScad = aggiungiGiorni(spedizioneData, 7);
                 await api.recordUpdate("pagamento", p.id, {
                   conto_id: defaultBankContoId,
@@ -701,7 +676,7 @@ export function ContrassegnoSpedizionePopover({
                     await api.pagamentoElimina(pagamento.id);
                     continue;
                   }
-                  const transito = pagamento.contoTipo === "contrassegno" || pagamento.contoTipo === "assegno";
+                  const transito = èContoTransito(pagamento.contoTipo);
                   await api.recordUpdate("pagamento", pagamento.id, {
                     importo,
                     ...(transito ? { conto_id: defaultBankContoId } : {}),
@@ -781,31 +756,26 @@ export function ContrassegnoSpedizionePopover({
             comboboxProps={{ withinPortal: false }}
           />
           {mezzoSelezionato !== "" && (
-            <NumberInput
+            <EuroInput
               label="Importo"
               value={importoStr}
               onChange={(val) => setImportoStr(val === "" ? "" : Number(val))}
-              prefix="€ "
-              decimalScale={2}
-              fixedDecimalScale
-              thousandSeparator="."
-              decimalSeparator=","
               min={0}
             />
           )}
           <Text size="xs" c="dimmed">
             I pagamenti attesi del saldo verranno bilanciati e ricalcolati di conseguenza.
           </Text>
-          <Group justify="flex-end" gap="xs">
-            <Button size="compact-sm" variant="default" onClick={() => setAperto(false)}>
-              Annulla
-            </Button>
-            <Button size="compact-sm" color="accent" loading={salvando} onClick={salva}>
-              Salva
-            </Button>
-          </Group>
+          <AzioniSalvataggioPopover salvando={salvando} onAnnulla={() => setAperto(false)} onSalva={salva} />
         </Stack>
       </Popover.Dropdown>
     </Popover>
   );
+}
+
+function AzioniSalvataggioPopover({ salvando, onAnnulla, onSalva }: { salvando: boolean; onAnnulla: () => void; onSalva: () => void }) {
+  return <Group justify="flex-end" gap="xs">
+    <Button size="compact-sm" variant="default" onClick={onAnnulla}>Annulla</Button>
+    <Button size="compact-sm" color="accent" loading={salvando} onClick={onSalva}>Salva</Button>
+  </Group>;
 }

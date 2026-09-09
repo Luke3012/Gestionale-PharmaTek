@@ -1,5 +1,7 @@
-import type { RemoteControlStatus } from "./lib/tauri";
+import { api, inTauri, type RemoteControlStatus } from "./lib/tauri";
 import { INTERVALLO_CONTROLLO_AGGIORNAMENTI_MS } from "./updater";
+
+const TOKEN = ((import.meta.env as Record<string, string | undefined>).VITE_DEMO_UPDATER_DISABLED ?? "").trim();
 
 export const EVENTO_CONTROLLO_REMOTO_CAMBIATO = "pt:controllo-remoto-cambiato";
 export const INTERVALLO_CONTROLLO_REMOTO_MS = INTERVALLO_CONTROLLO_AGGIORNAMENTI_MS;
@@ -27,13 +29,16 @@ function notificaSeCambiato(stato: RemoteControlStatus) {
 }
 
 export async function controllaDisattivazioneRemota(): Promise<RemoteControlStatus> {
-  const stato: RemoteControlStatus = {
-    disabled: false,
-    message: "",
-    updatedAt: "",
-    fromCache: false,
-    premiumEnabled: true,
-  };
+  if (!inTauri) {
+    return {
+      disabled: false,
+      message: "",
+      updatedAt: "",
+      fromCache: true,
+      premiumEnabled: false,
+    };
+  }
+  const stato = await api.remoteControlStatus(TOKEN);
   notificaSeCambiato(stato);
   return stato;
 }

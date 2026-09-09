@@ -15,76 +15,16 @@ import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { PremiumAction, canRunPremiumAction } from "../../premium/PremiumAction";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
 import { toast } from "../../ui/toast/store";
-import { apriComunicazione } from "../comunicazioni/apriComunicazione";
+import { apriComunicazione, variabiliNomeDestinatario } from "../comunicazioni/apriComunicazione";
 import { FormCampiGrid, type Valori } from "./FormAnagrafica";
 import { salvaNuovoClienteConControllo } from "./salvataggioCliente";
 import {
   REGISTRI,
-  eurToCents,
-  validaCampo,
+  validaCampi,
   type Opzione,
   type Registro,
 } from "./registri";
-
-export function valoriAnagrafica(
-  registro: Registro,
-  record?: RecordDto | null,
-): Valori {
-  const valori: Valori = {};
-  for (const campo of registro.campi) {
-    const raw = record?.data[campo.key] ?? campo.defaultValue;
-    if (campo.tipo === "eur") {
-      valori[campo.key] = typeof raw === "number" ? raw / 100 : "";
-    } else if (campo.tipo === "numero") {
-      valori[campo.key] = typeof raw === "number" ? raw : "";
-    } else if (campo.tipo === "segmented") {
-      valori[campo.key] =
-        raw != null ? String(raw) : campo.opzioni?.[0]?.value ?? "";
-    } else {
-      valori[campo.key] = raw != null ? String(raw) : "";
-    }
-  }
-  return valori;
-}
-
-export function preparaPatchAnagrafica(
-  registro: Registro,
-  valori: Valori,
-  record?: RecordDto | null,
-): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  for (const campo of registro.campi) {
-    const valore = valori[campo.key];
-    let stored: unknown;
-    if (campo.tipo === "eur") {
-      stored =
-        valore === "" || valore == null
-          ? undefined
-          : eurToCents(Number(valore));
-    } else if (campo.tipo === "numero") {
-      stored =
-        valore === "" || valore == null ? undefined : Number(valore);
-    } else {
-      const testo = String(valore ?? "").trim();
-      const normalizzato =
-        campo.tipo === "cf" ? testo.toUpperCase() : testo;
-      stored = normalizzato === "" ? undefined : normalizzato;
-    }
-
-    if (!record) {
-      if (stored !== undefined) fields[campo.key] = stored;
-      continue;
-    }
-
-    const originale = record.data[campo.key];
-    if (stored === undefined) {
-      if (originale != null && originale !== "") fields[campo.key] = "";
-    } else if (!Object.is(stored, originale)) {
-      fields[campo.key] = stored;
-    }
-  }
-  return fields;
-}
+import { preparaPatchAnagrafica, valoriAnagrafica } from "./modelloAnagrafica";
 
 function inizialeMaiuscola(testo: string): string {
   return testo.charAt(0).toUpperCase() + testo.slice(1);
@@ -192,6 +132,14 @@ export function AnagraficaEditorModal({
     setValori(prossimiValori);
   }
 
+  function chiudiRecordEliminato() {
+    toast.warning(
+      "Questa anagrafica è stata eliminata o spostata nel Cestino da un'altra postazione.",
+    );
+    onClose();
+    onInvalidated?.();
+  }
+
   async function ricaricaCorrente() {
     if (!apertoRef.current || !corrente?.id) return;
     const sessione = sessioneRef.current;
@@ -199,11 +147,7 @@ export function AnagraficaEditorModal({
       const remoto = await api.recordGet(registro.entity, corrente.id);
       if (!apertoRef.current || sessioneRef.current !== sessione) return;
       if (!remoto || remoto.deleted) {
-        toast.warning(
-          "Questa anagrafica è stata eliminata o spostata nel Cestino da un'altra postazione.",
-        );
-        onClose();
-        onInvalidated?.();
+        chiudiRecordEliminato();
         return;
       }
       applicaRemoto(remoto);
@@ -249,11 +193,7 @@ export function AnagraficaEditorModal({
   }, [opened, registro.entity, record?.id]);
 
   async function salva() {
-    const prossimiErrori: Record<string, string> = {};
-    for (const campo of registro.campi) {
-      const errore = validaCampo(campo, valori[campo.key]);
-      if (errore) prossimiErrori[campo.key] = errore;
-    }
+    const prossimiErrori = validaCampi(registro.campi, valori);
     const primaChiaveErrore = Object.keys(prossimiErrori)[0];
     if (primaChiaveErrore) {
       setErrori(prossimiErrori);
@@ -280,11 +220,7 @@ export function AnagraficaEditorModal({
 
       const remoto = await api.recordGet(registro.entity, corrente.id);
       if (!remoto || remoto.deleted) {
-        toast.warning(
-          "Questa anagrafica è stata eliminata o spostata nel Cestino da un'altra postazione.",
-        );
-        onClose();
-        onInvalidated?.();
+        chiudiRecordEliminato();
         return;
       }
 
@@ -322,8 +258,7 @@ export function AnagraficaEditorModal({
       email: String(corrente.data.email ?? ""),
       telefono: String(corrente.data.telefono ?? ""),
       variabili: {
-        nome_cliente: nome,
-        ragione_sociale: nome,
+        ...variabiliNomeDestinatario(nome),
         nome_medico: registro.entity === "medico" ? nome : "",
       },
     });

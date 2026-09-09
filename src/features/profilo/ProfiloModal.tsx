@@ -1,7 +1,7 @@
 // Modale «Modifica profilo» (FASE 7): nome + avatar (preset / foto / iniziali), gli stessi
 // campi dell'onboarding. Spostato qui dalla pagina Impostazioni e aperto dal menu utente in
 // Topbar. Al salvataggio ricarica per propagare nome/avatar ovunque (sidebar, presence).
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Group,
@@ -11,14 +11,13 @@ import {
   Text,
   TextInput,
   ThemeIcon,
-  UnstyledButton,
 } from "@mantine/core";
-import { IconDeviceFloppy, IconPhoto, IconUserEdit } from "@tabler/icons-react";
+import { IconDeviceFloppy, IconUserEdit } from "@tabler/icons-react";
 import { api, type AvatarTipo, type Identity } from "../../lib/tauri";
 import { toast } from "../../ui/toast/store";
 import { Avatar, aggiornaAvatarCache } from "../../ui/Avatar";
-import { PRESETS } from "../../ui/avatars";
-import { cropAvatarTo256 } from "../../ui/avatarImage";
+import { useFotoAvatar } from "../../ui/useFotoAvatar";
+import { AzioniFotoAvatar, SceltePresetAvatar } from "../../ui/ScelteAvatar";
 
 export function ProfiloModal({
   opened,
@@ -66,10 +65,8 @@ function ProfiloForm({
   const [avatarPreset, setAvatarPreset] = useState(
     identity.avatarTipo === "preset" ? identity.avatarValore || "p1" : "p1"
   );
-  const [fotoBytes, setFotoBytes] = useState<number[] | null>(null);
-  const [fotoPreview, setFotoPreview] = useState<string | undefined>();
   const [salvando, setSalvando] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const { fotoBytes, fotoPreview, fileRef, caricaFoto } = useFotoAvatar(setAvatarTipo);
 
   const avatarValore =
     avatarTipo === "preset" ? avatarPreset : avatarTipo === "custom" ? `${identity.userId}.png` : "";
@@ -78,18 +75,6 @@ function ProfiloForm({
     avatarTipo !== identity.avatarTipo ||
     (avatarTipo === "preset" && avatarValore !== identity.avatarValore) ||
     (avatarTipo === "custom" && !!fotoBytes);
-
-  async function caricaFoto(file?: File) {
-    if (!file) return;
-    try {
-      const { bytes, dataUrl } = await cropAvatarTo256(file);
-      setFotoBytes(bytes);
-      setFotoPreview(dataUrl);
-      setAvatarTipo("custom");
-    } catch {
-      toast.error("Immagine non valida.");
-    }
-  }
 
   async function salva() {
     if (!nome.trim()) return;
@@ -132,7 +117,7 @@ function ProfiloForm({
             label="Nome utente"
             value={nome}
             onChange={(e) => setNome(e.currentTarget.value)}
-            placeholder="Es. Utente Demo"
+            placeholder="Es. Livio"
           />
           <Text size="xs" c="dimmed">
             Dispositivo: {identity.deviceNome}
@@ -142,46 +127,26 @@ function ProfiloForm({
 
       <ScrollArea type="hover" scrollbarSize={6} offsetScrollbars>
         <Group gap="sm" wrap="nowrap" p={4} style={{ width: "max-content" }}>
-          {PRESETS.map((p) => {
-            const sel = avatarTipo === "preset" && avatarPreset === p.id;
-            return (
-              <UnstyledButton
-                key={p.id}
-                onClick={() => {
-                  setAvatarTipo("preset");
-                  setAvatarPreset(p.id);
-                }}
-                style={{
-                  display: "inline-flex",
-                  borderRadius: "50%",
-                  padding: 2,
-                  lineHeight: 0,
-                  flex: "0 0 auto",
-                  outline: sel ? "2px solid #F4C20D" : "2px solid transparent",
-                }}
-              >
-                <Avatar nome={nome} tipo="preset" valore={p.id} size={36} />
-              </UnstyledButton>
-            );
-          })}
+          <SceltePresetAvatar
+            nome={nome}
+            tipo={avatarTipo}
+            preset={avatarPreset}
+            dimensione={36}
+            nonRestringere
+            onSeleziona={(prossimo) => {
+              setAvatarTipo("preset");
+              setAvatarPreset(prossimo);
+            }}
+          />
         </Group>
       </ScrollArea>
 
-      <Group gap="sm">
-        <Button variant="default" leftSection={<IconPhoto size={16} />} onClick={() => fileRef.current?.click()}>
-          Carica una foto
-        </Button>
-        <Button variant="subtle" color="gray" onClick={() => setAvatarTipo("iniziali")}>
-          Usa le iniziali
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/png,image/jpeg"
-          hidden
-          onChange={(e) => caricaFoto(e.currentTarget.files?.[0])}
-        />
-      </Group>
+      <AzioniFotoAvatar
+        fileRef={fileRef}
+        dimensioneIcona={16}
+        onCarica={caricaFoto}
+        onIniziali={() => setAvatarTipo("iniziali")}
+      />
 
       <Group justify="flex-end" gap="sm">
         <Button

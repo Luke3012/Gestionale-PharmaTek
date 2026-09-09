@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionIcon,
   Alert,
   Badge,
   Box,
@@ -16,6 +17,7 @@ import {
   Textarea,
   TextInput,
   ThemeIcon,
+  Tooltip,
 } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -23,6 +25,8 @@ import {
   IconMail,
   IconSend,
   IconTemplate,
+  IconUserCheck,
+  IconUserMinus,
 } from "@tabler/icons-react";
 import {
   api,
@@ -30,11 +34,14 @@ import {
   type ModelloComunicazione,
   type RecordDto,
 } from "../../lib/tauri";
+import { collegaDisiscrizioneAsincrona } from "../../lib/disiscrizioneAsincrona";
+import { setConToggle } from "../../lib/set";
 import { toast } from "../../ui/toast/store";
 import { VirtualStack } from "../../ui/VirtualStack";
 import { chiudiFinestraCorrente } from "../../lib/finestreTauri";
 import { useRicordaGeometria } from "../../lib/geometriaFinestre";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
+import { creaIdCasuale } from "../../lib/idCasuale";
 import {
   emailComunicazioneValida,
   telefonoWhatsappValido,
@@ -42,12 +49,22 @@ import {
 import { risolviModello } from "./modelliComunicazione";
 import {
   CHIAVE_GEOMETRIA_COMUNICAZIONE_BATCH,
+  datiDestinatarioDaRecord,
   type AperturaCampagnaComunicazioni,
   EVENTO_APRI_CAMPAGNA_COMUNICAZIONI,
   type CampagnaComunicazioneTarget,
+  variabiliNomeDestinatario,
 } from "./apriComunicazione";
 import { formattaStimaInvio, stimaInvioSecondi } from "./stimaInvio";
 import { RecapitoRapidoPopover } from "./RecapitoRapidoPopover";
+import {
+  ComunicazioneNonDisponibile,
+  ContenitoreComunicazioneStandalone,
+  IntestazioneComunicazioneStandalone,
+  leggiPayloadComunicazione,
+} from "./ElementiComunicazione";
+import { formattaDataIsoLocale, formattaDataLocale } from "../../lib/date";
+import { accodaBozzeComunicazione } from "./operazioniComunicazioni";
 
 type SceltaCanale = CanaleComunicazione | "entrambi";
 const EVENTI_DESTINATARI_CAMPAGNA = [
@@ -69,6 +86,12 @@ export function chiaveTargetCampagna(
   ]
     .filter(Boolean)
     .join(":");
+}
+
+export function chiaveDestinatarioCampagna(
+  target: CampagnaComunicazioneTarget,
+): string {
+  return `${target.destinatarioEntita}:${target.destinatarioId}`;
 }
 
 export function canaleCampagnaIniziale(
@@ -106,11 +129,7 @@ export function riallineaCanaleCampagna(
 }
 
 function chiaveCampagna() {
-  const casuale =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return `campagna:${casuale}`;
+  return `campagna:${creaIdCasuale()}`;
 }
 
 function canaliPerTarget(
@@ -128,10 +147,7 @@ function canaliPerTarget(
 }
 
 function dataIt(dataIso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIso)) return "";
-  return new Intl.DateTimeFormat("it-IT").format(
-    new Date(`${dataIso}T12:00:00`),
-  );
+  return formattaDataIsoLocale(dataIso);
 }
 
 function dataAffidamentoIniziale(
@@ -149,8 +165,7 @@ function variabiliTarget(
   dataAffidamento: string,
 ) {
   return {
-    nome_cliente: target.destinatarioNome,
-    ragione_sociale: target.destinatarioNome,
+    ...variabiliNomeDestinatario(target.destinatarioNome),
     ...target.variabili,
     ...(target.tipo === "preavviso_spedizione"
       ? { data_spedizione: dataIt(dataAffidamento) }
@@ -168,16 +183,7 @@ export function aggiornaTargetDaRecord(
   ) {
     return target;
   }
-  const valore = (campo: string) =>
-    typeof record.data[campo] === "string"
-      ? String(record.data[campo]).trim()
-      : "";
-  const nome =
-    valore("ragione_sociale") ||
-    valore("denominazione") ||
-    valore("nome_completo") ||
-    `${valore("nome")} ${valore("cognome")}`.trim() ||
-    target.destinatarioNome;
+  const dati = datiDestinatarioDaRecord(record, target.destinatarioNome);
   const snapshot = target.snapshot ?? [];
   const destinatarioNelloSnapshot = snapshot.some(
     (item) =>
@@ -186,13 +192,12 @@ export function aggiornaTargetDaRecord(
   );
   return {
     ...target,
-    destinatarioNome: nome,
-    email: valore("email"),
-    telefono: valore("telefono"),
+    destinatarioNome: dati.nome,
+    email: dati.email,
+    telefono: dati.telefono,
     variabili: {
       ...target.variabili,
-      nome_cliente: nome,
-      ragione_sociale: nome,
+      ...variabiliNomeDestinatario(dati.nome),
     },
     snapshot: destinatarioNelloSnapshot
       ? snapshot.map((item) =>
@@ -243,6 +248,9 @@ export function CampagnaComunicazioniHost({
   const [recapitiAperti, setRecapitiAperti] = useState<Set<string>>(
     () => new Set(),
   );
+  const [destinatariEsclusi, setDestinatariEsclusi] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [sessioneCampagna, setSessioneCampagna] = useState(0);
   const campagnaRef = useRef(chiaveCampagna());
   const ultimaRichiestaRef = useRef(initialRequest?.richiestaId ?? "");
@@ -254,6 +262,7 @@ export function CampagnaComunicazioniHost({
   const chiudi = () => {
     if (preparando) return;
     setRecapitiAperti(new Set());
+    setDestinatariEsclusi(new Set());
     if (standalone) {
       void chiudiFinestraCorrente();
       return;
@@ -285,6 +294,7 @@ export function CampagnaComunicazioniHost({
     setDataAffidamento(dataAffidamentoIniziale(unici));
     setErrore("");
     setRecapitiAperti(new Set());
+    setDestinatariEsclusi(new Set());
     sceltaManualeRef.current = false;
     setScelta(canaleCampagnaIniziale(unici));
   }, []);
@@ -326,24 +336,18 @@ export function CampagnaComunicazioniHost({
         (event as CustomEvent<AperturaCampagnaComunicazioni>).detail,
       );
     window.addEventListener(EVENTO_APRI_CAMPAGNA_COMUNICAZIONI, listener);
-    let attivo = true;
-    let off: (() => void) | undefined;
-    void import("@tauri-apps/api/event")
+    const disiscriviTauri = collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<AperturaCampagnaComunicazioni>(
           EVENTO_APRI_CAMPAGNA_COMUNICAZIONI,
           ({ payload }) => gestisci(payload),
         ),
-      )
-      .then((unlisten) => {
-        if (attivo) off = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
+      ),
+    );
     return () => {
-      attivo = false;
       window.removeEventListener(EVENTO_APRI_CAMPAGNA_COMUNICAZIONI, listener);
-      off?.();
+      disiscriviTauri();
     };
   }, [ricevi]);
 
@@ -434,19 +438,28 @@ export function CampagnaComunicazioniHost({
 
   useEffect(() => {
     if (!targets.length) return;
+    const inclusi = targets.filter(
+      (target) =>
+        !destinatariEsclusi.has(chiaveDestinatarioCampagna(target)),
+    );
     setScelta((corrente) =>
       riallineaCanaleCampagna(
         corrente,
-        targets,
+        inclusi,
         sceltaManualeRef.current,
       ),
     );
-  }, [targets]);
+  }, [destinatariEsclusi, targets]);
 
-  const haEmail = targets.some((target) =>
+  const targetsInclusi = targets.filter(
+    (target) =>
+      !destinatariEsclusi.has(chiaveDestinatarioCampagna(target)),
+  );
+
+  const haEmail = targetsInclusi.some((target) =>
     emailComunicazioneValida(target.email),
   );
-  const haWhatsapp = targets.some((target) =>
+  const haWhatsapp = targetsInclusi.some((target) =>
     telefonoWhatsappValido(target.telefono),
   );
   const tipo = targets[0]?.tipo;
@@ -456,7 +469,7 @@ export function CampagnaComunicazioniHost({
   const modelloSelezionato = modelliDisponibili.find(
     (modello) => modello.id === modelloId,
   );
-  const preavvisoSpedizione = targets.some(
+  const preavvisoSpedizione = targetsInclusi.some(
     (target) => target.tipo === "preavviso_spedizione",
   );
 
@@ -472,7 +485,10 @@ export function CampagnaComunicazioniHost({
   const revisione = useMemo(
     () =>
       targets.map((target) => {
-        const canali = canaliPerTarget(target, scelta);
+        const escluso = destinatariEsclusi.has(
+          chiaveDestinatarioCampagna(target),
+        );
+        const canali = escluso ? [] : canaliPerTarget(target, scelta);
         const variabili = variabiliTarget(target, dataAffidamento);
         const mancanti = new Set<string>();
         for (const canale of canali) {
@@ -483,9 +499,16 @@ export function CampagnaComunicazioniHost({
             }
           }
         }
-        return { target, canali, mancanti: [...mancanti] };
+        return { target, canali, mancanti: [...mancanti], escluso };
       }),
-    [corpo, dataAffidamento, oggettoEmail, scelta, targets],
+    [
+      corpo,
+      dataAffidamento,
+      destinatariEsclusi,
+      oggettoEmail,
+      scelta,
+      targets,
+    ],
   );
 
   const contenutoValido =
@@ -493,10 +516,18 @@ export function CampagnaComunicazioniHost({
     (scelta === "whatsapp" || !!oggettoEmail.trim()) &&
     (!preavvisoSpedizione || !!dataAffidamento);
   const destinatariPronti = revisione.filter(
-    (voce) => voce.canali.length > 0 && voce.mancanti.length === 0,
+    (voce) =>
+      !voce.escluso && voce.canali.length > 0 && voce.mancanti.length === 0,
   );
   const pronti = contenutoValido ? destinatariPronti : [];
-  const daCorreggere = revisione.length - destinatariPronti.length;
+  const daCorreggere =
+    revisione.filter((voce) => !voce.escluso).length -
+    destinatariPronti.length;
+  const numeroEsclusi = new Set(
+    revisione
+      .filter((voce) => voce.escluso)
+      .map((voce) => chiaveDestinatarioCampagna(voce.target)),
+  ).size;
   const numeroInvii = pronti.reduce(
     (totale, voce) => totale + voce.canali.length,
     0,
@@ -676,11 +707,7 @@ export function CampagnaComunicazioniHost({
           })),
         );
       }
-      for (const bozza of bozze) {
-        if (bozza.stato === "bozza" || bozza.stato === "da_revisionare") {
-          await api.comunicazioneMettiInCoda(bozza.id);
-        }
-      }
+      await accodaBozzeComunicazione(bozze, api.comunicazioneMettiInCoda);
       toast.success(
         `${numeroInvii} invii avviati in sequenza.${
           prorogaSetteGiorni && proroghe.length
@@ -812,9 +839,9 @@ export function CampagnaComunicazioniHost({
                     ...new Set(
                       proroghe.map(
                         (proroga) =>
-                          `${new Intl.DateTimeFormat("it-IT").format(
+                          `${formattaDataLocale(
                             new Date(`${proroga.vecchiaScadenza}T12:00:00`),
-                          )} → ${new Intl.DateTimeFormat("it-IT").format(
+                          )} → ${formattaDataLocale(
                             new Date(`${proroga.nuovaScadenza}T12:00:00`),
                           )}`,
                       ),
@@ -840,6 +867,11 @@ export function CampagnaComunicazioniHost({
               {daCorreggere} da correggere
             </Badge>
           )}
+          {numeroEsclusi > 0 && (
+            <Badge color="gray" variant="light">
+              {numeroEsclusi} {numeroEsclusi === 1 ? "escluso" : "esclusi"}
+            </Badge>
+          )}
         </Group>
       </Group>
 
@@ -857,6 +889,7 @@ export function CampagnaComunicazioniHost({
             style={{
               border: "1px solid var(--border)",
               borderRadius: "var(--mantine-radius-sm)",
+              opacity: voce.escluso ? 0.58 : 1,
             }}
           >
             <Box style={{ minWidth: 0 }}>
@@ -864,7 +897,9 @@ export function CampagnaComunicazioniHost({
                 {voce.target.destinatarioNome}
               </Text>
               <Text size="xs" c="dimmed" truncate>
-                {voce.mancanti.length
+                {voce.escluso
+                  ? "Escluso manualmente dalla comunicazione"
+                  : voce.mancanti.length
                   ? `Dati mancanti: ${voce.mancanti.join(", ")}`
                   : voce.canali.length
                     ? voce.canali
@@ -876,7 +911,8 @@ export function CampagnaComunicazioniHost({
               </Text>
             </Box>
             <Group gap={6} wrap="nowrap">
-              {(!emailComunicazioneValida(voce.target.email) ||
+              {!voce.escluso &&
+                (!emailComunicazioneValida(voce.target.email) ||
                 !telefonoWhatsappValido(voce.target.telefono)) && (
                 <RecapitoRapidoPopover
                   target={voce.target}
@@ -893,17 +929,50 @@ export function CampagnaComunicazioniHost({
                   }
                 />
               )}
+              <Tooltip
+                label={
+                  voce.escluso
+                    ? `Reincludi ${voce.target.destinatarioNome}`
+                    : `Escludi ${voce.target.destinatarioNome}`
+                }
+                withArrow
+              >
+                <ActionIcon
+                  variant="subtle"
+                  color={voce.escluso ? "teal" : "gray"}
+                  aria-label={
+                    voce.escluso
+                      ? `Reincludi ${voce.target.destinatarioNome}`
+                      : `Escludi ${voce.target.destinatarioNome}`
+                  }
+                  onClick={() => {
+                    const chiave = chiaveDestinatarioCampagna(voce.target);
+                    setDestinatariEsclusi((correnti) => setConToggle(correnti, chiave));
+                    setErrore("");
+                  }}
+                >
+                  {voce.escluso ? (
+                    <IconUserCheck size={16} />
+                  ) : (
+                    <IconUserMinus size={16} />
+                  )}
+                </ActionIcon>
+              </Tooltip>
               <Badge
                 color={
-                  voce.canali.length && !voce.mancanti.length
+                  voce.escluso
+                    ? "gray"
+                    : voce.canali.length && !voce.mancanti.length
                     ? "teal"
                     : "orange"
                 }
                 variant="light"
               >
-                {voce.canali.length && !voce.mancanti.length
+                {voce.escluso
+                  ? "Escluso"
+                  : voce.canali.length && !voce.mancanti.length
                   ? "Pronto"
-                  : "Escluso"}
+                  : "Da correggere"}
               </Badge>
             </Group>
           </Group>
@@ -935,20 +1004,10 @@ export function CampagnaComunicazioniHost({
         style={standalone ? { flex: 1, minHeight: 0 } : undefined}
       >
         {standalone && (
-          <Group gap="sm" wrap="nowrap">
-            <ThemeIcon variant="light" color="yellow" radius="md" size="lg">
-              <IconSend size={19} />
-            </ThemeIcon>
-            <Box style={{ minWidth: 0 }}>
-              <Text fw={800} size="lg">
-                {titolo}
-              </Text>
-              <Text size="sm" c="dimmed">
-                {targets.length}{" "}
-                {targets.length === 1 ? "destinatario" : "destinatari"}
-              </Text>
-            </Box>
-          </Group>
+          <IntestazioneComunicazioneStandalone
+            titolo={titolo}
+            sottotitolo={`${targets.length} ${targets.length === 1 ? "destinatario" : "destinatari"}`}
+          />
         )}
 
         <SegmentedControl
@@ -1042,16 +1101,9 @@ export function CampagnaComunicazioniHost({
 
   if (standalone) {
     return (
-      <Box
-        p="lg"
-        style={{
-          height: "100vh",
-          overflow: "hidden",
-          background: "var(--mantine-color-body)",
-        }}
-      >
+      <ContenitoreComunicazioneStandalone>
         {contenuto}
-      </Box>
+      </ContenitoreComunicazioneStandalone>
     );
   }
 
@@ -1087,24 +1139,9 @@ export function CampagnaComunicazioniHost({
 
 export function CampagnaComunicazioniWindow() {
   useRicordaGeometria(CHIAVE_GEOMETRIA_COMUNICAZIONE_BATCH);
-  const payload = new URLSearchParams(window.location.search).get("payload");
-  let richiesta: AperturaCampagnaComunicazioni | null = null;
-  try {
-    richiesta = payload
-      ? (JSON.parse(payload) as AperturaCampagnaComunicazioni)
-      : null;
-  } catch {
-    richiesta = null;
-  }
+  const richiesta = leggiPayloadComunicazione<AperturaCampagnaComunicazioni>();
   if (!richiesta?.targets?.length) {
-    return (
-      <Stack align="center" justify="center" h="100vh" p="xl" ta="center">
-        <Text fw={700}>Comunicazione non disponibile</Text>
-        <Text c="dimmed" size="sm">
-          Chiudi questa finestra e riapri la comunicazione dal gestionale.
-        </Text>
-      </Stack>
-    );
+    return <ComunicazioneNonDisponibile />;
   }
   return (
     <CampagnaComunicazioniHost

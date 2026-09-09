@@ -17,10 +17,8 @@ import {
   Group,
   Indicator,
   MultiSelect,
-  SegmentedControl,
   Stack,
   Text,
-  TextInput,
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
@@ -32,7 +30,6 @@ import {
 } from "@tabler/icons-react";
 import {
   api,
-  type Pagamento,
   type PagamentoVista,
   type RecordDto,
   type Rimborso,
@@ -52,7 +49,7 @@ import { usePaginaPronta } from "../../pages/Pagina";
 import { ColonneMenu } from "../giornaliero/ColonneMenu";
 import {
   EsportaTabella,
-  colonneEsportabili,
+  useColonneEsportabili,
 } from "../../ui/esporta/EsportaTabella";
 import { useColonneCrediti, scaduta, potenziale } from "./colonneCrediti";
 import { PagamentoModal, type PagamentoModalTarget } from "./PagamentoModal";
@@ -60,11 +57,15 @@ import { RimborsoModal, type RimborsoModalTarget } from "./RimborsoModal";
 import { mappaRimborsiExtra, statoRimborsoDef } from "./statiRimborso";
 import { isSpedito } from "../giornaliero/stati";
 import { usePrefs } from "../../lib/prefs";
-import { durataSwitchTabelleMs } from "../../ui/motion";
+import { VistaTabellaParallela } from "../../ui/VistaTabellaParallela";
 import {
   mappaLottiPerOrdine,
   opzioniLottiSpedizione,
 } from "../spedizioni/filtriSpedizione";
+import { FiltroStatoSpedizione } from "../spedizioni/FiltroStatoSpedizione";
+import { opzioniConti } from "./contoPreferito";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
+import { opzioniRecordNome } from "../../lib/opzioniRecord";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import {
   PremiumAction,
@@ -76,7 +77,11 @@ import {
   apriComunicazione,
   datiPagamentoComunicazione,
   riepilogoSollecitoPagamenti,
+  variabiliNomeDestinatario,
 } from "../comunicazioni/apriComunicazione";
+import { pagamentoDaVista } from "./pagamentoDaVista";
+import { ordinaCopia } from "../../ui/ordinamento";
+import { colonneTabellaConfigurabili } from "../../ui/colonneConfigurabili";
 
 // Oltre N righe si impagina: sostituita da Cluster Virtualization in Tabella.tsx
 
@@ -116,26 +121,28 @@ function statiDi(r: PagamentoVista): string[] {
   return r.verificato ? ["saldato"] : ["saldato", "da_verificare"];
 }
 
+export interface FiltroPagamentiIniziale {
+  nonce: number;
+  cerca?: string;
+  stati?: string[];
+  spedito?: "spediti" | "non";
+  conto?: { id?: string; nome?: string };
+  contoIds?: string[];
+  spedizioneLotti?: string[];
+  agenteIds?: string[];
+  medicoIds?: string[];
+  linee?: string[];
+  dal?: string;
+  al?: string;
+}
+
 export function PagamentiView({
   filtroIniziale,
   attiva = true,
 }: {
   attiva?: boolean;
   /** Deep-link completo: il nonce riapplica il filtro anche se si ripete lo stesso comando. */
-  filtroIniziale?: {
-    nonce: number;
-    cerca?: string;
-    stati?: string[];
-    spedito?: "spediti" | "non";
-    conto?: { id?: string; nome?: string };
-    contoIds?: string[];
-    spedizioneLotti?: string[];
-    agenteIds?: string[];
-    medicoIds?: string[];
-    linee?: string[];
-    dal?: string;
-    al?: string;
-  };
+  filtroIniziale?: FiltroPagamentiIniziale;
 }) {
   const { anno, ridurreAnimazioni } = usePrefs();
   const premium = usePremiumAccess();
@@ -310,25 +317,7 @@ export function PagamentiView({
   ) {
     try {
       const rec = await api.recordGet("pagamento", r.id);
-      const pagamento: Pagamento = {
-        id: r.id,
-        revision: rec?.revision || r.revision,
-        ordineId: r.ordineId,
-        tipo: r.tipo as Pagamento["tipo"],
-        importo: r.importo,
-        saldato: r.saldato,
-        scadenza: r.scadenza,
-        contoId: r.contoId,
-        contoNome: r.contoNome,
-        contoTipo: r.contoTipo,
-        data: r.data,
-        verificato: r.verificato,
-        distintaId: (rec?.data.distinta_id as string) || "",
-        contoAccreditoNome: r.contoAccreditoNome,
-        note: (rec?.data.note as string) || "",
-        scadDaSpedizione: (rec?.data.scad_da_spedizione as boolean) || false,
-        scadRelGiorni: (rec?.data.scad_rel_giorni as number) || 0,
-      };
+      const pagamento = pagamentoDaVista(r, rec);
       setTarget({ pagamento, saldaSubito, fromPos });
     } catch (e) {
       toast.error(`Apertura non riuscita: ${e}`);
@@ -361,8 +350,7 @@ export function PagamentiView({
         origineEntita: "ordine",
         origineId: r.ordineId,
         variabili: {
-          nome_cliente: r.clienteNome,
-          ragione_sociale: r.clienteNome,
+          ...variabiliNomeDestinatario(r.clienteNome),
           nome_medico: r.medicoNome,
           nome_agente: r.agenteNome,
           riferimento_ordine: riepilogo.riferimento_ordine,
@@ -505,17 +493,7 @@ export function PagamentiView({
     const def = colonne.visibili.find((c) => c.key === sort.columnAccessor);
     const getter = def?.sortAccessor;
     if (!getter) return filtrateFinali;
-    const arr = [...filtrateFinali];
-    arr.sort((a, b) => {
-      const va = getter(a);
-      const vb = getter(b);
-      const cmp =
-        typeof va === "number" && typeof vb === "number"
-          ? va - vb
-          : String(va).localeCompare(String(vb), "it", { numeric: true });
-      return sort.direction === "desc" ? -cmp : cmp;
-    });
-    return arr;
+    return ordinaCopia(filtrateFinali, getter, sort.direction);
   }, [filtrateFinali, sort, colonne.visibili]);
 
   const scadutiFiltrati = useMemo(
@@ -581,8 +559,7 @@ export function PagamentiView({
               contoId: item.contoId,
             })),
             variabili: {
-              nome_cliente: ordinati[0].clienteNome,
-              ragione_sociale: ordinati[0].clienteNome,
+              ...variabiliNomeDestinatario(ordinati[0].clienteNome),
               nome_medico: [
                 ...new Set(
                   ordinati.map((item) => item.medicoNome).filter(Boolean),
@@ -645,28 +622,15 @@ export function PagamentiView({
 
   const datiAgenti = useMemo(
     () =>
-      agenti.map((a) => ({
-        value: a.id,
-        label: (a.data.nome as string) || "(agente)",
-      })),
+      opzioniRecordNome(agenti, "(agente)"),
     [agenti],
   );
   const datiMedici = useMemo(
     () =>
-      medici.map((m) => ({
-        value: m.id,
-        label: (m.data.nome as string) || "(medico)",
-      })),
+      opzioniRecordNome(medici, "(medico)"),
     [medici],
   );
-  const datiConti = useMemo(
-    () =>
-      conti.map((c) => ({
-        value: c.id,
-        label: (c.data.nome as string) || "(conto)",
-      })),
-    [conti],
-  );
+  const datiConti = useMemo(() => opzioniConti(conti), [conti]);
   const datiSpedizioni = useMemo(
     () => opzioniLottiSpedizione(spedizioni, anno),
     [spedizioni, anno],
@@ -696,21 +660,10 @@ export function PagamentiView({
     setAl("");
   }
 
-  // Colonne esportabili: pre-spuntate = quelle visibili; ordine = quello configurato.
-  const colonneExport = useMemo(
-    () => colonneEsportabili(colonne.tutte.map((v) => v.def), new Set(colonne.visibili.map((c) => c.key))),
-    [colonne.tutte, colonne.visibili]
-  );
+  const colonneExport = useColonneEsportabili(colonne);
 
   const columns = useMemo<DataTableColumn<PagamentoVista>[]>(() => {
-    const dati: DataTableColumn<PagamentoVista>[] = colonne.visibili.map((c) => ({
-      accessor: c.key,
-      title: c.label,
-      textAlign: c.align === "right" ? "right" : c.align === "center" ? "center" : "left",
-      sortable: !!c.sortAccessor,
-      resizable: true,
-      render: (r: PagamentoVista) => c.render(r),
-    }));
+    const dati = colonneTabellaConfigurabili<PagamentoVista>(colonne.visibili);
     const azione: DataTableColumn<PagamentoVista> = {
       accessor: "azione",
       title: "",
@@ -721,34 +674,28 @@ export function PagamentiView({
         // proponiamo il rimborso; se ne esiste già uno ne mostriamo lo stato.
         if (righeEccesso.has(r.id)) {
           const esistente = rimborsiExtra.get(r.ordineId);
-          if (esistente) {
-            const d = statoRimborsoDef(esistente.stato);
-            return (
-              <Group
-                justify="center"
-                gap={4}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Button
-                  size="compact-xs"
-                  variant="light"
-                  color={d.color}
-                  leftSection={<d.Ico size={13} />}
-                  onClick={() => setRimborsoExtra({ rimborso: esistente })}
-                >
-                  {esistente.stato === "effettuato"
-                    ? "Rimborso emesso"
-                    : "Rimborso richiesto"}
-                </Button>
-              </Group>
-            );
-          }
+          const statoRimborso = esistente
+            ? statoRimborsoDef(esistente.stato)
+            : null;
           return (
             <Group
               justify="center"
               gap={4}
               onClick={(e) => e.stopPropagation()}
             >
+              {esistente && statoRimborso ? (
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  color={statoRimborso.color}
+                  leftSection={<statoRimborso.Ico size={13} />}
+                  onClick={() => setRimborsoExtra({ rimborso: esistente })}
+                >
+                  {esistente.stato === "effettuato"
+                    ? "Rimborso emesso"
+                    : "Rimborso richiesto"}
+                </Button>
+              ) : (
               <Button
                 size="compact-xs"
                 variant="light"
@@ -765,6 +712,7 @@ export function PagamentiView({
               >
                 Rimborsa extra
               </Button>
+              )}
             </Group>
           );
         }
@@ -867,19 +815,10 @@ export function PagamentiView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [columns, ordinate, sort, caricamento, cercaDifferita]);
 
-  const nascosta = !attiva || (caricamento && righe.length === 0);
-
   return (
-    <Stack
-      gap="md"
-      style={{
-        height: "100%",
-        opacity: nascosta ? 0 : 1,
-        visibility: nascosta ? "hidden" : "visible",
-        transition: ridurreAnimazioni
-          ? "none"
-          : `opacity ${durataSwitchTabelleMs}ms ease-out`,
-      }}
+    <VistaTabellaParallela
+      nascosta={!attiva || (caricamento && righe.length === 0)}
+      ridurreAnimazioni={ridurreAnimazioni}
     >
       <Group
         className="pt-crediti-toolbar"
@@ -999,43 +938,14 @@ export function PagamentiView({
               chiave: "spedito",
               larghezza: 240,
               nodo: (
-                <Box>
-                  <Text size="sm" fw={500} mb={4}>
-                    Stato spedizione
-                  </Text>
-                  <SegmentedControl
-                    fullWidth
-                    value={speditoSel}
-                    onChange={(v) =>
-                      setSpeditoSel(v as "tutti" | "spediti" | "non")
-                    }
-                    data={[
-                      { value: "tutti", label: "Tutti" },
-                      { value: "spediti", label: "Spediti" },
-                      { value: "non", label: "Non spediti" },
-                    ]}
-                  />
-                </Box>
+                <FiltroStatoSpedizione value={speditoSel} onChange={setSpeditoSel} />
               ),
             },
             {
               chiave: "periodo",
               larghezza: 260,
               nodo: (
-                <Group grow gap="sm">
-                  <TextInput
-                    label="Dal"
-                    type="date"
-                    value={dal}
-                    onChange={(e) => setDal(e.currentTarget.value)}
-                  />
-                  <TextInput
-                    label="Al"
-                    type="date"
-                    value={al}
-                    onChange={(e) => setAl(e.currentTarget.value)}
-                  />
-                </Group>
+                <FiltroIntervalloDate dal={dal} al={al} onDalChange={setDal} onAlChange={setAl} />
               ),
             },
             ]}
@@ -1142,6 +1052,6 @@ export function PagamentiView({
           caricaRiferimenti();
         }}
       />
-    </Stack>
+    </VistaTabellaParallela>
   );
 }

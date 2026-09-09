@@ -37,7 +37,7 @@ describe("ricerca preventivi", () => {
       medicoNome: "Medico",
       agenteNome: "Agente",
       email: "",
-      telefono: ["+39", "333", "123", "4567"].join(" "),
+      telefono: "+39 333 123 4567",
       righe: [
         {
           prodottoNome: "Prodotto",

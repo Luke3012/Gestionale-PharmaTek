@@ -4,13 +4,22 @@
 //! viene eseguito soltanto dopo aver verificato finestra, conversazione,
 //! compositore, testo preparato e pulsante di invio.
 
+use std::collections::VecDeque;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, POINT};
+use serde::Serialize;
+use windows::core::{w, BOOL, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{
+    CloseHandle, GlobalFree, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND,
+    LPARAM, POINT,
+};
+use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IDataObject, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
@@ -23,7 +32,10 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::Ole::{OleGetClipboard, OleSetClipboard, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::System::SystemInformation::GetTickCount;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    CREATE_NO_WINDOW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCondition, IUIAutomationElement,
@@ -41,10 +53,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::DROPFILES;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetAncestor, GetCursorPos, GetForegroundWindow,
-    GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindowAsync,
-    WindowFromPoint, GA_ROOT, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_MINIMIZE, SW_RESTORE,
+    BringWindowToTop, EnumWindows, FindWindowW, GetAncestor, GetCursorPos, GetForegroundWindow,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetCursorPos,
+    SetForegroundWindow, SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT, HWND_NOTOPMOST,
+    HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_MINIMIZE, SW_RESTORE,
 };
 
 const ATTESA_APERTURA: Duration = Duration::from_secs(12);
@@ -56,6 +68,79 @@ const ATTESA_QUIETE_DOPO_APERTURA: Duration = Duration::from_secs(2);
 const ATTESA_ANTEPRIMA_ALLEGATO: Duration = Duration::from_secs(5);
 const ATTESA_CHIUSURA_ALLEGATO: Duration = Duration::from_secs(3);
 const MARCATORE_APERTURA_CHAT: &str = "·pt";
+const FASE_FINESTRA: &str = "finestra";
+const FASE_CHAT: &str = "chat";
+const FASE_COMPOSITORE: &str = "compositore";
+const FASE_TESTO: &str = "testo";
+const FASE_ALLEGATO: &str = "allegato";
+const FASE_INVIO: &str = "invio";
+const FASE_VERIFICA: &str = "verifica_finale";
+const FASE_SICUREZZA: &str = "sicurezza";
+
+#[derive(Debug, Clone, Default)]
+struct FinestraWhatsappCache {
+    hwnd: isize,
+    pid: u32,
+    processo: String,
+    pacchetto: String,
+    percorso: String,
+    trovata_con_fallback: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsappUltimoEsitoDto {
+    pub riuscito: bool,
+    pub codice: String,
+    pub fase: String,
+    pub messaggio: String,
+    pub esito_ambiguo: bool,
+    pub attivita_utente: bool,
+    pub durata_ms: u64,
+    pub avvenuto_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsappDiagnosticaDto {
+    pub protocollo_registrato: bool,
+    pub finestra_rilevata: bool,
+    pub processo: String,
+    pub pacchetto: String,
+    pub versione: String,
+    pub identificazione_fallback: bool,
+    pub campioni_prestazioni: usize,
+    pub mediana_ms: u64,
+    pub percentile_95_ms: u64,
+    pub ultimo_esito: Option<WhatsappUltimoEsitoDto>,
+}
+
+static FINESTRA_WHATSAPP_CACHE: OnceLock<Mutex<FinestraWhatsappCache>> = OnceLock::new();
+static ULTIMO_ESITO_WHATSAPP: OnceLock<Mutex<Option<WhatsappUltimoEsitoDto>>> = OnceLock::new();
+static PRESTAZIONI_WHATSAPP: OnceLock<Mutex<VecDeque<u64>>> = OnceLock::new();
+
+fn cache_finestra() -> &'static Mutex<FinestraWhatsappCache> {
+    FINESTRA_WHATSAPP_CACHE.get_or_init(|| Mutex::new(FinestraWhatsappCache::default()))
+}
+
+fn ultimo_esito() -> &'static Mutex<Option<WhatsappUltimoEsitoDto>> {
+    ULTIMO_ESITO_WHATSAPP.get_or_init(|| Mutex::new(None))
+}
+
+fn prestazioni() -> &'static Mutex<VecDeque<u64>> {
+    PRESTAZIONI_WHATSAPP.get_or_init(|| Mutex::new(VecDeque::with_capacity(64)))
+}
+
+fn riepiloga_prestazioni(campioni: &VecDeque<u64>) -> (u64, u64) {
+    if campioni.is_empty() {
+        return (0, 0);
+    }
+    let mut ordinati = campioni.iter().copied().collect::<Vec<_>>();
+    ordinati.sort_unstable();
+    let mediana = ordinati[ordinati.len() / 2];
+    let indice_95 = ((ordinati.len() - 1) * 95).div_ceil(100);
+    (mediana, ordinati[indice_95])
+}
 
 const NOMI_INVIA: &[&str] = &["Invia", "Invia messaggio", "Send", "Send message"];
 const NOMI_INVIA_ALLEGATO: &[&str] = &["Invia 1 selezionato", "Send 1 selected"];
@@ -117,6 +202,8 @@ struct ControlliCompositore {
 #[derive(Debug)]
 pub(super) struct ErroreWhatsAppWindows {
     pub messaggio: String,
+    pub codice: String,
+    pub fase: String,
     /// True soltanto se il pulsante è già stato azionato e l'esito non è
     /// verificabile: in quel caso il gestionale non deve ritentare da solo.
     pub esito_ambiguo: bool,
@@ -172,9 +259,48 @@ impl Drop for ComApartment {
     }
 }
 
+fn classifica_errore(messaggio: &str) -> (&'static str, &'static str) {
+    let testo = messaggio.to_lowercase();
+    if testo.contains("pc in uso")
+        || testo.contains("primo piano")
+        || testo.contains("mouse")
+        || testo.contains("tastiera")
+    {
+        ("pc_in_uso", FASE_SICUREZZA)
+    } else if testo.contains("non risulta associato") || testo.contains("destinatario") {
+        ("chat_non_verificata", FASE_CHAT)
+    } else if testo.contains("allegato")
+        || testo.contains("anteprima")
+        || testo.contains("didascalia")
+        || testo.contains("documento")
+    {
+        ("allegato_non_verificato", FASE_ALLEGATO)
+    } else if testo.contains("pulsante invia") || testo.contains("comando invia") {
+        ("invio_non_verificato", FASE_INVIO)
+    } else if testo.contains("compositore") || testo.contains("campo messaggio") {
+        ("compositore_non_verificato", FASE_COMPOSITORE)
+    } else if testo.contains("testo") || testo.contains("appunti") {
+        ("testo_non_verificato", FASE_TESTO)
+    } else if testo.contains("finestra") || testo.contains("automation") {
+        ("finestra_non_verificata", FASE_FINESTRA)
+    } else if esito_finale_in_verifica(&testo) {
+        ("esito_non_verificato", FASE_VERIFICA)
+    } else {
+        ("automazione_non_riuscita", FASE_VERIFICA)
+    }
+}
+
+fn esito_finale_in_verifica(testo: &str) -> bool {
+    testo.contains("svuot") || testo.contains("ricevuto") || testo.contains("verifica la chat")
+}
+
 fn errore(esito_ambiguo: bool, messaggio: impl Into<String>) -> ErroreWhatsAppWindows {
+    let messaggio = messaggio.into();
+    let (codice, fase) = classifica_errore(&messaggio);
     ErroreWhatsAppWindows {
-        messaggio: messaggio.into(),
+        messaggio,
+        codice: codice.into(),
+        fase: fase.into(),
         esito_ambiguo,
         attivita_utente: false,
     }
@@ -184,6 +310,8 @@ fn errore_attivita_utente() -> ErroreWhatsAppWindows {
     ErroreWhatsAppWindows {
         messaggio: "Invio WhatsApp in attesa: il PC è in uso. La coda riprenderà automaticamente."
             .into(),
+        codice: "pc_in_uso".into(),
+        fase: FASE_SICUREZZA.into(),
         esito_ambiguo: false,
         attivita_utente: true,
     }
@@ -192,8 +320,78 @@ fn errore_attivita_utente() -> ErroreWhatsAppWindows {
 fn errore_annullamento() -> ErroreWhatsAppWindows {
     ErroreWhatsAppWindows {
         messaggio: "Invio WhatsApp annullato.".into(),
+        codice: "invio_annullato".into(),
+        fase: FASE_SICUREZZA.into(),
         esito_ambiguo: false,
         attivita_utente: false,
+    }
+}
+
+fn registra_esito(riuscito: bool, error: Option<&ErroreWhatsAppWindows>, durata: Duration) {
+    let durata_ms = durata.as_millis().min(u128::from(u64::MAX)) as u64;
+    let (codice, fase, messaggio, esito_ambiguo, attivita_utente) = error
+        .map(|value| {
+            (
+                value.codice.clone(),
+                value.fase.clone(),
+                value.messaggio.clone(),
+                value.esito_ambiguo,
+                value.attivita_utente,
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                "ok".into(),
+                "completato".into(),
+                String::new(),
+                false,
+                false,
+            )
+        });
+    *ultimo_esito()
+        .lock()
+        .expect("whatsapp diagnostics poisoned") = Some(WhatsappUltimoEsitoDto {
+        riuscito,
+        codice,
+        fase,
+        messaggio,
+        esito_ambiguo,
+        attivita_utente,
+        durata_ms,
+        avvenuto_ms: super::now_ms(),
+    });
+    if riuscito {
+        let mut campioni = prestazioni().lock().expect("whatsapp performance poisoned");
+        if campioni.len() == 64 {
+            campioni.pop_front();
+        }
+        campioni.push_back(durata_ms);
+    }
+}
+
+pub(super) fn registra_errore_esterno(codice: &str, fase: &str, messaggio: &str, durata: Duration) {
+    registra_esito(
+        false,
+        Some(&ErroreWhatsAppWindows {
+            messaggio: messaggio.into(),
+            codice: codice.into(),
+            fase: fase.into(),
+            esito_ambiguo: false,
+            attivita_utente: false,
+        }),
+        durata,
+    );
+}
+
+pub(super) fn registra_collaudo_completato(durata: Duration) {
+    registra_esito(true, None, durata);
+    if let Some(esito) = ultimo_esito()
+        .lock()
+        .expect("whatsapp diagnostics poisoned")
+        .as_mut()
+    {
+        esito.codice = "collaudo_completato".into();
+        esito.fase = "collaudo".into();
     }
 }
 
@@ -344,8 +542,49 @@ fn compositore_messaggio(
     Ok(
         unsafe { finestra.FindFirst(TreeScope_Descendants, &condizione) }
             .ok()
-            .filter(elemento_visibile),
+            .filter(elemento_visibile)
+            .filter(elemento_con_area_valida),
     )
+}
+
+fn compositore_messaggio_fallback(
+    automation: &IUIAutomation,
+    finestra: &IUIAutomationElement,
+) -> windows::core::Result<Option<IUIAutomationElement>> {
+    let rettangolo_finestra = unsafe { finestra.CurrentBoundingRectangle()? };
+    let mut candidati = elementi_per_controllo(automation, finestra, UIA_EditControlTypeId.0)?
+        .into_iter()
+        .filter(elemento_visibile)
+        .filter_map(|elemento| {
+            let rettangolo = unsafe { elemento.CurrentBoundingRectangle() }.ok()?;
+            let larghezza = rettangolo.right.saturating_sub(rettangolo.left);
+            let altezza = rettangolo.bottom.saturating_sub(rettangolo.top);
+            let nella_meta_inferiore = rettangolo.top
+                >= rettangolo_finestra.top
+                    + (rettangolo_finestra.bottom - rettangolo_finestra.top) / 2;
+            let ha_pattern_testo = unsafe {
+                elemento.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            }
+            .is_ok()
+                || unsafe {
+                    elemento.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+                }
+                .is_ok();
+            (larghezza >= 120
+                && (18..=320).contains(&altezza)
+                && nella_meta_inferiore
+                && ha_pattern_testo)
+                .then_some((
+                    unsafe { elemento.CurrentHasKeyboardFocus() }
+                        .map(|value| value.as_bool())
+                        .unwrap_or(false),
+                    rettangolo.bottom,
+                    elemento,
+                ))
+        })
+        .collect::<Vec<_>>();
+    candidati.sort_by_key(|(focus, bottom, _)| (*focus, *bottom));
+    Ok(candidati.pop().map(|(_, _, elemento)| elemento))
 }
 
 fn nome_indica_compositore_messaggio(value: &str) -> bool {
@@ -437,6 +676,13 @@ fn controlli_per_compositore(
     compositore: IUIAutomationElement,
     richiedi_invia: bool,
 ) -> windows::core::Result<Option<ControlliCompositore>> {
+    // WebView2 può lasciare per pochi istanti nell'albero il compositore della
+    // chat precedente con rettangolo vuoto. Non deve diventare un errore
+    // definitivo: scartandolo qui il ciclo di ricerca può prendere il nodo
+    // corrente senza introdurre attese aggiuntive.
+    if !elemento_con_area_valida(&compositore) {
+        return Ok(None);
+    }
     if !richiedi_invia {
         // Nelle build recenti il contenteditable corrente e i pulsanti
         // microfono/Invia possono provenire da due snapshot UIA diversi: il
@@ -468,6 +714,37 @@ fn controlli_per_compositore(
         }
         antenato = padre;
     }
+    if richiedi_invia {
+        let mut candidati =
+            elementi_per_controllo(automation, finestra, UIA_ButtonControlTypeId.0)?
+                .into_iter()
+                .filter(elemento_visibile)
+                .filter(|pulsante| pulsante_accanto_al_compositore(pulsante, &compositore))
+                .filter(|pulsante| {
+                    unsafe { pulsante.CurrentIsEnabled() }
+                        .map(|value| value.as_bool())
+                        .unwrap_or(false)
+                        && unsafe {
+                            pulsante.GetCurrentPatternAs::<IUIAutomationInvokePattern>(
+                                UIA_InvokePatternId,
+                            )
+                        }
+                        .is_ok()
+                })
+                .collect::<Vec<_>>();
+        candidati.sort_by_key(|pulsante| {
+            unsafe { pulsante.CurrentBoundingRectangle() }
+                .map(|rettangolo| rettangolo.left)
+                .unwrap_or_default()
+        });
+        if let Some(invia) = candidati.pop() {
+            return Ok(Some(ControlliCompositore {
+                finestra: finestra.clone(),
+                compositore,
+                invia,
+            }));
+        }
+    }
     Ok(None)
 }
 
@@ -482,6 +759,7 @@ fn controlli_compositore_focalizzato(
     let compositore = match unsafe { automation.GetFocusedElement() } {
         Ok(elemento)
             if elemento_visibile(&elemento)
+                && elemento_con_area_valida(&elemento)
                 && unsafe { elemento.CurrentControlType() }
                     .map(|tipo| tipo == UIA_EditControlTypeId)
                     .unwrap_or(false)
@@ -514,9 +792,41 @@ fn normalizza_testo(value: &str) -> String {
     value
         .replace("\r\n", "\n")
         .replace('\r', "\n")
+        .lines()
+        .map(|riga| {
+            let riga = riga.trim_start();
+            // WhatsApp converte automaticamente "- " a inizio riga in un
+            // elenco ricco. UI Automation restituisce quindi un pallino anche
+            // se il testo affidato al compositore conteneva il trattino. Sono
+            // due rappresentazioni dello stesso contenuto visibile.
+            ["- ", "• ", "· "]
+                .iter()
+                .find_map(|prefisso| riga.strip_prefix(prefisso))
+                .map(|contenuto| format!("• {}", contenuto.trim_start()))
+                .unwrap_or_else(|| riga.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Evita che WhatsApp trasformi `- ` a inizio riga in un elenco rich-text.
+/// Quella trasformazione aggiunge un elemento vuoto quando il blocco è seguito
+/// da una riga bianca, alterando sia l'impaginazione sia il testo verificato.
+fn testo_senza_elenchi_automatici(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(|riga| {
+            riga.strip_prefix("- ")
+                .map(|contenuto| format!("• {contenuto}"))
+                .unwrap_or_else(|| riga.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalizza_identita(value: &str) -> String {
@@ -828,16 +1138,207 @@ fn finestra_mostra_destinatario(
         })
 }
 
+fn hwnd_da_cache() -> Option<HWND> {
+    let cache = cache_finestra()
+        .lock()
+        .expect("whatsapp window cache poisoned")
+        .clone();
+    if cache.hwnd == 0 {
+        return None;
+    }
+    let hwnd = HWND(cache.hwnd as *mut std::ffi::c_void);
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        *cache_finestra()
+            .lock()
+            .expect("whatsapp window cache poisoned") = FinestraWhatsappCache::default();
+        return None;
+    }
+    let mut pid = 0_u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (pid != 0 && pid == cache.pid).then_some(hwnd)
+}
+
+fn percorso_processo(pid: u32) -> Option<String> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buffer = vec![0_u16; 32_768];
+    let mut len = buffer.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    result.ok()?;
+    Some(String::from_utf16_lossy(&buffer[..len as usize]))
+}
+
+fn famiglia_pacchetto_processo(pid: u32) -> Option<String> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut len = 0_u32;
+    let prima_lettura = unsafe { GetPackageFamilyName(handle, &mut len, None) };
+    if prima_lettura != ERROR_INSUFFICIENT_BUFFER || len == 0 {
+        let _ = unsafe { CloseHandle(handle) };
+        return None;
+    }
+    let mut buffer = vec![0_u16; len as usize];
+    let risultato =
+        unsafe { GetPackageFamilyName(handle, &mut len, Some(PWSTR(buffer.as_mut_ptr()))) };
+    let _ = unsafe { CloseHandle(handle) };
+    if risultato != ERROR_SUCCESS || len == 0 {
+        return None;
+    }
+    let fine = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    Some(String::from_utf16_lossy(&buffer[..fine]))
+}
+
+fn descrivi_finestra(hwnd: HWND, fallback: bool) -> Option<FinestraWhatsappCache> {
+    if hwnd.0.is_null() || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    let mut pid = 0_u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return None;
+    }
+    let percorso = fallback
+        .then(|| percorso_processo(pid))
+        .flatten()
+        .unwrap_or_default();
+    let pacchetto = fallback
+        .then(|| famiglia_pacchetto_processo(pid))
+        .flatten()
+        .unwrap_or_default();
+    let processo = Path::new(&percorso)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(if fallback { "" } else { "WhatsApp" })
+        .to_string();
+    Some(FinestraWhatsappCache {
+        hwnd: hwnd.0 as isize,
+        pid,
+        processo,
+        pacchetto,
+        percorso,
+        trovata_con_fallback: fallback,
+    })
+}
+
+fn salva_cache_finestra(hwnd: HWND, fallback: bool) {
+    if let Some(nuova) = descrivi_finestra(hwnd, fallback) {
+        *cache_finestra()
+            .lock()
+            .expect("whatsapp window cache poisoned") = nuova;
+    }
+}
+
+unsafe extern "system" fn enumera_finestre_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        let finestre = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+        finestre.push(hwnd);
+    }
+    true.into()
+}
+
+fn trova_finestra_whatsapp_per_processo() -> Option<HWND> {
+    let mut finestre = Vec::<HWND>::new();
+    let _ = unsafe {
+        EnumWindows(
+            Some(enumera_finestre_callback),
+            LPARAM((&mut finestre as *mut Vec<HWND>) as isize),
+        )
+    };
+    let foreground = unsafe { GetForegroundWindow() };
+    finestre.sort_by_key(|hwnd| hwnd.0 == foreground.0);
+    finestre.into_iter().rev().find(|hwnd| {
+        let mut pid = 0_u32;
+        unsafe { GetWindowThreadProcessId(*hwnd, Some(&mut pid)) };
+        let percorso = percorso_processo(pid).unwrap_or_default().to_lowercase();
+        let pacchetto = famiglia_pacchetto_processo(pid)
+            .unwrap_or_default()
+            .to_lowercase();
+        PathBuf::from(&percorso)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|nome| nome.contains("whatsapp"))
+            || percorso.contains("whatsappdesktop")
+            || pacchetto.contains("whatsapp")
+    })
+}
+
+fn finestra_whatsapp_nativa() -> Option<HWND> {
+    if let Some(hwnd) = hwnd_da_cache() {
+        return Some(hwnd);
+    }
+    if let Ok(hwnd) = unsafe { FindWindowW(PCWSTR::null(), w!("WhatsApp")) } {
+        if !hwnd.0.is_null() && unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return Some(hwnd);
+        }
+    }
+    trova_finestra_whatsapp_per_processo()
+}
+
+/// Ripristina soltanto lo stato discreto precedente al collaudo: se WhatsApp
+/// era minimizzato o non era aperto, al termine torna minimizzato; se era già
+/// visibile resta aperto. Il gestionale viene riportato davanti dal comando
+/// Tauri dopo che il lavoro bloccante è terminato.
+pub(super) struct RipristinoVisibilitaDopoCollaudo {
+    minimizza_al_termine: bool,
+}
+
+impl RipristinoVisibilitaDopoCollaudo {
+    pub(super) fn cattura() -> Self {
+        let minimizza_al_termine = finestra_whatsapp_nativa().is_none_or(|hwnd| {
+            !unsafe { IsWindowVisible(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool()
+        });
+        Self {
+            minimizza_al_termine,
+        }
+    }
+}
+
+impl Drop for RipristinoVisibilitaDopoCollaudo {
+    fn drop(&mut self) {
+        if !self.minimizza_al_termine {
+            return;
+        }
+        if let Some(hwnd) = finestra_whatsapp_nativa() {
+            let _ = unsafe { ShowWindowAsync(hwnd, SW_MINIMIZE) };
+        }
+    }
+}
+
 fn finestre_whatsapp(
     automation: &IUIAutomation,
 ) -> windows::core::Result<Vec<IUIAutomationElement>> {
+    // Percorso più rapido: dopo il primo riconoscimento conserviamo soltanto
+    // handle e PID, mai elementi UIA che WebView2 può rendere obsoleti.
+    if let Some(hwnd) = hwnd_da_cache() {
+        if let Ok(finestra) = unsafe { automation.ElementFromHandle(hwnd) } {
+            return Ok(vec![finestra]);
+        }
+    }
     // Il titolo nativo individua l'unica finestra reale anche quando WebView2
     // pubblica decine di top-level UIA duplicati con handle interni diversi.
     if let Ok(hwnd) = unsafe { FindWindowW(PCWSTR::null(), w!("WhatsApp")) } {
         if !hwnd.0.is_null() {
             if let Ok(finestra) = unsafe { automation.ElementFromHandle(hwnd) } {
+                salva_cache_finestra(hwnd, false);
                 return Ok(vec![finestra]);
             }
+        }
+    }
+    // Fallback lento, raggiunto soltanto quando cache e titolo esatto non sono
+    // disponibili (varianti Store/Business/localizzate di WhatsApp Desktop).
+    if let Some(hwnd) = trova_finestra_whatsapp_per_processo() {
+        if let Ok(finestra) = unsafe { automation.ElementFromHandle(hwnd) } {
+            salva_cache_finestra(hwnd, true);
+            return Ok(vec![finestra]);
         }
     }
     let root = unsafe { automation.GetRootElement()? };
@@ -874,16 +1375,28 @@ fn finestre_whatsapp(
     // primo piano è quella appena aperta dal deep-link; come fallback usiamo
     // quella visibile con area maggiore.
     finestre.sort_by_key(|(in_primo_piano, area, _)| (*in_primo_piano, *area));
-    Ok(finestre
+    let risultato = finestre
         .pop()
         .map(|(_, _, finestra)| vec![finestra])
-        .unwrap_or_default())
+        .unwrap_or_default();
+    if let Some(finestra) = risultato.first() {
+        if let Ok(hwnd) = unsafe { finestra.CurrentNativeWindowHandle() } {
+            salva_cache_finestra(hwnd, true);
+        }
+    }
+    Ok(risultato)
 }
 
 fn elemento_visibile(elemento: &IUIAutomationElement) -> bool {
     unsafe { elemento.CurrentIsOffscreen() }
         .map(|value| !value.as_bool())
         .unwrap_or(true)
+}
+
+fn elemento_con_area_valida(elemento: &IUIAutomationElement) -> bool {
+    unsafe { elemento.CurrentBoundingRectangle() }
+        .map(|rettangolo| rettangolo.right > rettangolo.left && rettangolo.bottom > rettangolo.top)
+        .unwrap_or(false)
 }
 
 struct StatoModalitaAllegato {
@@ -1452,12 +1965,18 @@ fn trova_controlli(
             }
         }
         if !richiedi_testo_esatto {
-            let compositore = compositore_messaggio(automation, &finestra).map_err(|error| {
-                errore(
-                    false,
-                    format!("Ricerca del campo messaggio WhatsApp non riuscita: {error}"),
-                )
-            })?;
+            let compositore = compositore_messaggio(automation, &finestra)
+                .map_err(|error| {
+                    errore(
+                        false,
+                        format!("Ricerca del campo messaggio WhatsApp non riuscita: {error}"),
+                    )
+                })?
+                .or_else(|| {
+                    compositore_messaggio_fallback(automation, &finestra)
+                        .ok()
+                        .flatten()
+                });
             verifica_interruzione()?;
             if let Some(compositore) = compositore {
                 // Il nome dell'anagrafica può differire dal nome account
@@ -1531,6 +2050,23 @@ fn trova_controlli(
                     compositore: compositore.clone(),
                     invia,
                 }));
+            }
+        }
+        // Le build che localizzano diversamente il nome accessibile del
+        // pulsante ricadono qui. Testo esatto e relazione geometrica restano
+        // obbligatori; InvokePattern serve soltanto a riconoscere il controllo.
+        for compositore in compositori {
+            if let Some(controlli) =
+                controlli_per_compositore(automation, &finestra, compositore, true).map_err(
+                    |error| {
+                        errore(
+                            false,
+                            format!("Ricerca alternativa del pulsante Invia non riuscita: {error}"),
+                        )
+                    },
+                )?
+            {
+                return Ok(Some(controlli));
             }
         }
     }
@@ -2307,6 +2843,34 @@ fn aziona_invio_interno(
     invia_testo: bool,
 ) -> Result<DestinazioneWhatsAppWindows, ErroreWhatsAppWindows> {
     let iniziato = Instant::now();
+    let risultato = aziona_invio_interno_impl(
+        numero,
+        destinatario,
+        corpo,
+        testo_apertura,
+        autorizzazione_input,
+        annullato,
+        invia_testo,
+    );
+    match &risultato {
+        Ok(_) => registra_esito(true, None, iniziato.elapsed()),
+        Err(error) => registra_esito(false, Some(error), iniziato.elapsed()),
+    }
+    risultato
+}
+
+fn aziona_invio_interno_impl(
+    numero: &str,
+    destinatario: &str,
+    corpo: &str,
+    testo_apertura: &str,
+    autorizzazione_input: Option<u32>,
+    annullato: impl Fn() -> bool,
+    invia_testo: bool,
+) -> Result<DestinazioneWhatsAppWindows, ErroreWhatsAppWindows> {
+    let corpo_preparato = testo_senza_elenchi_automatici(corpo);
+    let corpo = corpo_preparato.as_str();
+    let iniziato = Instant::now();
     let diagnostica = std::env::var("PHARMATEK_WHATSAPP_DIAGNOSTICA").as_deref() == Ok("1");
     let mut autorizzazione_input = autorizzazione_input;
     if annullato() {
@@ -2319,6 +2883,7 @@ fn aziona_invio_interno(
     // L'attesa sottostante assorbe quel solo assestamento e continua comunque
     // a fermarsi se l'operatore usa davvero mouse o tastiera.
     let mut ripristini_automazione = 0_u8;
+    let mut riaperture_deeplink = 0_u8;
     'riavvia_automazione: loop {
         let com = ComApartment::init()?;
         let automation: IUIAutomation = unsafe {
@@ -2505,9 +3070,28 @@ fn aziona_invio_interno(
             ));
             }
             if Instant::now() >= scadenza_apertura {
+                // La chiusura del dialog "numero non presente" può consumare il
+                // deep-link del destinatario seguente mentre WebView2 sta ancora
+                // sostituendo il proprio albero UIA. Non essendo stato premuto
+                // Invia, riaprire una sola volta la stessa chat è sicuro. Questo
+                // ramo resta fuori dal percorso rapido degli invii normali.
+                if riaperture_deeplink == 0 {
+                    riaperture_deeplink = 1;
+                    let url =
+                        crate::app::communication::url_whatsapp_con_testo(numero, testo_apertura);
+                    crate::platform::apri_url_sistema(&url).map_err(|_| {
+                        errore(
+                            false,
+                            "WhatsApp non ha riaperto la conversazione dopo il destinatario non disponibile.",
+                        )
+                    })?;
+                    drop(automation);
+                    drop(com);
+                    continue 'riavvia_automazione;
+                }
                 return Err(errore(
-                false,
-                "WhatsApp è aperto, ma il campo messaggio non è stato verificato. L'invio non è stato premuto.",
+                    false,
+                    "WhatsApp è aperto, ma il campo messaggio non è stato verificato. L'invio non è stato premuto.",
             ));
             }
             thread::sleep(PASSO_ATTESA);
@@ -2580,8 +3164,15 @@ fn aziona_invio_interno(
         }
         verifica_input_invariato(marcatore_sicurezza)?;
         verifica_pc_libero(autorizzazione_input)?;
-        if nome_pulsante_invia(&nome(&controlli.invia))
-            && pulsante_accanto_al_compositore(&controlli.invia, &controlli.compositore)
+        let pulsante_accanto =
+            pulsante_accanto_al_compositore(&controlli.invia, &controlli.compositore);
+        let pulsante_invocabile = unsafe {
+            controlli
+                .invia
+                .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+        }
+        .is_ok();
+        if pulsante_accanto && (nome_pulsante_invia(&nome(&controlli.invia)) || pulsante_invocabile)
         {
             clicca_pulsante_invia(&controlli, &annullato)?;
             diagnostica_tempi(diagnostica, iniziato, "pulsante Invia cliccato");
@@ -2611,6 +3202,30 @@ pub(super) fn aziona_invio_allegato(
     autorizzazione_input: Option<u32>,
     annullato: impl Fn() -> bool,
 ) -> Result<(), ErroreWhatsAppWindows> {
+    let iniziato = Instant::now();
+    let risultato = aziona_invio_allegato_impl(
+        path,
+        destinazione,
+        didascalia,
+        autorizzazione_input,
+        annullato,
+    );
+    match &risultato {
+        Ok(()) => registra_esito(true, None, iniziato.elapsed()),
+        Err(error) => registra_esito(false, Some(error), iniziato.elapsed()),
+    }
+    risultato
+}
+
+fn aziona_invio_allegato_impl(
+    path: &Path,
+    destinazione: &DestinazioneWhatsAppWindows,
+    didascalia: Option<&str>,
+    autorizzazione_input: Option<u32>,
+    annullato: impl Fn() -> bool,
+) -> Result<(), ErroreWhatsAppWindows> {
+    let didascalia_preparata = didascalia.map(testo_senza_elenchi_automatici);
+    let didascalia = didascalia_preparata.as_deref();
     let diagnostica = std::env::var("PHARMATEK_WHATSAPP_DIAGNOSTICA").as_deref() == Ok("1");
     let iniziato = Instant::now();
     let mut autorizzazione_input = autorizzazione_input;
@@ -2859,15 +3474,161 @@ pub(super) fn minimizza_finestre() {
     }
 }
 
+fn protocollo_whatsapp_registrato() -> bool {
+    [r"HKCU\Software\Classes\whatsapp", r"HKCR\whatsapp"]
+        .iter()
+        .any(|chiave| {
+            comando_senza_finestra("reg.exe")
+                .args(["query", chiave])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+}
+
+fn comando_senza_finestra(programma: &str) -> std::process::Command {
+    let mut comando = std::process::Command::new(programma);
+    comando.creation_flags(CREATE_NO_WINDOW.0);
+    comando
+}
+
+fn versione_file(percorso: &str) -> String {
+    if percorso.trim().is_empty() {
+        return String::new();
+    }
+    comando_senza_finestra("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-Item -LiteralPath $args[0]).VersionInfo.FileVersion",
+            "--",
+            percorso,
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+pub fn diagnostica_get() -> WhatsappDiagnosticaDto {
+    // Questa funzione è chiamata soltanto da una richiesta esplicita della UI:
+    // registro e versione del file non entrano mai nel percorso di invio.
+    let _ = ComApartment::init().and_then(|_| {
+        let automation: IUIAutomation = unsafe {
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| errore(false, error.to_string()))?
+        };
+        finestre_whatsapp(&automation)
+            .map(|_| ())
+            .map_err(|error| errore(false, error.to_string()))
+    });
+    let mut cache = cache_finestra()
+        .lock()
+        .expect("whatsapp window cache poisoned")
+        .clone();
+    if cache.percorso.is_empty() && cache.pid != 0 {
+        cache.percorso = percorso_processo(cache.pid).unwrap_or_default();
+        if let Some(nome) = Path::new(&cache.percorso)
+            .file_name()
+            .and_then(|value| value.to_str())
+        {
+            cache.processo = nome.to_string();
+        }
+    }
+    if cache.pacchetto.is_empty() && cache.pid != 0 {
+        cache.pacchetto = famiglia_pacchetto_processo(cache.pid).unwrap_or_default();
+    }
+    *cache_finestra()
+        .lock()
+        .expect("whatsapp window cache poisoned") = cache.clone();
+    let ultimo_esito = ultimo_esito()
+        .lock()
+        .expect("whatsapp diagnostics poisoned")
+        .clone();
+    let campioni = prestazioni()
+        .lock()
+        .expect("whatsapp performance poisoned")
+        .clone();
+    let (mediana_ms, percentile_95_ms) = riepiloga_prestazioni(&campioni);
+    WhatsappDiagnosticaDto {
+        protocollo_registrato: protocollo_whatsapp_registrato(),
+        finestra_rilevata: cache.hwnd != 0,
+        processo: cache.processo,
+        pacchetto: cache.pacchetto,
+        versione: versione_file(&cache.percorso),
+        identificazione_fallback: cache.trovata_con_fallback,
+        campioni_prestazioni: campioni.len(),
+        mediana_ms,
+        percentile_95_ms,
+        ultimo_esito,
+    }
+}
+
+pub fn diagnostica_rapida_get() -> WhatsappDiagnosticaDto {
+    // Usata per comporre la schermata Impostazioni: nessuna scansione UIA,
+    // processo figlio, registro o lettura della versione dal disco.
+    let cache = cache_finestra()
+        .lock()
+        .expect("whatsapp window cache poisoned")
+        .clone();
+    let ultimo_esito = ultimo_esito()
+        .lock()
+        .expect("whatsapp diagnostics poisoned")
+        .clone();
+    let campioni = prestazioni()
+        .lock()
+        .expect("whatsapp performance poisoned")
+        .clone();
+    let (mediana_ms, percentile_95_ms) = riepiloga_prestazioni(&campioni);
+    WhatsappDiagnosticaDto {
+        protocollo_registrato: false,
+        finestra_rilevata: cache.hwnd != 0,
+        processo: cache.processo,
+        pacchetto: cache.pacchetto,
+        versione: String::new(),
+        identificazione_fallback: cache.trovata_con_fallback,
+        campioni_prestazioni: campioni.len(),
+        mediana_ms,
+        percentile_95_ms,
+        ultimo_esito,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        aziona_invio, compositore_contiene_testo, intestazione_corrisponde,
+        aziona_invio, classifica_errore, compositore_contiene_testo, intestazione_corrisponde,
         nome_pulsante_chiudi_allegato, nome_pulsante_conferma_interruzione, nome_pulsante_invia,
-        nome_pulsante_vocale, normalizza_testo, testo_chiede_interruzione,
+        nome_pulsante_vocale, normalizza_testo, riepiloga_prestazioni, testo_chiede_interruzione,
         testo_indica_modalita_allegato, testo_indica_numero_non_whatsapp, CUIAutomation,
         CoCreateInstance, ComApartment, IUIAutomation, CLSCTX_INPROC_SERVER,
     };
+    use std::collections::VecDeque;
+
+    #[test]
+    fn statistiche_prestazioni_calcolano_mediana_e_percentile_95() {
+        let campioni = VecDeque::from([100, 90, 130, 110, 95, 105, 120, 125, 115, 1_000]);
+        assert_eq!(riepiloga_prestazioni(&campioni), (115, 1_000));
+        assert_eq!(riepiloga_prestazioni(&VecDeque::new()), (0, 0));
+    }
+
+    #[test]
+    fn errori_whatsapp_indicano_la_fase_operativa() {
+        assert_eq!(
+            classifica_errore("WhatsApp è aperto, ma il campo messaggio non è verificato"),
+            ("compositore_non_verificato", "compositore")
+        );
+        assert_eq!(
+            classifica_errore("Il pulsante Invia di WhatsApp non è localizzabile"),
+            ("invio_non_verificato", "invio")
+        );
+        assert_eq!(
+            classifica_errore("L’anteprima del documento non si è chiusa"),
+            ("allegato_non_verificato", "allegato")
+        );
+    }
 
     fn attendi_pc_libero_per_collaudo() {
         while !super::pc_pronto_per_whatsapp() {
@@ -3272,7 +4033,7 @@ mod tests {
     #[test]
     fn annullamento_ferma_l_automazione_prima_di_aprire_com() {
         let errore = aziona_invio(
-            concat!("+39", "328", "188", "3355"),
+            "+393281883355",
             "Luca Tartaglia",
             "Messaggio da non inviare",
             "·pt-test",
@@ -3288,18 +4049,18 @@ mod tests {
     #[test]
     fn confronta_numero_o_nome_senza_affidarsi_alle_coordinate() {
         assert!(intestazione_corrisponde(
-            concat!("+39", " 328", " 188", " 3355 Inviati un messaggio"),
-            concat!("+39", "328", "188", "3355"),
+            "+39 328 188 3355 Inviati un messaggio",
+            "+393281883355",
             "Altro nome"
         ));
         assert!(intestazione_corrisponde(
             "Luca Tartaglia (tu) Inviati un messaggio",
-            concat!("+39", "328", "188", "3355"),
+            "+393281883355",
             "Dott. Luca Tartaglia"
         ));
         assert!(!intestazione_corrisponde(
             "Mario Bianchi online",
-            concat!("+39", "328", "188", "3355"),
+            "+393281883355",
             "Luca Tartaglia"
         ));
     }
@@ -3327,6 +4088,32 @@ mod tests {
         assert_ne!(
             normalizza_testo("Messaggio A"),
             normalizza_testo("Messaggio B")
+        );
+    }
+
+    #[test]
+    fn il_confronto_riconosce_gli_elenchi_convertiti_da_whatsapp() {
+        let atteso = "Pagamento scaduto:\n- Saldo scaduto il 04/08/2026: € 175,00";
+        let elenco_whatsapp = "Pagamento scaduto:\r\n• Saldo scaduto il 04/08/2026: € 175,00";
+        let elenco_uia_alternativo = "Pagamento scaduto:\n· Saldo scaduto il 04/08/2026: € 175,00";
+        assert_eq!(normalizza_testo(atteso), normalizza_testo(elenco_whatsapp));
+        assert_eq!(
+            normalizza_testo(atteso),
+            normalizza_testo(elenco_uia_alternativo)
+        );
+        assert_ne!(
+            normalizza_testo("Ordine 1 · Rata"),
+            normalizza_testo("Ordine 1 - Rata"),
+            "la tolleranza deve valere soltanto per i marcatori a inizio riga"
+        );
+    }
+
+    #[test]
+    fn prepara_i_punti_elenco_senza_attivare_la_formattazione_di_whatsapp() {
+        let testo = "Pagamento scaduto:\r\n- Acconto: € 100,00\r\n\r\nAltri pagamenti:\r\n- Saldo: € 175,00";
+        assert_eq!(
+            super::testo_senza_elenchi_automatici(testo),
+            "Pagamento scaduto:\n• Acconto: € 100,00\n\nAltri pagamenti:\n• Saldo: € 175,00"
         );
     }
 
@@ -3375,7 +4162,7 @@ mod tests {
     #[test]
     fn riconosce_il_numero_non_associato_a_whatsapp_come_errore_definitivo() {
         assert!(testo_indica_numero_non_whatsapp(
-            concat!("Il numero +39", " 330", " 284", " 7548 non è su WhatsApp."),
+            "Il numero +39 330 284 7548 non è su WhatsApp.",
         ));
         assert!(testo_indica_numero_non_whatsapp(
             "This phone number is not on WhatsApp",

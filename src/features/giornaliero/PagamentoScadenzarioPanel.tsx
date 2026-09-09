@@ -6,12 +6,12 @@ import {
   Card,
   Checkbox,
   Group,
-  NumberInput,
   Select,
   Stack,
   Text,
   TextInput,
 } from "@mantine/core";
+import { EuroInput } from "../../ui/EuroInput";
 import {
   IconCalendarRepeat,
   IconCashBanknote,
@@ -133,17 +133,12 @@ export function PagamentoScadenzarioPanel({
       <Stack gap="xs">
         <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
           <Group gap="sm" align="flex-end" wrap="wrap">
-            <NumberInput
+            <EuroInput
               label="Acconto previsto"
               description={codTutto ? "nessuno (COD)" : ordineId ? "nello scadenzario" : "concordato"}
               value={acconto}
               onChange={(value) => onAccontoChange(value === "" ? "" : Number(value))}
               onFocus={onAccontoFocus}
-              prefix="€ "
-              decimalScale={2}
-              fixedDecimalScale
-              thousandSeparator="."
-              decimalSeparator=","
               min={0}
               max={totale / 100}
               w={150}

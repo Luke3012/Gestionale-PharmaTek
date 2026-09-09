@@ -16,7 +16,6 @@ import {
   Select,
   Stack,
   Text,
-  TextInput,
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
@@ -50,10 +49,12 @@ import { EsportaProvvigioni, type PagamentoProvv } from "./provvigioniExport";
 import { dialog } from "../../ui/dialog/store";
 import { Tabella, type DataTableColumn } from "../../ui/Tabella";
 import { usePrefs } from "../../lib/prefs";
-import { durataSwitchTabelleMs } from "../../ui/motion";
-import { formattaDataItaliana } from "../../lib/date";
+import { VistaTabellaParallela } from "../../ui/VistaTabellaParallela";
+import { estremiPeriodoIso, formattaDataItaliana } from "../../lib/date";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { RiepilogoLink } from "../../shell/RiepilogoLink";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
+import { opzioniRecordNome } from "../../lib/opzioniRecord";
 
 const EVENTI_RICARICA = [
   "ordine:salvato",
@@ -103,33 +104,6 @@ function etichettaTipo(tipo: string, valore: number): string {
 
 // ---- Periodo: preset rapidi + intervallo personalizzato (estremi ISO inclusi) ----
 type Periodo = "tutto" | "mese" | "scorso" | "trimestre" | "anno" | "custom";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-const isoPrimo = (y: number, m0: number) => `${y}-${pad(m0 + 1)}-01`;
-const isoUltimo = (y: number, m0: number) =>
-  `${y}-${pad(m0 + 1)}-${pad(new Date(y, m0 + 1, 0).getDate())}`;
-
-/** Estremi [dal, al] (inclusi, ISO) del periodo scelto, o null per "tutto". */
-function periodoBounds(periodo: Periodo, da: string, a: string, annoG: number): [string, string] | null {
-  if (periodo === "tutto") return null;
-  if (periodo === "custom") return [da || "0000-01-01", a || "9999-12-31"];
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  if (periodo === "mese") return [isoPrimo(y, m), isoUltimo(y, m)];
-  if (periodo === "scorso") {
-    const py = m === 0 ? y - 1 : y;
-    const pm = m === 0 ? 11 : m - 1;
-    return [isoPrimo(py, pm), isoUltimo(py, pm)];
-  }
-  if (periodo === "trimestre") {
-    // Ultimi 3 mesi incluso quello corrente: dal 1° del mese di 2 mesi fa a fine mese corrente.
-    const d = new Date(y, m - 2, 1);
-    return [isoPrimo(d.getFullYear(), d.getMonth()), isoUltimo(y, m)];
-  }
-  const annoBase = annoG !== 0 ? annoG : y;
-  return [`${annoBase}-01-01`, `${annoBase}-12-31`]; // anno corrente o selezionato
-}
 
 const OPZIONI_PERIODO = [
   { value: "tutto", label: "Tutto" },
@@ -483,13 +457,21 @@ const SezioneAgentiSenzaProvvigioni = forwardRef<
   );
 });
 
+export interface FiltroProvvigioniIniziale {
+  nonce?: number;
+  dal?: string;
+  al?: string;
+  agenteId?: string;
+  ordina?: "maturato" | "potenziale" | "nome";
+}
+
 export function ProvvigioniView({
   filtroIniziale,
   attiva = true,
 }: {
   attiva?: boolean;
   /** Deep-link dashboard: periodo (dal/al) e agente da pre-applicare. */
-  filtroIniziale?: { nonce?: number; dal?: string; al?: string; agenteId?: string; ordina?: "maturato" | "potenziale" | "nome" };
+  filtroIniziale?: FiltroProvvigioniIniziale;
 } = {}) {
   const { anno, ridurreAnimazioni } = usePrefs();
   const [agenti, setAgenti] = useState<RecordDto[]>([]);
@@ -534,7 +516,7 @@ export function ProvvigioniView({
   const carica = useCallback(async (silente = false) => {
     if (!silente) setCaricamento(true);
     try {
-      const b = periodoBounds(periodo, da, al, anno);
+      const b = estremiPeriodoIso(periodo, da, al, anno);
       setReport(await api.provvigioniReport(b?.[0] ?? null, b?.[1] ?? null, agenteId));
     } catch (e) {
       toast.error(`Caricamento provvigioni non riuscito: ${e}`);
@@ -563,7 +545,7 @@ export function ProvvigioniView({
   }, [attiva, scrollAgente, caricamento, report]);
 
   const datiAgenti = useMemo(
-    () => agenti.map((a) => ({ value: a.id, label: (a.data.nome as string) || "(senza nome)" })),
+    () => opzioniRecordNome(agenti),
     [agenti]
   );
 
@@ -644,17 +626,10 @@ export function ProvvigioniView({
   }
 
 
-  const nascosta = !attiva || (caricamento && report === null);
-
   return (
-    <Stack
-      gap="md"
-      style={{
-        height: "100%",
-        opacity: nascosta ? 0 : 1,
-        visibility: nascosta ? "hidden" : "visible",
-        transition: ridurreAnimazioni ? "none" : `opacity ${durataSwitchTabelleMs}ms ease-out`,
-      }}
+    <VistaTabellaParallela
+      nascosta={!attiva || (caricamento && report === null)}
+      ridurreAnimazioni={ridurreAnimazioni}
     >
       {/* Barra filtri + export */}
       <Group gap="sm" wrap="nowrap" align="flex-end">
@@ -699,10 +674,7 @@ export function ProvvigioniView({
                     chiave: "date",
                     larghezza: 260,
                     nodo: (
-                      <Group gap="xs" grow>
-                        <TextInput label="Dal" type="date" value={da} onChange={(e) => setDa(e.currentTarget.value)} />
-                        <TextInput label="Al" type="date" value={al} onChange={(e) => setAl(e.currentTarget.value)} />
-                      </Group>
+                      <FiltroIntervalloDate dal={da} al={al} onDalChange={setDa} onAlChange={setAl} gap="xs" />
                     ),
                   },
                 ]
@@ -839,6 +811,6 @@ export function ProvvigioniView({
         bloccaChiusura={!!esportaPag}
       />
       <EsportaProvvigioni pagamento={esportaPag} onClose={() => setEsportaPag(null)} />
-    </Stack>
+    </VistaTabellaParallela>
   );
 }

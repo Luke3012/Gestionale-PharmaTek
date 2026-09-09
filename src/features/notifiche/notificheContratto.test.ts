@@ -6,6 +6,8 @@ import {
   derivaNotifiche,
   idPromemoriaContratto,
   idSollecitoContratto,
+  ordinaNotifiche,
+  type Notifica,
 } from "./notifiche";
 
 const contratto = {
@@ -37,13 +39,41 @@ describe("contratto condiviso derivazione notifiche", () => {
     }
   });
 
+  it("mette i messaggi in cima al popover, dal piu recente", () => {
+    const notifica = (
+      id: string,
+      tipo: Notifica["tipo"],
+      ts: number,
+      urgenza: Notifica["urgenza"] = "info",
+    ): Notifica => ({
+      id,
+      tipo,
+      titolo: id,
+      dettaglio: "",
+      urgenza,
+      ts,
+      collegato: null,
+    });
+    const notifiche = ordinaNotifiche([
+      notifica("sollecito:pagamento-1:1", "sollecito", 10, "scaduto"),
+      notifica("msg:vecchio", "messaggio", 100),
+      notifica("msg:nuovo", "messaggio", 200),
+    ]);
+
+    expect(notifiche.map((notifica) => notifica.id)).toEqual([
+      "msg:nuovo",
+      "msg:vecchio",
+      "sollecito:pagamento-1:1",
+    ]);
+  });
+
   it("porta nella campanella solo gli invii falliti", () => {
     const base = {
       revision: "1",
       canale: "whatsapp",
       destinatarioEntita: "cliente",
       destinatarioId: "cliente-1",
-      recapito: ["+39", "328", "188", "3355"].join(""),
+      recapito: "+393281883355",
       oggetto: "",
       corpo: "Test",
       modelloId: "",

@@ -7,21 +7,26 @@ import {
 import { risolviModello } from "./modelliComunicazione";
 import type { PagamentoVista } from "../../lib/tauri";
 import {
+  datiDestinatarioDaRecord,
   datiPagamentoComunicazione,
   importoResiduoComunicazione,
   riepilogoSollecitoPagamenti,
+  variabiliNomeDestinatario,
 } from "./apriComunicazione";
 import { formattaStimaInvio, stimaInvioSecondi } from "./stimaInvio";
 import {
   aggiornaTargetDaRecord,
   canaleCampagnaIniziale,
+  chiaveDestinatarioCampagna,
   chiaveTargetCampagna,
   riallineaCanaleCampagna,
 } from "./CampagnaComunicazioni";
-import { urlConversazioneWhatsapp, urlNuovaEmail } from "./recapiti";
-
-const EMAIL_DEMO = ["cliente", ["example", "invalid"].join(".")].join("@");
-const TELEFONO_DEMO = ["328", "188", "3355"].join(" ");
+import {
+  normalizzaTelefonoWhatsapp,
+  urlConversazioneWhatsapp,
+  urlNuovaEmail,
+} from "./recapiti";
+import { leggiPayloadComunicazione } from "./ElementiComunicazione";
 
 function pagamento(
   id: string,
@@ -59,6 +64,31 @@ function pagamento(
 }
 
 describe("compositore comunicazioni", () => {
+  it("genera entrambi gli alias del nome destinatario", () => {
+    expect(variabiliNomeDestinatario("Cliente Test")).toEqual({
+      nome_cliente: "Cliente Test",
+      ragione_sociale: "Cliente Test",
+    });
+  });
+
+  it("deriva nome e recapiti dall'anagrafica con lo stesso ordine di priorità", () => {
+    expect(datiDestinatarioDaRecord({
+      id: "cliente-1",
+      revision: "rev-1",
+      deleted: false,
+      data: {
+        ragione_sociale: "  Azienda Test  ",
+        nome: "Nome ignorato",
+        email: "  ",
+        telefono: " 3281883355 ",
+      },
+    }, "Nome precedente")).toEqual({
+      nome: "Azienda Test",
+      email: "",
+      telefono: "3281883355",
+    });
+  });
+
   it("mantiene distinti due preventivi dello stesso destinatario", () => {
     const comune = {
       destinatarioEntita: "cliente" as const,
@@ -94,27 +124,40 @@ describe("compositore comunicazioni", () => {
   });
 
   it("riconosce indirizzi e-mail utilizzabili", () => {
-    expect(emailComunicazioneValida(EMAIL_DEMO)).toBe(true);
-    expect(emailComunicazioneValida(["cliente", "example"].join("@"))).toBe(false);
-    expect(emailComunicazioneValida(`\nBcc: ${EMAIL_DEMO}`)).toBe(
+    expect(emailComunicazioneValida("")).toBe(true);
+    expect(emailComunicazioneValida("cliente@example")).toBe(false);
+    expect(emailComunicazioneValida("\nBcc: ")).toBe(
       false,
     );
   });
 
-  it("riconosce cellulari italiani nei formati più comuni", () => {
-    expect(telefonoWhatsappValido(TELEFONO_DEMO)).toBe(true);
-    expect(telefonoWhatsappValido(["+39", TELEFONO_DEMO].join(" "))).toBe(true);
-    expect(telefonoWhatsappValido(["0039", TELEFONO_DEMO].join(" "))).toBe(true);
-    expect(telefonoWhatsappValido("081 123 4567")).toBe(false);
+  it("riconosce i recapiti convertibili nel formato internazionale", () => {
+    expect(telefonoWhatsappValido("328 188 3355")).toBe(true);
+    expect(telefonoWhatsappValido("328 188 335")).toBe(true);
+    expect(telefonoWhatsappValido("+39 328 188 3355")).toBe(true);
+    expect(telefonoWhatsappValido("0039 328 188 3355")).toBe(true);
+    expect(telefonoWhatsappValido("081 123 4567")).toBe(true);
+    expect(telefonoWhatsappValido("+39 081 123 4567")).toBe(true);
+    expect(telefonoWhatsappValido("123")).toBe(false);
+  });
+
+  it("preferisce il cellulare quando l'anagrafica contiene più recapiti", () => {
+    expect(normalizzaTelefonoWhatsapp("081 1234567 - 328 188 3355")).toBe(
+      "+393281883355",
+    );
   });
 
   it("genera deep-link sicuri per WhatsApp e il client e-mail", () => {
-    expect(urlConversazioneWhatsapp(TELEFONO_DEMO)).toBe(
+    expect(urlConversazioneWhatsapp("328 188 3355")).toBe(
       "whatsapp://send?phone=393281883355",
     );
-    expect(urlConversazioneWhatsapp("081 123 4567")).toBeNull();
-    expect(urlNuovaEmail(EMAIL_DEMO)).toBe(`mailto:${encodeURIComponent(EMAIL_DEMO)}`);
-    expect(urlNuovaEmail(`\nBcc: ${EMAIL_DEMO}`)).toBeNull();
+    expect(urlConversazioneWhatsapp("081 123 4567")).toBe(
+      "whatsapp://send?phone=390811234567",
+    );
+    expect(urlNuovaEmail("")).toBe(
+      "mailto:cliente%40example.it",
+    );
+    expect(urlNuovaEmail("\nBcc: ")).toBeNull();
   });
 
   it("non ricarica i modelli quando cambia soltanto il recapito", () => {
@@ -153,11 +196,26 @@ describe("compositore comunicazioni", () => {
           destinatarioEntita: "cliente",
           destinatarioId: "cliente-2",
           destinatarioNome: "Cliente con email",
-          email: EMAIL_DEMO,
+          email: "",
           telefono: "3281883355",
         },
       ]),
     ).toBe("entrambi");
+  });
+
+  it("identifica la stessa persona anche se compare da origini diverse", () => {
+    const primo = {
+      destinatarioEntita: "cliente" as const,
+      destinatarioId: "cliente-1",
+      destinatarioNome: "Cliente Test",
+      origineEntita: "ordine",
+      origineId: "ordine-1",
+    };
+    const secondo = { ...primo, origineId: "ordine-2" };
+    expect(chiaveTargetCampagna(primo)).not.toBe(chiaveTargetCampagna(secondo));
+    expect(chiaveDestinatarioCampagna(primo)).toBe(
+      chiaveDestinatarioCampagna(secondo),
+    );
   });
 
   it("ripiega sull'unico canale disponibile per l'intera campagna", () => {
@@ -202,7 +260,7 @@ describe("compositore comunicazioni", () => {
         destinatarioEntita: "cliente" as const,
         destinatarioId: "cliente-1",
         destinatarioNome: "Cliente",
-        email: EMAIL_DEMO,
+        email: "",
         telefono: "3281883355",
       },
     ];
@@ -280,7 +338,7 @@ describe("compositore comunicazioni", () => {
     expect(risultato.iban).toBe("IT00TEST");
   });
 
-  it("usa l'intestatario generico per un conto configurato", () => {
+  it("usa l'intestatario specifico per il conto Poste", () => {
     const risultato = datiPagamentoComunicazione(
       [{ contoId: "poste", contoTipo: "banca" }],
       [
@@ -297,7 +355,7 @@ describe("compositore comunicazioni", () => {
       ],
     );
     expect(risultato.istruzioni_pagamento).toContain(
-      "Intestatario: PharmaTek",
+      "Intestatario: G.M. PHARMATEK S.R.L.S.",
     );
     expect(risultato.istruzioni_pagamento).not.toContain("Bonifico su Poste");
   });
@@ -434,5 +492,14 @@ describe("stima non invasiva degli invii", () => {
     expect(stimaInvioSecondi(["email", "whatsapp"])).toBe(9);
     expect(formattaStimaInvio(9)).toBe("≈ 9 s");
     expect(formattaStimaInvio(70)).toBe("≈ 1 min 10 s");
+  });
+});
+
+describe("payload della finestra comunicazione", () => {
+  it("restituisce il JSON valido e scarta payload assenti o corrotti", () => {
+    expect(leggiPayloadComunicazione<{ id: string }>("?payload=%7B%22id%22%3A%22x%22%7D"))
+      .toEqual({ id: "x" });
+    expect(leggiPayloadComunicazione("?altro=1")).toBeNull();
+    expect(leggiPayloadComunicazione("?payload=%7Bnon-json")).toBeNull();
   });
 });

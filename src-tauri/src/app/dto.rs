@@ -708,7 +708,7 @@ pub struct DashboardPanelsDto {
 
 /// Collegamento già risolto verso un flusso esistente. Il frontend lo traduce
 /// direttamente nel normale `DeepLink`, senza introdurre azioni parallele.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SuggerimentoCollegamentoDto {
     pub path: String,
@@ -731,7 +731,7 @@ pub struct SuggerimentoCollegamentoDto {
 /// Azione utile derivata dallo stato corrente. Non è un record applicativo:
 /// l'id incorpora la fotografia minima delle sorgenti e cambia solo quando il
 /// suggerimento deve tornare proponibile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuggerimentoDto {
     pub id: String,
@@ -759,6 +759,7 @@ pub struct SuggerimentoDto {
 pub struct SuggerimentiBundleDto {
     pub suggerimenti: Vec<SuggerimentoDto>,
     pub nascosti: Vec<String>,
+    pub tipi_in_pausa: Vec<String>,
 }
 
 /// Preferenze FASE 14 ricevute dal singolo PC. Non sono mai scritte nella

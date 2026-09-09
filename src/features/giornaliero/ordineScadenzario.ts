@@ -1,5 +1,7 @@
-import { oggiIso as oggi } from "../../lib/date";
+import { formattaDataIsoItaliana, oggiIso as oggi } from "../../lib/date";
+export { aggiungiGiorniDaOggiIso as aggiungiGiorniScadenzario } from "../../lib/date";
 import type { Pagamento } from "../../lib/tauri";
+import { èContoTransito } from "../contabilita/contoPreferito";
 
 export function scaduta(scadenza: string): boolean {
   return !!scadenza && scadenza < oggi();
@@ -146,20 +148,12 @@ export function confrontaRigheScadenzario<T extends RigaScadenzarioOrdinabile>(a
 }
 
 export function offsetScadenzaDaSpedizione(contoTipo: string, rel = 0): number {
-  const base = contoTipo === "contrassegno" || contoTipo === "assegno" ? 30 : 7;
+  const base = èContoTransito(contoTipo) ? 30 : 7;
   return base + Math.max(0, Math.floor(rel));
 }
 
 export function formatDataScadenzario(iso: string): string {
-  if (!iso || iso.length < 10) return iso || "—";
-  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
-}
-
-export function aggiungiGiorniScadenzario(iso: string, giorni: number): string {
-  const [y, m, d] = (iso || oggi()).split("-").map(Number);
-  const dt = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
-  dt.setDate(dt.getDate() + giorni);
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  return formattaDataIsoItaliana(iso, "—");
 }
 
 /** Giorni (>= 0) tra due date ISO; 0 se una manca o non è valida. */

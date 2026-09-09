@@ -9,7 +9,6 @@ import {
   Select,
   Stack,
   Text,
-  TextInput,
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
@@ -54,14 +53,20 @@ import {
   salvaBlobConPercorso,
   type DocumentoA4,
 } from "./rendererDocumenti";
-import { SchedaClienteModal } from "./SchedaClienteModal";
+import {
+  stampaPreventivoDiretta,
+  stampaSchedaClienteDiretta,
+} from "./stampaDiretta";
 import {
   apriCampagnaComunicazioni,
   apriComunicazione,
   type CampagnaComunicazioneTarget,
+  type ComunicazioneTarget,
 } from "../comunicazioni/apriComunicazione";
 import { FiltriPopover } from "../../ui/FiltriPopover";
 import { DebouncedInput } from "../../ui/DebouncedInput";
+import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
+import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
 import { usePrefs } from "../../lib/prefs";
 import {
   classificaSollecitiPreventivi,
@@ -85,6 +90,7 @@ import {
 } from "./apriFinestraPreventivo";
 import { testoRicercaPreventivo } from "./ricercaPreventivi";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
+import { formattaDataOraBreve as dataOra } from "../../lib/date";
 import {
   ColonneDominioProvider,
   DataColonnaAdattiva,
@@ -116,15 +122,6 @@ const EVENTI_RICARICA = [
   "comunicazione:salvato",
   "configurazione_documenti:salvato",
 ] as const;
-
-function dataOra(ms: number): string {
-  return ms
-    ? new Intl.DateTimeFormat("it-IT", {
-        dateStyle: "short",
-        timeStyle: "short",
-      }).format(ms)
-    : "—";
-}
 
 function dataCreazioneIso(preventivo: Preventivo): string {
   if (!preventivo.creatoMs) return "";
@@ -161,6 +158,59 @@ function indirizzoCompatto(
   return [nome, indirizzo, localita].filter(Boolean).join(" · ") || "—";
 }
 
+type TipoIndirizzoPreventivo = "spedizione" | "fatturazione";
+
+function indirizzoPreventivo(
+  preventivo: Preventivo,
+  tipo: TipoIndirizzoPreventivo,
+): string {
+  return tipo === "spedizione"
+    ? indirizzoCompatto(
+        preventivo.spedizioneNome,
+        preventivo.spedizioneIndirizzo,
+        preventivo.spedizioneCap,
+        preventivo.spedizioneCitta,
+        preventivo.spedizioneProv,
+      )
+    : indirizzoCompatto(
+        preventivo.fatturazioneNome,
+        preventivo.fatturazioneIndirizzo,
+        preventivo.fatturazioneCap,
+        preventivo.fatturazioneCitta,
+        preventivo.fatturazioneProv,
+      );
+}
+
+function cellaIndirizzoPreventivo(
+  preventivo: Preventivo,
+  tipo: TipoIndirizzoPreventivo,
+) {
+  const valore = indirizzoPreventivo(preventivo, tipo);
+  return (
+    <Tooltip label={valore} withArrow multiline maw={380}>
+      <Text size="sm" truncate>{valore}</Text>
+    </Tooltip>
+  );
+}
+
+function targetComunicazionePreventivo(
+  preventivo: Preventivo,
+  tipo: ComunicazioneTarget["tipo"],
+): ComunicazioneTarget {
+  return {
+    ...destinatarioPreventivo(preventivo),
+    email: preventivo.email,
+    telefono: preventivo.telefono,
+    tipo,
+    origineEntita: "preventivo",
+    origineId: preventivo.id,
+    origineRevision: preventivo.revision,
+    origineFingerprint: preventivo.fingerprintCorrente,
+    documentoPreventivo: preventivo,
+    variabili: variabiliPreventivo(preventivo),
+  };
+}
+
 export function PreventiviView({ identity }: { identity: Identity }) {
   const { giorniSollecitoPreventivi, ordineFinestra } = usePrefs();
   const colonne = useColonnePreventivi();
@@ -190,7 +240,6 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     useState<Preventivo | null>(null);
   const [anteprimaDaModifica, setAnteprimaDaModifica] = useState(false);
   const [invioRapidoId, setInvioRapidoId] = useState("");
-  const [scheda, setScheda] = useState<{ id: string; numero: string } | null>(null);
   const [configDocumenti, setConfigDocumenti] =
     useState<ConfigurazioneDocumenti | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -325,22 +374,10 @@ export function PreventiviView({ identity }: { identity: Identity }) {
       }
       if (accessor === "linee") return preventivo.linee.join(", ");
       if (accessor === "spedizione") {
-        return indirizzoCompatto(
-          preventivo.spedizioneNome,
-          preventivo.spedizioneIndirizzo,
-          preventivo.spedizioneCap,
-          preventivo.spedizioneCitta,
-          preventivo.spedizioneProv,
-        );
+        return indirizzoPreventivo(preventivo, "spedizione");
       }
       if (accessor === "fatturazione") {
-        return indirizzoCompatto(
-          preventivo.fatturazioneNome,
-          preventivo.fatturazioneIndirizzo,
-          preventivo.fatturazioneCap,
-          preventivo.fatturazioneCitta,
-          preventivo.fatturazioneProv,
-        );
+        return indirizzoPreventivo(preventivo, "fatturazione");
       }
       return String((preventivo as unknown as Record<string, unknown>)[accessor] ?? "");
     };
@@ -357,11 +394,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
   }, [filtrati, sort]);
 
   const classificazioneSolleciti = useMemo(
-    () =>
-      classificaSollecitiPreventivi(
-        preventivi,
-        giorniSollecitoPreventivi,
-      ),
+    () => classificaSollecitiPreventivi(preventivi, giorniSollecitoPreventivi),
     [giorniSollecitoPreventivi, preventivi],
   );
 
@@ -374,11 +407,20 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     setAnteprimaDaModifica(daModifica);
     setAnteprima(
       documento ??
-        creaDocumentoPreventivo(
-          preventivo,
-          configDocumenti ?? undefined,
-        ),
+        creaDocumentoPreventivo(preventivo, configDocumenti ?? undefined),
     );
+  }
+
+  async function stampaSchedaDiretta(preventivo: Preventivo) {
+    try {
+      await stampaSchedaClienteDiretta(
+        preventivo.ordineId,
+        preventivo.ordineNumero,
+        configDocumenti,
+      );
+    } catch (error) {
+      toast.error(`Stampa scheda cliente non riuscita: ${error}`);
+    }
   }
 
   async function inviaRapido(preventivo: Preventivo) {
@@ -414,18 +456,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
       toast.warning("Il preventivo non ha un destinatario valido.");
       return;
     }
-    await apriComunicazione({
-      ...target,
-      email: preventivo.email,
-      telefono: preventivo.telefono,
-      tipo: "sollecito_preventivo",
-      origineEntita: "preventivo",
-      origineId: preventivo.id,
-      origineRevision: preventivo.revision,
-      origineFingerprint: preventivo.fingerprintCorrente,
-      documentoPreventivo: preventivo,
-      variabili: variabiliPreventivo(preventivo),
-    });
+    await apriComunicazione(
+      targetComunicazionePreventivo(preventivo, "sollecito_preventivo"),
+    );
   }
 
   async function apriEditorPreventivo(preventivo: Preventivo) {
@@ -451,11 +484,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     const ordine = disponibili.find((item) => item.ordineId === ordineId);
     if (
       ordineFinestra === "sempre" &&
-      (await apriFinestraPreventivo(
-        ordineId,
-        ordine?.ordineNumero,
-        identity,
-      ))
+      (await apriFinestraPreventivo(ordineId, ordine?.ordineNumero, identity))
     ) {
       return;
     }
@@ -484,9 +513,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     );
     if (!conferma) return;
     try {
-      setPreventivi((correnti) => correnti.filter((item) => item.id !== preventivo.id));
+      setPreventivi((correnti) =>
+        correnti.filter((item) => item.id !== preventivo.id),
+      );
       await api.preventivoElimina(preventivo.id, preventivo.revision);
-      if (!volaNelCestino(origine)) toast.success("Preventivo spostato nel Cestino.");
+      if (!volaNelCestino(origine))
+        toast.success("Preventivo spostato nel Cestino.");
       void carica(true);
     } catch (error) {
       toast.error(`Eliminazione preventivo non riuscita: ${error}`);
@@ -499,19 +531,10 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     selezionati: Preventivo[],
   ) {
     const targets = selezionati.map<CampagnaComunicazioneTarget>((preventivo) => ({
-      ...destinatarioPreventivo(preventivo),
-      email: preventivo.email,
-      telefono: preventivo.telefono,
-      tipo:
-        gruppo === "da_inviare"
-          ? "preventivo"
-          : "sollecito_preventivo",
-      origineEntita: "preventivo",
-      origineId: preventivo.id,
-      origineRevision: preventivo.revision,
-      origineFingerprint: preventivo.fingerprintCorrente,
-      documentoPreventivo: preventivo,
-      variabili: variabiliPreventivo(preventivo),
+      ...targetComunicazionePreventivo(
+        preventivo,
+        gruppo === "da_inviare" ? "preventivo" : "sollecito_preventivo",
+      ),
       snapshot: [
         { entita: "preventivo", id: preventivo.id, revision: preventivo.revision },
         { entita: "ordine", id: preventivo.ordineId, revision: preventivo.ordineRevision },
@@ -525,15 +548,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
   function vociMenuPreventivo(
     preventivo: Preventivo,
     chiudi: () => void = () => {},
-    origineCestino?:
-      | PuntoVoloCestino
-      | null
-      | (() => PuntoVoloCestino | null),
+    origineCestino?: PuntoVoloCestino | null | (() => PuntoVoloCestino | null),
   ) {
     return (
       <>
         <Menu.Item
-          leftSection={<IconEye size={15} />}
+          leftSection={<IconEdit size={15} />}
           onClick={() => {
             void apriEditorPreventivo(preventivo);
             chiudi();
@@ -551,10 +571,14 @@ export function PreventiviView({ identity }: { identity: Identity }) {
           Anteprima
         </Menu.Item>
         <Menu.Item
-          leftSection={<IconPrinter size={15} />}
+          leftSection={<IconFileInvoice size={15} />}
           onClick={() => {
-            mostraAnteprima(preventivo);
             chiudi();
+            try {
+              stampaPreventivoDiretta(preventivo, configDocumenti);
+            } catch (error) {
+              toast.warning(String(error));
+            }
           }}
         >
           Stampa preventivo
@@ -615,11 +639,8 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         <Menu.Item
           leftSection={<IconPrinter size={15} />}
           onClick={() => {
-            setScheda({
-              id: preventivo.ordineId,
-              numero: preventivo.ordineNumero,
-            });
             chiudi();
+            void stampaSchedaDiretta(preventivo);
           }}
         >
           Stampa scheda cliente
@@ -685,7 +706,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                   nome={target.destinatarioNome}
                 />
               ) : (
-                <Text size="sm" fw={600}>—</Text>
+                <Text size="sm" fw={600}>
+                  —
+                </Text>
               );
             })()}
             {preventivo.clienteNome && preventivo.medicoNome && (
@@ -721,7 +744,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                 {testo}
               </Text>
             </Tooltip>
-          ) : "—";
+          ) : (
+            "—"
+          );
         },
       },
       {
@@ -730,9 +755,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         sortable: true,
         textAlign: "center",
         width: 84,
-        render: (preventivo) => (
-          <LineeOrdineBadge linee={preventivo.linee} />
-        ),
+        render: (preventivo) => <LineeOrdineBadge linee={preventivo.linee} />,
       },
       {
         accessor: "ordineStato",
@@ -777,7 +800,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
             <Text size="sm" truncate>
               {preventivo.email}
             </Text>
-          ) : "—",
+          ) : (
+            "—"
+          ),
       },
       {
         accessor: "telefono",
@@ -790,39 +815,15 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         accessor: "spedizione",
         title: "Spedizione",
         sortable: true,
-        render: (preventivo) => {
-          const valore = indirizzoCompatto(
-            preventivo.spedizioneNome,
-            preventivo.spedizioneIndirizzo,
-            preventivo.spedizioneCap,
-            preventivo.spedizioneCitta,
-            preventivo.spedizioneProv,
-          );
-          return (
-            <Tooltip label={valore} withArrow multiline maw={380}>
-              <Text size="sm" truncate>{valore}</Text>
-            </Tooltip>
-          );
-        },
+        render: (preventivo) =>
+          cellaIndirizzoPreventivo(preventivo, "spedizione"),
       },
       {
         accessor: "fatturazione",
         title: "Fatturazione",
         sortable: true,
-        render: (preventivo) => {
-          const valore = indirizzoCompatto(
-            preventivo.fatturazioneNome,
-            preventivo.fatturazioneIndirizzo,
-            preventivo.fatturazioneCap,
-            preventivo.fatturazioneCitta,
-            preventivo.fatturazioneProv,
-          );
-          return (
-            <Tooltip label={valore} withArrow multiline maw={380}>
-              <Text size="sm" truncate>{valore}</Text>
-            </Tooltip>
-          );
-        },
+        render: (preventivo) =>
+          cellaIndirizzoPreventivo(preventivo, "fatturazione"),
       },
       {
         accessor: "ultimoInvioMs",
@@ -887,8 +888,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                 aria-label={`Azioni ${preventivo.numeroPreventivo}`}
                 onClick={(event) => {
                   event.stopPropagation();
-                  origineMenuAzioniRef.current =
-                    catturaOrigineCestino(event.currentTarget);
+                  origineMenuAzioniRef.current = catturaOrigineCestino(
+                    event.currentTarget,
+                  );
                 }}
               >
                 <IconDotsVertical size={17} />
@@ -1067,9 +1069,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                     renderOption={({ option }) => {
                       const definizione = statoInvioPreventivoDef(
                         option.value as
-                          | "mai_inviato"
-                          | "inviato"
-                          | "modificato_dopo_invio",
+                          "mai_inviato" | "inviato" | "modificato_dopo_invio",
                       );
                       return (
                         <Group gap={8} wrap="nowrap">
@@ -1124,20 +1124,13 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                 chiave: "periodo",
                 larghezza: 280,
                 nodo: (
-                  <Group grow gap="sm">
-                    <TextInput
-                      label="Creato dal"
-                      type="date"
-                      value={creatoDal}
-                      onChange={(event) => setCreatoDal(event.currentTarget.value)}
-                    />
-                    <TextInput
-                      label="Al"
-                      type="date"
-                      value={creatoAl}
-                      onChange={(event) => setCreatoAl(event.currentTarget.value)}
-                    />
-                  </Group>
+                  <FiltroIntervalloDate
+                    dal={creatoDal}
+                    al={creatoAl}
+                    onDalChange={setCreatoDal}
+                    onAlChange={setCreatoAl}
+                    labelDal="Creato dal"
+                  />
                 ),
               },
             ]}
@@ -1152,49 +1145,47 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         </Group>
         <Box style={{ flex: 1, minHeight: 0 }}>
           <ColonneDominioProvider ordini={dominioColonne}>
-          <Tabella<Preventivo>
-            className="pt-preventivi-tabella"
-            height="100%"
-            idAccessor="id"
-            records={ordinati}
-            columns={columns}
-            storeColumnsKey={STORE_LARGHEZZE_PREVENTIVI}
-            memorizzaLarghezze
-            minColumnWidths={{
-              creatoMs: 52,
-              linee: 56,
-              ordineStato: 56,
-            }}
-            caricamentoIniziale={caricamento}
-            sortStatus={sort}
-            onSortStatusChange={setSort}
-            onRowClick={({ record }) => void apriEditorPreventivo(record)}
-            onRowContextMenu={({ record, event }) => {
-              event.preventDefault();
-              setContextMenu({
-                x: event.clientX,
-                y: event.clientY,
-                record,
-              });
-            }}
-            rowStyle={() => ({ cursor: "pointer" })}
-            emptyState={
-              caricamento ? (
-                <Box />
-              ) : (
-                <Stack align="center" gap="xs" py={48}>
-                  <ThemeIcon size={52} radius="xl" variant="light" color="yellow">
-                    <IconFileInvoice size={26} />
-                  </ThemeIcon>
-                  <Text c="dimmed" size="sm">
-                    {haFiltri
-                      ? "Nessun preventivo per i filtri selezionati."
-                      : "Nessun preventivo. Creane uno da un ordine Nuovo."}
-                  </Text>
-                </Stack>
-              )
-            }
-          />
+            <Tabella<Preventivo>
+              className="pt-preventivi-tabella"
+              height="100%"
+              idAccessor="id"
+              records={ordinati}
+              columns={columns}
+              storeColumnsKey={STORE_LARGHEZZE_PREVENTIVI}
+              memorizzaLarghezze
+              minColumnWidths={{
+                creatoMs: 52,
+                linee: 56,
+                ordineStato: 56,
+              }}
+              caricamentoIniziale={caricamento}
+              sortStatus={sort}
+              onSortStatusChange={setSort}
+              onRowClick={({ record }) => void apriEditorPreventivo(record)}
+              onRowContextMenu={({ record, event }) => {
+                setContextMenu({
+                  ...puntoDaEventoContextMenu(event),
+                  record,
+                });
+              }}
+              rowStyle={() => ({ cursor: "pointer" })}
+              emptyState={
+                caricamento ? (
+                  <Box />
+                ) : (
+                  <Stack align="center" gap="xs" py={48}>
+                    <ThemeIcon size={52} radius="xl" variant="light" color="yellow">
+                      <IconFileInvoice size={26} />
+                    </ThemeIcon>
+                    <Text c="dimmed" size="sm">
+                      {haFiltri
+                        ? "Nessun preventivo per i filtri selezionati."
+                        : "Nessun preventivo. Creane uno da un ordine Nuovo."}
+                    </Text>
+                  </Stack>
+                )
+              }
+            />
           </ColonneDominioProvider>
         </Box>
       </Stack>
@@ -1270,8 +1261,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                 loading={invioRapidoId === preventivoAnteprima.id}
                 disabled={
                   !!anteprima?.overflow.length ||
-                  (!!invioRapidoId &&
-                    invioRapidoId !== preventivoAnteprima.id)
+                  (!!invioRapidoId && invioRapidoId !== preventivoAnteprima.id)
                 }
                 onClick={() => void inviaRapido(preventivoAnteprima)}
               >
@@ -1281,40 +1271,16 @@ export function PreventiviView({ identity }: { identity: Identity }) {
           ) : null
         }
       />
-      <SchedaClienteModal
-        opened={!!scheda}
-        ordineId={scheda?.id ?? null}
-        ordineNumero={scheda?.numero}
-        onClose={() => setScheda(null)}
-      />
-
       {contextMenu && (
-        <Menu
-          opened
+        <ContextMenuPuntuale
+          punto={contextMenu}
           onClose={() => setContextMenu(null)}
-          position="bottom-start"
-          offset={0}
         >
-          <Menu.Target>
-            <div
-              style={{
-                position: "fixed",
-                left: contextMenu.x,
-                top: contextMenu.y,
-                width: 1,
-                height: 1,
-                pointerEvents: "none",
-              }}
-            />
-          </Menu.Target>
-          <Menu.Dropdown onClick={(event) => event.stopPropagation()}>
-            {vociMenuPreventivo(
-              contextMenu.record,
-              () => setContextMenu(null),
-              { x: contextMenu.x, y: contextMenu.y },
-            )}
-          </Menu.Dropdown>
-        </Menu>
+          {vociMenuPreventivo(contextMenu.record, () => setContextMenu(null), {
+            x: contextMenu.x,
+            y: contextMenu.y,
+          })}
+        </ContextMenuPuntuale>
       )}
     </Pagina>
   );
