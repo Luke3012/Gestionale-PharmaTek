@@ -46,6 +46,19 @@ describe("creaPianificatoreRicarica", () => {
     expect(ricarica).not.toHaveBeenCalled();
   });
 
+  it("esegue subito senza attendere il debounce", () => {
+    vi.useFakeTimers();
+    const ricarica = vi.fn();
+    const pianificatore = creaPianificatoreRicarica(ricarica, 180);
+
+    pianificatore.pianifica();
+    pianificatore.eseguiSubito();
+
+    expect(ricarica).toHaveBeenCalledOnce();
+    vi.runAllTimers();
+    expect(ricarica).toHaveBeenCalledOnce();
+  });
+
   it("esegue un solo refresh finale se arrivano eventi durante un caricamento", async () => {
     let completaPrima!: () => void;
     const prima = new Promise<void>((resolve) => (completaPrima = resolve));
@@ -84,5 +97,18 @@ describe("registraRicaricaSuEventi", () => {
     cleanup();
     cleanup();
     disiscrizioni.forEach((disiscrivi) => expect(disiscrivi).toHaveBeenCalledOnce());
+  });
+
+  it("pulisce i listener gia registrati se una sottoscrizione fallisce", async () => {
+    const primaDisiscrizione = vi.fn();
+    const listen = vi
+      .fn()
+      .mockResolvedValueOnce(primaDisiscrizione)
+      .mockRejectedValueOnce(new Error("listener non disponibile"));
+
+    await expect(
+      registraRicaricaSuEventi(["ordine:salvato", "pagamento:salvato"], vi.fn(), listen)
+    ).rejects.toThrow("listener non disponibile");
+    expect(primaDisiscrizione).toHaveBeenCalledOnce();
   });
 });

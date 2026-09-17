@@ -26,7 +26,7 @@ describe("editor anagrafica condiviso", () => {
     const record = cliente({
       nome: "Mario Rossi",
       telefono: "328 111 2233",
-      email: "",
+      email: "demo@example.invalid",
     });
     const valori = valoriAnagrafica(registroCliente, record);
     valori.telefono = "328 999 8877";
@@ -41,7 +41,7 @@ describe("editor anagrafica condiviso", () => {
   it("rappresenta esplicitamente lo svuotamento di un campo", () => {
     const record = cliente({
       nome: "Mario Rossi",
-      email: "",
+      email: "demo@example.invalid",
     });
     const valori = valoriAnagrafica(registroCliente, record);
     valori.email = "";

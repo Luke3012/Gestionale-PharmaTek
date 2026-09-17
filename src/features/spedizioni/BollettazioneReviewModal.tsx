@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import {
   Badge,
@@ -21,6 +20,7 @@ import {
   Stack,
   Text,
   TextInput,
+  ThemeIcon,
 } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -38,16 +38,18 @@ import {
   type BollettazioneRowStatus,
 } from "../../lib/tauri";
 import { formattaDataItaliana, oggiIso } from "../../lib/date";
-import { osservaRidimensionamento } from "../../ui/osservaRidimensionamento";
 import { dur, easeOut, useAnimazioniRidotte } from "../../ui/motion";
 import { toast } from "../../ui/toast/store";
 import {
+  bollettazioneConflictIsOperational,
   bollettazioneConfirmation,
   initialBollettazioneResolution,
   trattamentoBollettazioneLabel,
   type BollettazioneResolution,
 } from "./bollettazioneReview";
 import { VirtualFlow } from "../../ui/VirtualFlow";
+import { AnimazioneScansione } from "../../ui/AnimazioneScansione";
+import { AnimatedAutoHeight } from "../../ui/AnimatedAutoHeight";
 
 export interface BollettazionePreparazione {
   rows: BollettazioneConfermaRiga[];
@@ -91,40 +93,7 @@ function readableValue(value: unknown): string {
   return String(value);
 }
 
-function AnimatedAutoHeight({
-  children,
-  reducedMotion,
-}: {
-  children: ReactNode;
-  reducedMotion: boolean;
-}) {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | null>(null);
 
-  useLayoutEffect(() => {
-    const node = contentRef.current;
-    if (!node) return;
-    const measure = () => {
-      const next = Math.ceil(node.getBoundingClientRect().height);
-      setHeight((current) => (current === next ? current : next));
-    };
-    return osservaRidimensionamento(node, measure);
-  }, []);
-
-  return (
-    <motion.div
-      className="pt-bollettazione-auto-height"
-      initial={false}
-      animate={height === null ? undefined : { height }}
-      transition={{
-        duration: reducedMotion ? 0 : dur.base,
-        ease: easeOut,
-      }}
-    >
-      <div ref={contentRef}>{children}</div>
-    </motion.div>
-  );
-}
 
 const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
   row,
@@ -173,11 +142,21 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
           </Text>
           <Text
             size="xs"
-            c={row.status === "pronto" ? "teal" : "orange"}
+            c={row.status === "pronto" ? "teal" : row.status === "gia_registrato" ? "dimmed" : "orange"}
             mt={4}
           >
             {row.reason}
           </Text>
+          {row.status !== "gia_registrato" && row.rawReference && (
+            <Text size="xs" c="orange" mt={3}>
+              Riferimento originale: {row.rawReference}
+            </Text>
+          )}
+          {row.status !== "gia_registrato" && row.referenceWarning && (
+            <Text size="xs" c="orange" mt={3}>
+              {row.referenceWarning}
+            </Text>
+          )}
         </Box>
         <Text size="xs" c="dimmed" ta="right">
           {row.source}
@@ -188,21 +167,23 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
 
       {row.status !== "gia_registrato" && (
         <Stack gap="xs" mt="sm">
-          {row.conflicts.map((conflict) => (
-            <Box
-              key={`row-${conflict.field}`}
-              className="pt-bollettazione-conflict"
-              p="xs"
-            >
-              <Text size="xs" fw={600}>
-                {conflict.label}
-              </Text>
-              <Text size="xs" c="dimmed">
-                {conflict.currentDisplay ?? readableValue(conflict.current)} ·{" "}
-                {conflict.proposedDisplay ?? readableValue(conflict.proposed)}
-              </Text>
-            </Box>
-          ))}
+          {row.conflicts
+            .filter((conflict) => bollettazioneConflictIsOperational(conflict.field))
+            .map((conflict) => (
+              <Box
+                key={`row-${conflict.field}`}
+                className="pt-bollettazione-conflict"
+                p="xs"
+              >
+                <Text size="xs" fw={600}>
+                  {conflict.label}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {conflict.currentDisplay ?? readableValue(conflict.current)} ·{" "}
+                  {conflict.proposedDisplay ?? readableValue(conflict.proposed)}
+                </Text>
+              </Box>
+            ))}
           {row.status !== "pronto" && (
             <Group align="flex-end" wrap="nowrap">
               <Select
@@ -284,39 +265,41 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
 
           {match &&
             !resolution.skipped &&
-            match.conflicts.map((conflict) => (
-              <Box
-                key={conflict.field}
-                className="pt-bollettazione-conflict"
-                p="xs"
-              >
-                <Text size="xs" fw={600} mb={5}>
-                  {conflict.label}
-                </Text>
-                <Radio.Group
-                  value={resolution.conflictChoices[conflict.field] ?? ""}
-                  onChange={(value) =>
-                    onPatch(row, {
-                      conflictChoices: {
-                        ...resolution.conflictChoices,
-                        [conflict.field]: value as "current" | "file",
-                      },
-                    })
-                  }
+            match.conflicts
+              .filter((conflict) => bollettazioneConflictIsOperational(conflict.field))
+              .map((conflict) => (
+                <Box
+                  key={conflict.field}
+                  className="pt-bollettazione-conflict"
+                  p="xs"
                 >
-                  <Stack gap={4}>
-                    <Radio
-                      value="current"
-                      label={`Mantieni il gestionale: ${conflict.currentDisplay ?? readableValue(conflict.current)}`}
-                    />
-                    <Radio
-                      value="file"
-                      label={`Usa il file: ${conflict.proposedDisplay ?? readableValue(conflict.proposed)}`}
-                    />
-                  </Stack>
-                </Radio.Group>
-              </Box>
-            ))}
+                  <Text size="xs" fw={600} mb={5}>
+                    {conflict.label}
+                  </Text>
+                  <Radio.Group
+                    value={resolution.conflictChoices[conflict.field] ?? ""}
+                    onChange={(value) =>
+                      onPatch(row, {
+                        conflictChoices: {
+                          ...resolution.conflictChoices,
+                          [conflict.field]: value as "current" | "file",
+                        },
+                      })
+                    }
+                  >
+                    <Stack gap={4}>
+                      <Radio
+                        value="current"
+                        label={`Mantieni il gestionale: ${conflict.currentDisplay ?? readableValue(conflict.current)}`}
+                      />
+                      <Radio
+                        value="file"
+                        label={`Usa il file: ${conflict.proposedDisplay ?? readableValue(conflict.proposed)}`}
+                      />
+                    </Stack>
+                  </Radio.Group>
+                </Box>
+              ))}
         </Stack>
       )}
     </Box>
@@ -325,11 +308,15 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
 
 export function BollettazioneReviewModal({
   analysis,
+  analyzing = false,
+  fileCount = 0,
   onClose,
   onPrepareShipment,
   onArrived,
 }: {
   analysis: BollettazioneAnalisi | null;
+  analyzing?: boolean;
+  fileCount?: number;
   onClose: () => void;
   onPrepareShipment: (preparation: BollettazionePreparazione) => void;
   onArrived: () => void;
@@ -344,6 +331,20 @@ export function BollettazioneReviewModal({
   );
   const [saving, setSaving] = useState(false);
   const [arrivalDate, setArrivalDate] = useState(oggiIso);
+  const [espansioneCompletata, setEspansioneCompletata] = useState(false);
+
+  useEffect(() => {
+    if (!analysis) {
+      setEspansioneCompletata(false);
+      return;
+    }
+    if (ridotte) {
+      setEspansioneCompletata(true);
+      return;
+    }
+    const t = window.setTimeout(() => setEspansioneCompletata(true), 280);
+    return () => window.clearTimeout(t);
+  }, [analysis, ridotte]);
   const [resolutions, setResolutions] = useState<
     Record<string, BollettazioneResolution>
   >(
@@ -433,13 +434,18 @@ export function BollettazioneReviewModal({
 
       const unresolved =
         row.quantityIssue ||
-        row.conflicts.some((conflict) => conflict.blocking) ||
+        row.conflicts.some(
+          (conflict) =>
+            bollettazioneConflictIsOperational(conflict.field) &&
+            conflict.blocking,
+        ) ||
         !resolution.match ||
         (selectedRowCounts.get(resolution.match?.rowId ?? "") ?? 0) > 1 ||
         (row.status !== "pronto" &&
           (!resolution.confirmed ||
             resolution.match.conflicts.some(
               (conflict) =>
+                bollettazioneConflictIsOperational(conflict.field) &&
                 !resolution.conflictChoices[conflict.field],
             )));
       if (!unresolved) continue;
@@ -542,20 +548,24 @@ export function BollettazioneReviewModal({
 
   return (
     <Modal
-      opened={!!analysis}
+      opened={!!analysis || analyzing}
       onClose={onClose}
-      size="min(1540px, calc(100vw - 24px))"
+      size={displayAnalysis ? "min(1540px, calc(100vw - 24px))" : 480}
       classNames={{
-        content: "pt-bollettazione-modal-content",
+        content: `pt-bollettazione-modal-content ${!displayAnalysis ? "pt-modal-compact" : ""}`,
         body: "pt-bollettazione-modal-body",
       }}
       title={
         <Group gap="sm">
-          <IconFileSpreadsheet size={20} />
+          <ThemeIcon variant="light" color="teal" radius="md">
+            <IconFileSpreadsheet size={18} />
+          </ThemeIcon>
           <Text fw={700}>Bollettazione automatica</Text>
-          <Badge variant="light">
-            {displayAnalysis?.totals.validRows ?? 0} righe
-          </Badge>
+          {displayAnalysis ? (
+            <Badge variant="light">
+              {displayAnalysis.totals.validRows ?? 0} righe
+            </Badge>
+          ) : null}
         </Group>
       }
       closeOnClickOutside={!saving}
@@ -563,14 +573,30 @@ export function BollettazioneReviewModal({
       transitionProps={{
         transition: "fade",
         duration: ridotte ? 0 : dur.base * 1000,
-        onExited: () => setShownAnalysis(null),
+        onExited: () => {
+          setShownAnalysis(null);
+          setEspansioneCompletata(false);
+        },
       }}
-      trapFocus
+      trapFocus={!!displayAnalysis && espansioneCompletata}
     >
-      <FocusTrap.InitialFocus />
-      {displayAnalysis && (
-        <AnimatedAutoHeight reducedMotion={ridotte}>
-        <Box className="pt-modal-shell pt-bollettazione-shell">
+      {displayAnalysis ? (
+        <AnimatedAutoHeight
+          initialHeight={280}
+          reducedMotion={ridotte}
+          className="pt-bollettazione-auto-height"
+        >
+          <motion.div
+            initial={ridotte ? false : { opacity: 0 }}
+            animate={{ opacity: espansioneCompletata ? 1 : 0 }}
+            transition={{ duration: ridotte ? 0 : 0.18, ease: "easeOut" }}
+            style={{
+              width: "100%",
+              pointerEvents: espansioneCompletata ? "auto" : "none",
+            }}
+          >
+            <FocusTrap.InitialFocus />
+            <Box className="pt-modal-shell pt-bollettazione-shell">
           <Box ref={scrollRef} className="pt-modal-scroll">
             <Stack gap="md">
               <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
@@ -594,7 +620,14 @@ export function BollettazioneReviewModal({
                         animate={{ opacity: 1, scale: 1 }}
                         transition={{ duration: ridotte ? 0 : dur.fast, ease: easeOut }}
                       >
-                        <Badge color={meta.color} variant="filled" circle>
+                        <Badge
+                          className="pt-bollettazione-status-badge"
+                          color={meta.color}
+                          variant="filled"
+                          size="sm"
+                          radius="xl"
+                          px={counts[status] > 9 ? 6 : 0}
+                        >
                           {counts[status]}
                         </Badge>
                       </motion.span>
@@ -657,48 +690,71 @@ export function BollettazioneReviewModal({
               className="pt-bollettazione-footer-summary"
               size="sm"
               c={reviewSummary.unresolvedCount ? "orange" : "dimmed"}
+              fw={500}
             >
               {reviewSummary.unresolvedCount
                 ? `${reviewSummary.unresolvedCount} da risolvere`
                 : `${reviewSummary.confirmationCount} pronte da applicare`}
             </Text>
-            <TextInput
-              label="Data arrivo"
-              type="date"
-              value={arrivalDate}
-              onChange={(event) => setArrivalDate(event.currentTarget.value)}
-              className="pt-bollettazione-date"
-            />
             <Group
               className="pt-bollettazione-footer-actions"
-              gap="xs"
+              gap="md"
+              align="center"
               wrap="nowrap"
             >
-              <Button variant="default" onClick={onClose} disabled={saving}>
-                Annulla
-              </Button>
-              <Button
-                variant="light"
-                color="teal"
-                leftSection={<IconMapPinCheck size={16} />}
-                loading={saving}
-                onClick={markArrived}
-              >
-                Segna come arrivati
-              </Button>
-              <Button
-                color="accent"
-                className="pt-bollettazione-footer-primary"
-                leftSection={<IconPackageExport size={16} />}
-                disabled={saving}
-                onClick={prepareShipment}
-              >
-                Prepara spedizione
-              </Button>
+              <Group gap="xs" align="center" wrap="nowrap" className="pt-bollettazione-date-group">
+                <Text size="xs" fw={500} c="dimmed" style={{ whiteSpace: "nowrap" }}>
+                  Data arrivo:
+                </Text>
+                <TextInput
+                  type="date"
+                  size="sm"
+                  value={arrivalDate}
+                  onChange={(event) => setArrivalDate(event.currentTarget.value)}
+                  className="pt-bollettazione-date"
+                  aria-label="Data arrivo"
+                />
+              </Group>
+              <Group gap="xs" wrap="nowrap" align="center">
+                <Button
+                  variant="light"
+                  color="teal"
+                  leftSection={<IconMapPinCheck size={16} />}
+                  loading={saving}
+                  onClick={markArrived}
+                >
+                  Segna come arrivati
+                </Button>
+                <Button
+                  color="accent"
+                  className="pt-bollettazione-footer-primary"
+                  leftSection={<IconPackageExport size={16} />}
+                  disabled={saving}
+                  onClick={prepareShipment}
+                >
+                  Prepara spedizione
+                </Button>
+              </Group>
             </Group>
           </div>
         </Box>
+        </motion.div>
         </AnimatedAutoHeight>
+      ) : (
+        <AnimazioneScansione
+          color="teal"
+          icon={
+            <ThemeIcon variant="transparent" size={38} color="teal.8">
+              <IconFileSpreadsheet size={34} />
+            </ThemeIcon>
+          }
+          title="Analisi file in corso…"
+          subtitle={
+            fileCount > 1
+              ? `Lettura ed estrazione dei dati da ${fileCount} file Excel del laboratorio…`
+              : "Lettura ed estrazione dei dati dal file Excel del laboratorio…"
+          }
+        />
       )}
     </Modal>
   );

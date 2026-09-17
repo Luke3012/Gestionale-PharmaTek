@@ -39,6 +39,7 @@ import { apriFinestraRiepilogo } from "./apriRiepilogo";
 import { usePrefs } from "../lib/prefs";
 import { inviaMessaggio } from "../features/notifiche/messaggi";
 import { dur, easeOut, useAnimazioniRidotte } from "../ui/motion";
+import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 import { useRicaricaSuEventi } from "../lib/useRicaricaSuEventi";
 import { usePremiumAccess } from "../premium/PremiumAccess";
 
@@ -142,6 +143,19 @@ export function SpotlightWindow() {
     if (premium.loaded) ricaricaTraPoco();
   }, [premium.enabled, premium.loaded, ricaricaTraPoco]);
 
+  // Indicizzazione anticipata richiesta dall'onboarding durante lo Schermo di Benvenuto:
+  // la main invia `pt:indicizza-spotlight`, così la cache si riempie in background prima dell'accesso alla dashboard.
+  useEffect(() => {
+    if (!inTauri) return;
+    return collegaDisiscrizioneAsincrona(
+      import("@tauri-apps/api/event").then(({ listen }) =>
+        listen("pt:indicizza-spotlight", () => {
+          ricarica();
+        })
+      )
+    );
+  }, [ricarica]);
+
   // La finestra Spotlight resta viva anche quando è nascosta: aggiorna l'indice
   // in background, senza ricaricare a ogni singolo record.
   useRicaricaSuEventi(EVENTI_RICARICA, () => {
@@ -196,15 +210,11 @@ export function SpotlightWindow() {
   // A barra vuota mostra i «Suggeriti» e poi i comandi, senza la vecchia sezione "Adesso".
   const vociBase = useMemo(() => {
     const base = costruisciVoci(qDifferita, dati, {
-      preventiviAbilitati: premium.loaded && premium.enabled,
+      preventiviAbilitati: true,
       bollettazioneAbilitata: premium.loaded && premium.enabled,
     });
     const query = qDifferita.trim().toLocaleLowerCase("it");
-    if (
-      premium.loaded &&
-      premium.enabled &&
-      (!query || "nuovo preventivo".includes(query))
-    ) {
+    if (!query || "nuovo preventivo".includes(query)) {
       const voceNuovoPreventivo: VoceRicerca = {
         id: "c-nuovo-preventivo",
         gruppo: "Comandi",
@@ -351,19 +361,15 @@ export function SpotlightWindow() {
         await apriFinestraOrdine(null, undefined, identity);
         break;
       case "preventivo_nuovo":
-        if (premium.enabled) {
-          await apriFinestraPreventivo(null, undefined, identity);
-        }
+        await apriFinestraPreventivo(null, undefined, identity);
         break;
       case "preventivo":
-        if (premium.enabled) {
-          await apriFinestraPreventivo(
-            b.ordineId,
-            b.numero,
-            identity,
-            "anteprima",
-          );
-        }
+        await apriFinestraPreventivo(
+          b.ordineId,
+          b.numero,
+          identity,
+          "anteprima",
+        );
         break;
       case "pagamento":
         await apriFinestraPagamento(b.id, identity);

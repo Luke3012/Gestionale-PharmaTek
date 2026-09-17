@@ -7,7 +7,7 @@ npm run tauri icon ./app-icon.jpg
 ```
 
 Sono presenti le varianti usate da `tauri.conf.json` (`32x32.png`, `128x128.png`,
-``, `icon.icns`, `icon.ico`) più le Store logo per Windows.
+`demo@example.invalid`, `icon.icns`, `icon.ico`) più le Store logo per Windows.
 
 Per rigenerarle dopo aver cambiato il logo sorgente, rilanciare lo stesso comando
 (serve solo Node/npm, non Rust). Le cartelle `android/` e `ios/` non vengono incluse

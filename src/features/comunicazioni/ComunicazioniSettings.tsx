@@ -29,6 +29,7 @@ import {
   IconKey,
   IconMail,
   IconPlus,
+  IconRefresh,
   IconSend,
   IconTemplate,
   IconTrash,
@@ -48,20 +49,79 @@ import { toast } from "../../ui/toast/store";
 
 const PRESET: ConfigurazioneEmailSalvaInput = {
   nomeMittente: "PharmaTek",
-  indirizzoMittente: "",
+  indirizzoMittente: "demo@example.invalid",
   smtpHost: "smtp.example.invalid",
   smtpPort: 465,
   smtpSicurezza: "ssl_tls",
-  smtpUsername: "",
+  smtpUsername: "demo@example.invalid",
   replyToAbilitato: false,
-  replyTo: "",
+  replyTo: "demo@example.invalid",
   firma: "",
   salvaPostaInviata: true,
   imapHost: "imap.example.invalid",
   imapPort: 993,
   imapSicurezza: "ssl_tls",
-  destinatarioProva: "",
+  destinatarioProva: "demo@example.invalid",
   password: "",
+};
+
+export const MODELLI_COMUNICAZIONE_DEFAULT: Record<
+  TipoModelloComunicazione,
+  { titolo: string; oggetto: string; corpo: string }
+> = {
+  preventivo: {
+    titolo: "Preventivo",
+    oggetto: "Preventivo {{numero_preventivo}}",
+    corpo:
+      "Gentile cliente,\n" +
+      "Le alleghiamo il preventivo del Suo ordine. Le condizioni di vendita sono specificate nel preventivo.\n" +
+      "Resteremo in attesa della Sua conferma; inoltre, Le chiediamo gentilmente di confermarci i dati di fatturazione (nome, cognome, codice fiscale), l’indirizzo di consegna, la Sua modalità di pagamento e, facoltativamente, il Suo indirizzo e-mail.\n" +
+      "Grazie.\n" +
+      "PharmaTek",
+  },
+  sollecito_preventivo: {
+    titolo: "Sollecito preventivo",
+    oggetto: "Promemoria preventivo {{numero_preventivo}}",
+    corpo:
+      "Gentile {{nome_cliente}},\n" +
+      "restiamo in attesa della Sua conferma del preventivo {{numero_preventivo}}. Nella conferma Le chiediamo gentilmente di comunicarci i dati di fatturazione e l'indirizzo di consegna.\n" +
+      "Grazie.\n" +
+      "PharmaTek",
+  },
+  sollecito_pagamento: {
+    titolo: "Sollecito pagamento",
+    oggetto: "Promemoria pagamento",
+    corpo:
+      "Gentile {{nome_cliente}},\n" +
+      "dai nostri sistemi risulta ancora da saldare {{totale_scaduto}}.\n" +
+      "{{dettaglio_rate}}\n" +
+      "{{istruzioni_pagamento}}\n" +
+      "Restiamo in attesa di un Suo gentile riscontro.\n" +
+      "PharmaTek",
+  },
+  preavviso_spedizione: {
+    titolo: "Preavviso spedizione",
+    oggetto: "Avviso spedizione PharmaTek",
+    corpo:
+      "Gentile {{nome_cliente}},\n" +
+      "in merito all'ordine del suo farmaco antiallergico individualizzato, Le comunichiamo che il prodotto verrà affidato al corriere il {{data_spedizione}}.\n" +
+      "I tempi di consegna sono di 6 giorni lavorativi.\n" +
+      "Importo residuo: {{importo_residuo}}.\n" +
+      "{{istruzioni_pagamento}}\n\n" +
+      "Distinti saluti,\n" +
+      "PharmaTek",
+  },
+  invio_produzione: {
+    titolo: "Invio produzione Laboratorio",
+    oggetto: "Production order {{lotto_produzione}} — {{data_produzione}}",
+    corpo:
+      "Dear Laboratorio International Sales Team,\n" +
+      "Please find attached the production documentation for lot {{lotto_produzione}}, submitted on {{data_produzione}}.\n" +
+      "The package contains {{numero_prodotti}} production item(s).\n" +
+      "Please let us know if any further information is required.\n\n" +
+      "Kind regards,\n" +
+      "PharmaTek",
+  },
 };
 
 function formDaConfig(
@@ -323,6 +383,52 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
         setModelloForm(null);
       }
       toast.success("Modello rimosso.");
+    } catch (error) {
+      setModelloErrore(String(error));
+    } finally {
+      setModelloSalvando(false);
+    }
+  };
+
+  const ripristinaModello = async () => {
+    if (!modelloForm || !modelloCorrente?.predefinito || modelloSalvando) return;
+    const predefinito = MODELLI_COMUNICAZIONE_DEFAULT[modelloForm.tipo];
+    if (!predefinito) return;
+
+    const nomeModello = modelloCorrente.titolo || "base";
+    const confermato = await dialog.confirm(
+      "Ripristinare il modello predefinito?",
+      `L'oggetto e il testo del modello “${nomeModello}” verranno reimpostati sui valori predefiniti di PharmaTek. Eventuali personalizzazioni andranno perse.`,
+      { conferma: "Ripristina", annulla: "Annulla" },
+    );
+    if (!confermato) return;
+
+    const input: ModelloComunicazioneSalvaInput = {
+      id: modelloForm.id,
+      tipo: modelloForm.tipo,
+      titolo: predefinito.titolo,
+      oggetto: predefinito.oggetto,
+      corpo: predefinito.corpo,
+      attivo: modelloForm.attivo ?? true,
+    };
+
+    setModelloSalvando(true);
+    setModelloErrore("");
+    try {
+      const salvato = await api.modelloComunicazioneSalva(input);
+      setModelli((correnti) => {
+        const esiste = correnti.some((modello) => modello.id === salvato.id);
+        const prossimi = esiste
+          ? correnti.map((modello) =>
+              modello.id === salvato.id ? salvato : modello,
+            )
+          : [...correnti, salvato];
+        return prossimi.sort((a, b) =>
+          `${a.tipo}:${a.titolo}`.localeCompare(`${b.tipo}:${b.titolo}`, "it"),
+        );
+      });
+      selezionaModello(salvato);
+      toast.success("Modello ripristinato ai valori predefiniti.");
     } catch (error) {
       setModelloErrore(String(error));
     } finally {
@@ -1083,6 +1189,10 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                         value: "preavviso_spedizione",
                         label: "Preavviso spedizione",
                       },
+                      {
+                        value: "invio_produzione",
+                        label: "Invio produzione Laboratorio",
+                      },
                     ]}
                     onChange={(value) =>
                       value &&
@@ -1203,6 +1313,17 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                   disabled={modelloSalvando}
                 >
                   Rimuovi
+                </Button>
+              )}
+              {modelloCorrente?.predefinito && (
+                <Button
+                  variant="subtle"
+                  color="orange"
+                  leftSection={<IconRefresh size={16} />}
+                  onClick={() => void ripristinaModello()}
+                  disabled={modelloSalvando}
+                >
+                  Ripristina
                 </Button>
               )}
             </Group>

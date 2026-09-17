@@ -286,11 +286,11 @@ le rate con stato (da pagare / pagata / **scaduta** in rosso), e per ognuna **"S
 Header: `Ordine 2026-0007` + badge stato. Footer: **Salva** (primario) / Annulla.
 Numero **provvisorio** evidenziato finché offline.
 
-### 7.4.1 Preventivi e scheda cliente (premium)
+### 7.4.1 Preventivi e scheda cliente
 
-**Preventivi** è una pagina lazy collocata fra Giornaliero e Produzione e nascosta quando il
-premium non è attivo. Usa la shell `Pagina`, la toolbar adattiva, `FiltriPopover`, `Tabella` e i
-menu ⋯ già adottati nelle viste operative.
+**Preventivi** è una pagina lazy collocata fra Giornaliero e Produzione e disponibile anche senza
+Premium. Usa la shell `Pagina`, la toolbar adattiva, `FiltriPopover`, `Tabella` e i menu ⋯ già
+adottati nelle viste operative.
 
 - La toolbar contiene ricerca, filtri multi-linea e indicazione
   `Mai inviato / Inviato / Modificato dopo l'invio`, ordinamento e **Nuovo preventivo**.
@@ -312,9 +312,9 @@ menu ⋯ già adottati nelle viste operative.
 La **Scheda cliente** è un modale separato con corpo scrollabile, footer fermo, form precompilato
 e anteprima A4 che replica la struttura del modulo cartaceo di riferimento. Righe e celle restano
 bianche e scrivibili a penna quando il valore manca. Si apre dal menu ⋯ o contestuale del
-Giornaliero, dall'editor ordine e dal menu del preventivo. Nel nuovo ordine, **Salva e stampa** è
-mostrato soltanto col premium; negli ordini esistenti **Stampa** resta visibile senza premium ma
-apre il paywall senza leggere dati protetti.
+Giornaliero, dall'editor ordine e dal menu del preventivo. Apertura, modifica, salvataggio,
+anteprima e stampa della scheda sono disponibili per tutti. Per i preventivi, invece, stampa,
+salvataggio PDF/immagine, invio e sollecito mostrano il paywall quando Premium non è attivo.
 
 L'invio rapido riusa modelli, allegati e coda FASE 11: accoda e-mail e WhatsApp quando entrambi i
 recapiti sono validi, oppure il solo canale disponibile. La campanella separa **Da inviare**

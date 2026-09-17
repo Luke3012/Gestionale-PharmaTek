@@ -12,6 +12,7 @@ import {
   Group,
   Modal,
   NumberInput,
+  Paper,
   Select,
   SimpleGrid,
   Stack,
@@ -20,13 +21,14 @@ import {
   ThemeIcon,
   Tooltip,
 } from "@mantine/core";
-import { IconAlertTriangle, IconDeviceFloppy, IconDownload, IconHistory, IconKeyboard, IconPlayerPlay, IconRestore, IconSearch, IconTrash, IconUpload, IconVolume } from "@tabler/icons-react";
+import { IconAlertTriangle, IconDeviceFloppy, IconDownload, IconFolder, IconHistory, IconKeyboard, IconPlayerPlay, IconRestore, IconSearch, IconTrash, IconUpload, IconVolume } from "@tabler/icons-react";
 import { SUONI } from "../features/notifiche/suoni";
 import { riproduciSuono } from "../features/notifiche/suoni";
 import { motion, useAnimationControls, type Variants } from "framer-motion";
 import { api, inTauri, type BackupInfo, type Identity, type OperationProgress, type RestoreCoordination, type SnapshotInfo } from "../lib/tauri";
 import { useOperationLockStatus } from "../lib/useOperationLockStatus";
 import { ZOOM_UI_OPTIONS, usePrefs } from "../lib/prefs";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { leggiBaseProduzione, salvaBaseProduzione } from "../features/produzione/numeroProduzione";
 import { OPZIONI_PERIODO } from "../features/dashboard/periodo";
 import { Pagina } from "./Pagina";
@@ -222,6 +224,23 @@ function CestinoReset({
 export function Impostazioni({ identity }: { identity: Identity }) {
   const premium = usePremiumAccess();
   const { anno, ridurreAnimazioni, setRidurreAnimazioni, densitaTabelle, setDensitaTabelle, zoomUI, setZoomUI, ordineFinestra, setOrdineFinestra, cestinoGiorni, setCestinoGiorni, backupAuto, setBackupAuto, dashboardPeriodo, setDashboardPeriodo, filtriModo, setFiltriModo, hotkeyGlobale, setHotkeyGlobale, sogliaSolleciti, setSogliaSolleciti, giorniSollecitoPreventivi, setGiorniSollecitoPreventivi, anticipoPromemoria, setAnticipoPromemoria, balloonAttivo, setBalloonAttivo, notifichePrimoPiano, setNotifichePrimoPiano, suonoNotifica, setSuonoNotifica } = usePrefs();
+  const [giorniPreventiviBozza, setGiorniPreventiviBozza] =
+    useState<number | string>(giorniSollecitoPreventivi);
+  const giorniPreventiviStabili = useDebouncedValue(giorniPreventiviBozza);
+  useEffect(() => {
+    setGiorniPreventiviBozza(giorniSollecitoPreventivi);
+  }, [giorniSollecitoPreventivi]);
+  useEffect(() => {
+    if (giorniPreventiviStabili === "") return;
+    const valore = Number(giorniPreventiviStabili);
+    if (Number.isFinite(valore) && valore !== giorniSollecitoPreventivi) {
+      setGiorniSollecitoPreventivi(valore);
+    }
+  }, [giorniPreventiviStabili, giorniSollecitoPreventivi, setGiorniSollecitoPreventivi]);
+  const salvaGiorniPreventivi = useCallback(() => {
+    const valore = Number(giorniPreventiviBozza);
+    setGiorniSollecitoPreventivi(Number.isFinite(valore) ? valore : 7);
+  }, [giorniPreventiviBozza, setGiorniSollecitoPreventivi]);
   const [resetAperto, setResetAperto] = useState(false);
   const [comunicazioniPronte, setComunicazioniPronte] = useState(false);
   const [documentiPronti, setDocumentiPronti] = useState(false);
@@ -250,9 +269,25 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   }, [resetAperto]);
   // N° di produzione iniziale: impostazione CONDIVISA (modello dati), non più per-PC.
   const [numeroProduzioneBase, setNumeroProduzioneBase] = useState(1);
+  const [cartellaPrescrizioni, setCartellaPrescrizioni] = useState("");
   useEffect(() => {
     leggiBaseProduzione().then(setNumeroProduzioneBase).catch(() => {});
+    if (inTauri) {
+      api.prescriptionsFolderGet().then((value) => setCartellaPrescrizioni(value.path)).catch(() => {});
+    }
   }, []);
+
+  async function scegliCartellaPrescrizioni() {
+    const selected = await open({ directory: true, multiple: false, title: "Seleziona la cartella Prescrizioni" });
+    if (typeof selected !== "string") return;
+    try {
+      const saved = await api.prescriptionsFolderSet(selected);
+      setCartellaPrescrizioni(saved.path);
+      toast.success("Cartella Prescrizioni aggiornata.");
+    } catch (error) {
+      toast.error(`Cartella non valida: ${error}`);
+    }
+  }
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backuppando, setBackuppando] = useState(false);
   const [lockStatus] = useOperationLockStatus(inTauri);
@@ -744,39 +779,44 @@ export function Impostazioni({ identity }: { identity: Identity }) {
         initial="hidden"
         animate={impostazioniPronte ? "visibile" : "hidden"}
       >
-        <PremiumOnly>
-          <Sezione
-            className="pt-comunicazioni-span"
-            titolo="E-mail e comunicazioni"
-            descrizione="Casella mittente e modelli condivisi."
-          >
-            <Stack gap="lg">
+        <Sezione
+          className="pt-comunicazioni-span"
+          titolo="E-mail e comunicazioni"
+          descrizione="Casella mittente, modelli e gestione dei preventivi."
+        >
+          <Stack gap="lg">
+            <PremiumOnly>
+              <Stack gap="lg">
               <ComunicazioniSettings onReady={segnalaComunicazioniPronte} />
               <ConfigurazioneDocumentiSettings
                 onReady={segnalaDocumentiPronti}
               />
-              <RigaImpostazione
-                titolo="Sollecita i preventivi"
-                descrizione="Attesa dopo l’ultimo invio riuscito prima di proporre il sollecito."
-              >
-                <NumberInput
-                  value={giorniSollecitoPreventivi}
-                  onChange={(value) =>
-                    setGiorniSollecitoPreventivi(
-                      typeof value === "number" ? value : 7,
-                    )
-                  }
-                  min={1}
-                  max={90}
-                  step={1}
-                  suffix={giorniSollecitoPreventivi === 1 ? " giorno" : " giorni"}
-                  w={150}
-                  style={{ flexShrink: 0 }}
-                />
-              </RigaImpostazione>
-            </Stack>
-          </Sezione>
-        </PremiumOnly>
+              </Stack>
+            </PremiumOnly>
+
+            <RigaImpostazione
+              titolo="Sollecita i preventivi"
+              descrizione="Attesa prima di proporre l’invio o il sollecito di un preventivo."
+            >
+              <NumberInput
+                value={giorniPreventiviBozza}
+                onChange={(value) =>
+                  setGiorniPreventiviBozza(value)
+                }
+                onBlur={salvaGiorniPreventivi}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") salvaGiorniPreventivi();
+                }}
+                min={0}
+                max={90}
+                step={1}
+                suffix={giorniSollecitoPreventivi === 1 ? " giorno" : " giorni"}
+                w={150}
+                style={{ flexShrink: 0 }}
+              />
+            </RigaImpostazione>
+          </Stack>
+        </Sezione>
 
         <Sezione titolo="Dashboard" descrizione="Preferenze della home.">
           <Select
@@ -1049,20 +1089,51 @@ export function Impostazioni({ identity }: { identity: Identity }) {
           </Box>
         </Sezione>
 
-        <Sezione titolo="Produzione" descrizione="Numerazione file Laboratorio.">
-          <RigaImpostazione
-            titolo="N° di produzione iniziale"
-            descrizione="Numero da cui partire. Poi continua da solo."
-          >
-            <NumberInput
-              min={1}
-              value={numeroProduzioneBase}
-              onChange={(v) => setNumeroProduzioneBase(typeof v === "number" ? v : Number(v) || 1)}
-              onBlur={() => void salvaBaseProduzione(numeroProduzioneBase)}
-              w={120}
-              style={{ flexShrink: 0 }}
-            />
-          </RigaImpostazione>
+        <Sezione titolo="Produzione" descrizione="Numerazione Laboratorio e documenti delle terapie.">
+          <Stack gap="md">
+            <RigaImpostazione
+              titolo="N° di produzione iniziale"
+              descrizione="Numero da cui partire. Poi continua da solo."
+            >
+              <NumberInput
+                min={1}
+                value={numeroProduzioneBase}
+                onChange={(v) => setNumeroProduzioneBase(typeof v === "number" ? v : Number(v) || 1)}
+                onBlur={() => void salvaBaseProduzione(numeroProduzioneBase)}
+                w={120}
+                style={{ flexShrink: 0 }}
+              />
+            </RigaImpostazione>
+            <Box>
+              <RigaImpostazione
+                titolo="Cartella Prescrizioni"
+                descrizione="Usata localmente per creare lo ZIP delle terapie; non viene sincronizzata."
+              >
+                <Button
+                  size="xs"
+                  variant="light"
+                  leftSection={<IconFolder size={15} />}
+                  onClick={() => void scegliCartellaPrescrizioni()}
+                  disabled={!inTauri}
+                  style={{ flexShrink: 0 }}
+                >
+                  Cambia
+                </Button>
+              </RigaImpostazione>
+              <Paper
+                withBorder
+                radius="sm"
+                p="xs"
+                mt="xs"
+                bg="var(--mantine-color-default-hover)"
+                style={{ wordBreak: "break-all" }}
+              >
+                <Text size="xs" c={cartellaPrescrizioni ? undefined : "dimmed"}>
+                  {cartellaPrescrizioni || "Nessuna cartella selezionata (verrà richiesta al primo utilizzo)"}
+                </Text>
+              </Paper>
+            </Box>
+          </Stack>
         </Sezione>
 
 

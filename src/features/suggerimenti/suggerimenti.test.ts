@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DedupClientiAutoPlan } from "../anagrafiche/deduplicazione";
 import type {
-  RecordDto,
   Suggerimento,
   SuggerimentiBundle,
 } from "../../lib/tauri";
@@ -12,14 +10,10 @@ import {
   ordinaSuggerimenti,
   riconciliaControlloManualeSuggerimenti,
   statoControlloManualeSuggerimenti,
-  suggerimentoDuplicatiDaPiano,
+  suggerimentoHaRaggiuntoSoglia,
 } from "./suggerimenti";
 
-function record(id: string, revision = "1"): RecordDto {
-  return { id, revision, data: { nome: id }, deleted: false };
-}
-
-function voce(id: string, priorita: number): Suggerimento {
+function voce(id: string, priorita: number, riferimentoData = "2026-08-01"): Suggerimento {
   return {
     id,
     tipo: "rimborso",
@@ -28,7 +22,7 @@ function voce(id: string, priorita: number): Suggerimento {
     azioneLabel: "",
     priorita,
     collegamento: { path: "/" },
-    riferimentoData: "2026-08-01",
+    riferimentoData,
     aggiornatoMs: 1,
   };
 }
@@ -86,6 +80,29 @@ describe("suggerimenti FASE 14", () => {
     });
   });
 
+  it("invalida fotografie e richieste manuali quando cambia l'anno di lavoro", async () => {
+    invalidaControlloManualeSuggerimenti();
+    statoControlloManualeSuggerimenti(2025);
+    let completa!: (bundle: SuggerimentiBundle) => void;
+    const richiesta = avviaControlloManualeSuggerimenti(
+      () =>
+        new Promise<SuggerimentiBundle>((resolve) => {
+          completa = resolve;
+        }),
+    );
+
+    expect(statoControlloManualeSuggerimenti(2026).inCorso).toBeNull();
+    completa({
+      suggerimenti: [voce("s14:rimborso:2025", 90)],
+      nascosti: [],
+      tipiInPausa: [],
+    });
+
+    await expect(richiesta).resolves.toBeNull();
+    expect(statoControlloManualeSuggerimenti(2026).bundle).toBeNull();
+    invalidaControlloManualeSuggerimenti();
+  });
+
   it("sostituisce soltanto le categorie ordinarie appena arrivate", async () => {
     invalidaControlloManualeSuggerimenti();
     const rimborsoTemporaneo = voce("s14:rimborso:temporaneo", 90);
@@ -116,27 +133,6 @@ describe("suggerimenti FASE 14", () => {
     invalidaControlloManualeSuggerimenti();
   });
 
-  it("riusa il piano dedup e cambia id quando cambia una sorgente", () => {
-    const piano = (revision: string): DedupClientiAutoPlan => ({
-      merges: [
-        {
-          canonico: record("c1", revision),
-          duplicati: [record("c2")],
-          fields: {},
-          motivo: "cf",
-        },
-      ],
-      sospetti: 0,
-      protetti: 0,
-    });
-    const prima = suggerimentoDuplicatiDaPiano(piano("1"));
-    const stessa = suggerimentoDuplicatiDaPiano(piano("1"));
-    const cambiata = suggerimentoDuplicatiDaPiano(piano("2"));
-    expect(prima?.id).toBe(stessa?.id);
-    expect(prima?.id).not.toBe(cambiata?.id);
-    expect(prima?.dettaglio).toContain("2 anagrafiche");
-  });
-
   it("ordina per priorità e non duplica o ripropone uno stato nascosto", () => {
     const alta = voce("s14:rimborso:a", 90);
     const bassa = voce("s14:rimborso:b", 20);
@@ -151,29 +147,50 @@ describe("suggerimenti FASE 14", () => {
           nascosti: [alta.id],
           tipiInPausa: [],
         },
-        null,
         ["rimborso"],
       ).map((item) => item.id),
     ).toEqual([bassa.id]);
   });
 
-  it("applica le categorie locali anche al suggerimento duplicati", () => {
-    const rimborso = voce("s14:rimborso:a", 90);
-    const duplicati: Suggerimento = {
-      ...voce("s14:duplicati:a", 50),
-      tipo: "duplicati",
-    };
-    expect(
-      combinaSuggerimenti(
-        {
-          suggerimenti: [rimborso],
-          nascosti: [],
-          tipiInPausa: [],
-        },
-        duplicati,
-        ["rimborso"],
-      ).map((item) => item.id),
-    ).toEqual([rimborso.id]);
+  it("filtra le card nella Dashboard se non hanno ancora raggiunto i giorni di soglia", () => {
+    const oggi = "2026-09-16";
+    const recente = voce("s14:rimborso:recente", 90, "2026-09-15"); // 1 giorno fa
+    const matura = voce("s14:rimborso:matura", 92, "2026-09-10"); // 6 giorni fa
+
+    expect(suggerimentoHaRaggiuntoSoglia(recente, 3, oggi)).toBe(false);
+    expect(suggerimentoHaRaggiuntoSoglia(matura, 3, oggi)).toBe(true);
+
+    const risultato = combinaSuggerimenti(
+      {
+        suggerimenti: [recente, matura],
+        nascosti: [],
+        tipiInPausa: [],
+      },
+      ["rimborso"],
+      { rimborso: 3 },
+      new Set(),
+      oggi,
+    );
+    expect(risultato.map((item) => item.id)).toEqual([matura.id]);
+  });
+
+  it("mostra comunque le card sotto soglia se forzate dal click Controlla ora (temporanei)", () => {
+    const oggi = "2026-09-16";
+    const recente = voce("s14:rimborso:recente", 90, "2026-09-15"); // 1 giorno fa
+    const temporanei = new Set([recente.id]);
+
+    const risultato = combinaSuggerimenti(
+      {
+        suggerimenti: [recente],
+        nascosti: [],
+        tipiInPausa: [],
+      },
+      ["rimborso"],
+      { rimborso: 3 },
+      temporanei,
+      oggi,
+    );
+    expect(risultato.map((item) => item.id)).toEqual([recente.id]);
   });
 
   it("non ripropone subito nuove fotografie della categoria ignorata", () => {
@@ -185,7 +202,6 @@ describe("suggerimenti FASE 14", () => {
           nascosti: [],
           tipiInPausa: ["rimborso"],
         },
-        null,
         ["rimborso"],
       ),
     ).toEqual([]);

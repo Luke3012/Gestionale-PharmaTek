@@ -38,7 +38,7 @@ impl Default for ConfigurazioneDocumentiCampi {
             indirizzo: "".into(),
             localita: "".into(),
             telefono: "".into(),
-            email: "".into(),
+            email: "demo@example.invalid".into(),
             sito: "example.invalid".into(),
             validita_default_giorni: VALIDITA_DEFAULT_GIORNI,
             condizioni_default: String::new(),
@@ -106,6 +106,7 @@ pub struct PreventivoDto {
     pub ordine_data: String,
     pub creato_ms: u64,
     pub ordine_stato: String,
+    pub ordine_marcatore: String,
     pub linee: Vec<String>,
     pub cliente_id: String,
     pub cliente_nome: String,
@@ -755,18 +756,51 @@ fn preventivo_dto(
         .filter(|record| str_field(&record.data, "ordine_id") == ordine_id)
         .collect::<Vec<_>>();
     pagamenti.sort_by(|a, b| {
-        let data_a = if bool_field(&a.data, "saldato") {
-            str_field(&a.data, "data")
-        } else {
-            str_field(&a.data, "scadenza")
+        let tipo_a = str_field(&a.data, "tipo");
+        let tipo_b = str_field(&b.data, "tipo");
+        let prio_a = if tipo_a == "acconto" { 0 } else { 1 };
+        let prio_b = if tipo_b == "acconto" { 0 } else { 1 };
+        if prio_a != prio_b {
+            return prio_a.cmp(&prio_b);
+        }
+        let da_sped_a = bool_field(&a.data, "scad_da_spedizione");
+        let da_sped_b = bool_field(&b.data, "scad_da_spedizione");
+        if da_sped_a && da_sped_b {
+            let rel_a = i64_field(&a.data, "scad_rel_giorni");
+            let rel_b = i64_field(&b.data, "scad_rel_giorni");
+            if rel_a != rel_b {
+                return rel_a.cmp(&rel_b);
+            }
+        }
+        let data_chiave = |record: &crate::projection::Record| {
+            if bool_field(&record.data, "saldato") {
+                let d = str_field(&record.data, "data");
+                if !d.is_empty() {
+                    return d;
+                }
+            }
+            let scad = str_field(&record.data, "scadenza");
+            if !scad.is_empty() {
+                return scad;
+            }
+            if bool_field(&record.data, "scad_da_spedizione") {
+                let rel = i64_field(&record.data, "scad_rel_giorni");
+                return format!("spedizione:{:05}", rel.max(0));
+            }
+            "9999-12-31".to_string()
         };
-        let data_b = if bool_field(&b.data, "saldato") {
-            str_field(&b.data, "data")
-        } else {
-            str_field(&b.data, "scadenza")
-        };
+        let data_a = data_chiave(a);
+        let data_b = data_chiave(b);
         data_a
             .cmp(&data_b)
+            .then_with(|| {
+                let rank = |tipo: &str| match tipo {
+                    "saldo" => 0,
+                    "rata" => 1,
+                    _ => 2,
+                };
+                rank(&tipo_a).cmp(&rank(&tipo_b))
+            })
             .then(a.created_hlc.cmp(&b.created_hlc))
             .then(a.id.cmp(&b.id))
     });
@@ -817,6 +851,7 @@ fn preventivo_dto(
         ordine_data: str_field(&ordine.data, "data"),
         creato_ms: u64_field(&data_preventivo, "creato_ms"),
         ordine_stato: str_field(&ordine.data, "stato"),
+        ordine_marcatore: str_field(&ordine.data, "marcatore"),
         linee,
         cliente_id,
         cliente_nome: str_field(&cliente, "nome"),
@@ -935,7 +970,6 @@ fn valida_configurazione_documenti(
 
 impl AppState {
     pub fn configurazione_documenti_get(&self) -> AppResult<ConfigurazioneDocumentiDto> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| Ok(engine.with_projection(configurazione_documenti)))
     }
 
@@ -999,7 +1033,6 @@ impl AppState {
     }
 
     pub fn preventivo_alias_lista(&self) -> AppResult<Vec<AliasPreventivoDto>> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| {
             Ok(engine.with_projection(|p| {
                 let mut result = p
@@ -1078,7 +1111,6 @@ impl AppState {
     }
 
     pub fn preventivi_lista(&self) -> AppResult<Vec<PreventivoDto>> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| {
             engine.with_projection(|p| {
                 let mut result = p
@@ -1101,7 +1133,6 @@ impl AppState {
     }
 
     pub fn preventivo_ordini_disponibili(&self) -> AppResult<Vec<PreventivoDto>> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| {
             engine.with_projection(|p| {
                 let esistenti = p
@@ -1132,12 +1163,10 @@ impl AppState {
     }
 
     pub fn preventivo_get(&self, ordine_id: &str) -> AppResult<PreventivoDto> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| engine.with_projection(|p| preventivo_dto(p, ordine_id, true)))
     }
 
     pub fn preventivo_elimina(&self, id: &str, revision: &str) -> AppResult<()> {
-        crate::premium::ensure_access(self)?;
         let id = id.trim().to_string();
         let revision = revision.trim().to_string();
         self.with_engine(|engine| {
@@ -1156,8 +1185,61 @@ impl AppState {
         })
     }
 
+    pub fn preventivo_marca_inviato_manuale(
+        &self,
+        ordine_id: &str,
+        revision: &str,
+    ) -> AppResult<PreventivoDto> {
+        let ordine_id = ordine_id.trim().to_string();
+        let revision = revision.trim().to_string();
+        let id = preventivo_id(&ordine_id);
+        let now = now_ms();
+        self.with_engine(|engine| {
+            let id_for_mutation = id.clone();
+            engine
+                .emit_built_checked(move |p| {
+                    let corrente = p
+                        .get("preventivo", &id_for_mutation)
+                        .map_err(es)?
+                        .filter(|record| !record.deleted)
+                        .ok_or_else(|| "il preventivo non è più disponibile".to_string())?;
+                    if !revision.is_empty() {
+                        valida_revision(&corrente, &revision, "Il preventivo")?;
+                    }
+                    let fingerprint = str_field(&corrente.data, "fingerprint_corrente");
+                    Ok(vec![
+                        Mutation::new(
+                            "preventivo",
+                            id_for_mutation.clone(),
+                            EventBody::FieldSet {
+                                field: "ultimo_invio_ms".into(),
+                                value: json!(now),
+                            },
+                        ),
+                        Mutation::new(
+                            "preventivo",
+                            id_for_mutation.clone(),
+                            EventBody::FieldSet {
+                                field: "ultimo_invio_canale".into(),
+                                value: json!("manuale"),
+                            },
+                        ),
+                        Mutation::new(
+                            "preventivo",
+                            id_for_mutation.clone(),
+                            EventBody::FieldSet {
+                                field: "ultimo_invio_fingerprint".into(),
+                                value: json!(fingerprint),
+                            },
+                        ),
+                    ])
+                })
+                .map_err(es)?;
+            engine.with_projection(|p| preventivo_dto(p, &ordine_id, true))
+        })
+    }
+
     pub fn preventivo_ripristina(&self, id: &str) -> AppResult<()> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| {
             let id = id.to_string();
             engine
@@ -1199,7 +1281,6 @@ impl AppState {
     }
 
     pub fn preventivo_purge(&self, id: &str) -> AppResult<()> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| {
             let id = id.to_string();
             engine
@@ -1256,7 +1337,6 @@ impl AppState {
     }
 
     pub fn preventivo_salva(&self, input: PreventivoSalvaInput) -> AppResult<PreventivoDto> {
-        crate::premium::ensure_access(self)?;
         if input.ordine_id.trim().is_empty() {
             return Err("ordine non specificato".into());
         }
@@ -1584,7 +1664,6 @@ impl AppState {
     }
 
     pub fn scheda_cliente_get(&self, ordine_id: &str) -> AppResult<SchedaClienteDto> {
-        crate::premium::ensure_access(self)?;
         self.with_engine(|engine| engine.with_projection(|p| scheda_cliente_dto(p, ordine_id)))
     }
 
@@ -1592,7 +1671,6 @@ impl AppState {
         &self,
         input: SchedaClienteSalvaInput,
     ) -> AppResult<SchedaClienteDto> {
-        crate::premium::ensure_access(self)?;
         let ordine_id = input.ordine_id.trim().to_string();
         if ordine_id.is_empty() {
             return Err("ordine non specificato".into());
@@ -2009,6 +2087,30 @@ mod tests {
     }
 
     #[test]
+    fn marcatura_manuale_registra_invio_e_rifiuta_revisioni_stantie() {
+        let (_app, _data, state) = stato_test(true);
+        let ordine = crea_ordine(&state);
+        let prefill = state.preventivo_get(&ordine.id).unwrap();
+        let salvato = state
+            .preventivo_salva(input_preventivo(&prefill, "Da esportare"))
+            .unwrap();
+
+        let aggiornato = state
+            .preventivo_marca_inviato_manuale(&ordine.id, &salvato.revision)
+            .unwrap();
+        assert!(aggiornato.ultimo_invio_ms > 0);
+        assert_eq!(aggiornato.ultimo_invio_canale, "manuale");
+        assert_eq!(
+            aggiornato.ultimo_invio_fingerprint,
+            aggiornato.fingerprint_corrente
+        );
+        assert_eq!(aggiornato.indicazione_invio, "inviato");
+        assert!(state
+            .preventivo_marca_inviato_manuale(&ordine.id, &salvato.revision)
+            .is_err());
+    }
+
+    #[test]
     fn indirizzo_non_lascia_separatori_vuoti() {
         let mut data = Map::new();
         data.insert("indirizzo".into(), json!("Via Roma 1"));
@@ -2046,11 +2148,57 @@ mod tests {
     }
 
     #[test]
-    fn gate_premium_protegge_letture_e_crud_generico() {
+    fn preventivi_e_scheda_cliente_sono_gratuiti_ma_il_crud_generico_resta_protetto() {
         let (_app, _data, state) = stato_test(false);
         let ordine = crea_ordine(&state);
-        assert!(state.preventivo_get(&ordine.id).is_err());
+
+        let prefill = state.preventivo_get(&ordine.id).unwrap();
+        assert!(!prefill.esiste);
+        assert!(state.preventivi_lista().is_ok());
+        assert!(state.preventivo_ordini_disponibili().is_ok());
+
+        let salvato = state
+            .preventivo_salva(input_preventivo(&prefill, "Creato senza Premium"))
+            .unwrap();
+        let aggiornato = state
+            .preventivo_salva(input_preventivo(&salvato, "Modificato senza Premium"))
+            .unwrap();
+        assert_eq!(aggiornato.note, "Modificato senza Premium");
+
+        let scheda = state.scheda_cliente_get(&ordine.id).unwrap();
+        assert!(state
+            .scheda_cliente_salva(SchedaClienteSalvaInput {
+                ordine_id: ordine.id.clone(),
+                ordine_revision: scheda.ordine_revision,
+                scheda_revision: scheda.revision,
+                campi: scheda.campi,
+            })
+            .is_ok());
+
+        state
+            .preventivo_elimina(&aggiornato.id, &aggiornato.revision)
+            .unwrap();
+        assert!(state.preventivi_lista().unwrap().is_empty());
+        state.preventivo_ripristina(&aggiornato.id).unwrap();
+        assert!(state.preventivo_get(&ordine.id).unwrap().esiste);
+
+        // Il CRUD generico resta chiuso anche se i comandi di dominio sono gratuiti.
         assert!(state.records_list("preventivo").is_err());
+        assert!(state.records_list("scheda_cliente").is_err());
+    }
+
+    #[test]
+    fn letture_configurazione_e_alias_sono_gratuite_ma_le_scritture_restano_premium() {
+        let (_app, _data, state) = stato_test(false);
+        let configurazione = state.configurazione_documenti_get().unwrap();
+        assert!(state.preventivo_alias_lista().is_ok());
+        assert!(state
+            .configurazione_documenti_salva(ConfigurazioneDocumentiSalvaInput {
+                revision: String::new(),
+                campi: configurazione.campi,
+            })
+            .is_err());
+        assert!(state.preventivo_alias_salva("alias", "prodotto").is_err());
     }
 
     #[test]
@@ -2149,6 +2297,11 @@ mod tests {
         assert!(pagamenti
             .iter()
             .any(|pagamento| pagamento.tipo == "acconto" && pagamento.importo == 5_000));
+        assert_eq!(salvato.pagamenti.len(), 2);
+        assert_eq!(salvato.pagamenti[0].tipo, "acconto");
+        assert_eq!(salvato.pagamenti[0].importo, 5_000);
+        assert_eq!(salvato.pagamenti[1].tipo, "saldo");
+        assert_eq!(salvato.pagamenti[1].importo, 15_000);
 
         let senza_acconto = state
             .preventivo_salva(PreventivoSalvaInput {

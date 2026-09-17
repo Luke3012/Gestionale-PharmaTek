@@ -9,6 +9,7 @@ import {
   Center,
   Group,
   Paper,
+  Progress,
   Stack,
   Text,
   TextInput,
@@ -52,6 +53,11 @@ export function Onboarding({
   const [dataDir, setDataDir] = useState<string | null>(boot.dataDir);
   const [users, setUsers] = useState<UserDto[]>([]);
   const [verificando, setVerificando] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{
+    current: number;
+    total: number;
+    phase: string;
+  } | null>(null);
 
   const [nome, setNome] = useState("");
   const [createdUserId] = useState(() => crypto.randomUUID());
@@ -77,11 +83,26 @@ export function Onboarding({
       });
       if (typeof scelta !== "string") return;
       setVerificando(true);
+      setSyncProgress(null);
+      let unlisten: (() => void) | undefined;
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<{ current: number; total: number; phase: string }>(
+          "pt:sync-progress",
+          (event) => {
+            setSyncProgress(event.payload);
+          }
+        );
+      } catch {}
+
       const esistenti = await api.openDataDir(scelta);
+      if (unlisten) unlisten();
       setDataDir(scelta);
       setUsers(esistenti);
+      setSyncProgress(null);
       setVerificando(false);
     } catch (e) {
+      setSyncProgress(null);
       setVerificando(false);
       toast.error(`Cartella non utilizzabile: ${e}`);
     }
@@ -177,6 +198,25 @@ export function Onboarding({
                   >
                     {dataDir ? "Cambia cartella" : "Scegli cartella…"}
                   </Button>
+                  {verificando && syncProgress && syncProgress.total > 0 && (
+                    <Stack gap={4} mt={2}>
+                      <Progress
+                        value={Math.min(100, Math.round((syncProgress.current / syncProgress.total) * 100))}
+                        size="sm"
+                        color="accent"
+                        animated
+                      />
+                      <Group justify="space-between">
+                        <Text size="xs" c="dimmed">
+                          {syncProgress.phase}
+                        </Text>
+                        <Text size="xs" c="dimmed">
+                          {syncProgress.current.toLocaleString()} / {syncProgress.total.toLocaleString()} (
+                          {Math.min(100, Math.round((syncProgress.current / syncProgress.total) * 100))}%)
+                        </Text>
+                      </Group>
+                    </Stack>
+                  )}
                   {dataDir && (
                     <Alert color="green" variant="light" icon={<IconCheck size={18} />}>
                       <Text size="sm" style={{ wordBreak: "break-all" }}>

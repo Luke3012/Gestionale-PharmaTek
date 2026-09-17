@@ -60,7 +60,9 @@ export interface DeepLink {
     | "esporta_aruba"
     | "pulizia_dati"
     | "bollettazione_automatica"
-    | "ottimizza_database";
+    | "ottimizza_database"
+    | "solleciti_preventivi"
+    | "solleciti_preventivi_tutti";
 }
 
 const EVENTO_NAVIGA = "pt:naviga";

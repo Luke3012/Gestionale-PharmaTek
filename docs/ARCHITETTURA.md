@@ -100,8 +100,14 @@ Eventi piccoli e granulari, una riga JSON per evento (NDJSON):
   eventi. Se OneDrive crea comunque un `<device> - conflicted copy.ndjson`, viene
   **assorbito** invece che perso.
 - **Snapshot**: periodicamente lo stato viene riassunto in `snapshots/` per accelerare il
-  bootstrap. Gli snapshot concorrenti dei diversi PC vengono fusi per campo; i log restano
+  bootstrap. Gli snapshot concorrenti dei diversi PC vengono fusi per campo (dopo deduplicazione
+  dei soli file più recenti per ciascun dispositivo tramite `SnapshotStore::latest()`); i log restano
   append-only e completi e vengono riletti dalla posizione coperta dallo snapshot fuso.
+- **Rendimento del Replay & Batching SQLite**: la proiezione locale opera con `PRAGMA synchronous = NORMAL;`
+  in modalità WAL, azzerando i ritardi I/O di sincronizzazione disco tipici di Windows. L'ingestione
+  massiva raggruppa gli eventi in batch da 1.000 per transazione con statement caching (`prepare_cached`),
+  consentendo il replay deterministico di 60.000+ eventi in circa 1-2 secondi ed emettendo progressi
+  in streaming (`pt:sync-progress`) per mantenere l'interfaccia grafica costantemente fluida.
 
 ## Modifiche concorrenti
 

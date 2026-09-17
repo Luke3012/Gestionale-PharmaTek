@@ -1,7 +1,8 @@
 // Pannello «Novità» mostrato all'avvio dopo un aggiornamento, PRIMA di entrare nella
 // dashboard (così precede l'intro animata). Compare una sola volta per versione (vedi
 // changelog.ts / il gate in App.tsx). Animazione a comparsa con stagger delle voci.
-import { Box, Button, Center, Group, Stack, Text, ThemeIcon } from "@mantine/core";
+import { useEffect } from "react";
+import { Box, Button, Center, Group, Portal, Stack, Text, ThemeIcon } from "@mantine/core";
 import { motion } from "framer-motion";
 import { LogoMark, Wordmark } from "../../ui/Brand";
 import { type VersioneChangelog } from "./changelog";
@@ -17,17 +18,30 @@ export function NovitaPanel({
   // Le entries sono ordinate decrescente (più recente prima).
   const latest = entries[0];
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Enter") {
+        e.preventDefault();
+        onChiudi();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onChiudi]);
+
   return (
-    <Box
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        background:
-          "radial-gradient(120% 90% at 50% -10%, var(--mantine-color-accent-0, #eef2ff) 0%, var(--surface, #fff) 60%)",
-        overflow: "auto",
-      }}
-    >
+    <Portal>
+      <Box
+        data-pt-blocking-view="changelog"
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 9999,
+          background:
+            "radial-gradient(120% 90% at 50% -10%, var(--mantine-color-accent-0, #eef2ff) 0%, var(--surface, #fff) 60%)",
+          overflow: "auto",
+        }}
+      >
       <Center p="xl" style={{ minHeight: "100vh" }}>
         <Stack gap="xl" style={{ width: "100%", maxWidth: 560, paddingBottom: 40, paddingTop: 40 }}>
           {/* Header Principale */}
@@ -153,5 +167,6 @@ export function NovitaPanel({
         </Stack>
       </Center>
     </Box>
+    </Portal>
   );
 }

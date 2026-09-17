@@ -1792,12 +1792,12 @@ fn corrieri_builtin_seminati_con_profilo() {
     assert_eq!(gls.data.get("profilo"), Some(&json!("gls")));
     assert_eq!(gls.data.get("builtin"), Some(&json!(true)));
 
-    let carrai = corrieri
+    let corriere_a = corrieri
         .iter()
         .find(|c| c.id == CORRIERE_CORRIERE_A)
         .expect("CORRIERE_A built-in mancante");
-    assert_eq!(carrai.data.get("profilo"), Some(&json!("carrai")));
-    assert_eq!(carrai.data.get("builtin"), Some(&json!(true)));
+    assert_eq!(corriere_a.data.get("profilo"), Some(&json!("corriere_a")));
+    assert_eq!(corriere_a.data.get("builtin"), Some(&json!(true)));
 
     let mbe = corrieri
         .iter()
@@ -4056,6 +4056,7 @@ fn ottimizzazione_forzata_pubblica_checkpoint_con_postazioni_senza_ack() {
             device_id: "PC-OFFLINE".into(),
             data_dir: Some(data.path().to_string_lossy().into_owned()),
             user_id: Some(identita.user_id),
+            prescriptions_dir: None,
         },
     )
     .unwrap();
@@ -5059,7 +5060,7 @@ fn dedup_clienti_completa_riassegna_purga_e_converge() {
             campi(&[
                 ("nome", json!("Mario Rossi")),
                 ("telefono", json!("")),
-                ("email", json!("")),
+                ("email", json!("demo@example.invalid")),
             ]),
         )
         .unwrap();
@@ -5106,7 +5107,7 @@ fn dedup_clienti_completa_riassegna_purga_e_converge() {
     assert_eq!(str_field(&finale_a.data, "telefono"), "3331234567");
     assert_eq!(
         str_field(&finale_a.data, "email"),
-        "",
+        "demo@example.invalid",
         "un vuoto del duplicato non deve sovrascrivere il canonico"
     );
     assert!(a.record_get("cliente", &duplicato.id).unwrap().is_none());
@@ -6197,14 +6198,14 @@ fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
     b.force_sync().unwrap();
 
     let prima = a
-        .suggerimenti_lista()
+        .suggerimenti_lista_con_soglia_preventivi(0)
         .unwrap()
         .suggerimenti
         .into_iter()
         .find(|voce| voce.tipo == "rimborso")
         .unwrap();
     let stessa_su_b = b
-        .suggerimenti_lista()
+        .suggerimenti_lista_con_soglia_preventivi(0)
         .unwrap()
         .suggerimenti
         .into_iter()
@@ -6216,7 +6217,7 @@ fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
     a.suggerimenti_nascondi(&[prima.id.clone(), id_tecnico.clone()])
         .unwrap();
     b.force_sync().unwrap();
-    let nascosti_su_b = b.suggerimenti_lista().unwrap();
+    let nascosti_su_b = b.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
     assert!(nascosti_su_b
         .suggerimenti
         .iter()
@@ -6230,7 +6231,7 @@ fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
         campi(&[("importo", json!(12_000))]),
     )
     .unwrap();
-    let dopo_modifica_su_b = b.suggerimenti_lista().unwrap();
+    let dopo_modifica_su_b = b.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
     assert!(dopo_modifica_su_b
         .suggerimenti
         .iter()
@@ -6248,7 +6249,7 @@ fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
     assert!(controllo_completo.tipi_in_pausa.is_empty());
 
     a.force_sync().unwrap();
-    let dopo_modifica_su_a = a.suggerimenti_lista().unwrap();
+    let dopo_modifica_su_a = a.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
     assert!(dopo_modifica_su_a
         .suggerimenti
         .iter()
@@ -6485,7 +6486,7 @@ fn spedizioni_evasione_parziale_e_stato() {
                 ("dest_prov", json!("MI")),
                 ("dest_regione", json!("Lombardia")),
                 ("dest_telefono", json!("021234")),
-                ("dest_email", json!("")),
+                ("dest_email", json!("demo@example.invalid")),
             ]),
         )
         .unwrap();
@@ -7456,6 +7457,1128 @@ fn crea_spedizione_ripartisce_il_residuo_sulle_rate_rimanenti() {
 }
 
 #[test]
+fn crea_spedizione_con_rata_contrassegno_e_altra_rata_preserva_importo_e_altre_rate() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let banca = state
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+    state.conto_predefinito_set(&banca.id, "incassi").unwrap();
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
+        .unwrap();
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("stato", json!("Confermato")),
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+            ]),
+        )
+        .unwrap();
+    let riga = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino")),
+                ("qta", json!(1)),
+                ("prezzo", json!(45000)),
+            ]),
+        )
+        .unwrap();
+
+    // Rata 1: 225 euro su banca
+    state
+        .pagamento_registra(
+            &ordine.id,
+            "rata",
+            22500,
+            false,
+            "2026-07-01",
+            &banca.id,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // Rata 2: 225 euro su contrassegno
+    state
+        .pagamento_registra(
+            &ordine.id,
+            "saldo",
+            22500,
+            false,
+            "2026-07-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+
+    // Verifica che righe_da_spedire proponga 225 euro come COD atteso (non 450 euro!)
+    let da_spedire = state.righe_da_spedire().unwrap();
+    let o_da_spedire = da_spedire
+        .iter()
+        .find(|o| o.ordine_id == ordine.id)
+        .unwrap();
+    assert_eq!(o_da_spedire.cod_importo, 22500);
+    assert_eq!(o_da_spedire.cod_mezzo, "contrassegno");
+
+    // Crea la spedizione per 225 euro di contrassegno
+    let sped = state
+        .spedizione_crea(
+            "lotto-cod-225",
+            "2026-06-10",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            22500,
+            "",
+            &[rn(&riga.id, "LOT-1")],
+        )
+        .unwrap();
+
+    // Verifica che i pagamenti siano esattamente due e che la rata su banca non sia stata eliminata o azzerata
+    let pagamenti = state.pagamenti_ordine(&ordine.id).unwrap();
+    assert_eq!(
+        pagamenti.len(),
+        2,
+        "entrambe le rate devono essere conservate"
+    );
+    assert_eq!(pagamenti.iter().map(|p| p.importo).sum::<i64>(), 45000);
+
+    let cod_pag = pagamenti
+        .iter()
+        .find(|p| p.conto_id == CONTO_CONTRASSEGNO)
+        .unwrap();
+    assert_eq!(cod_pag.importo, 22500);
+    assert_eq!(cod_pag.spedizione_id, sped.id);
+
+    let banca_pag = pagamenti.iter().find(|p| p.conto_id == banca.id).unwrap();
+    assert_eq!(banca_pag.importo, 22500);
+}
+
+#[test]
+fn due_spedizioni_con_contrassegno_modifica_singola_rata_riallinea_solo_la_spedizione_collegata() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let banca = state
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+    state.conto_predefinito_set(&banca.id, "incassi").unwrap();
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
+        .unwrap();
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("stato", json!("Confermato")),
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+            ]),
+        )
+        .unwrap();
+    let riga1 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino 1")),
+                ("qta", json!(1)),
+                ("prezzo", json!(22500)),
+            ]),
+        )
+        .unwrap();
+    let riga2 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino 2")),
+                ("qta", json!(1)),
+                ("prezzo", json!(22500)),
+            ]),
+        )
+        .unwrap();
+
+    // Rata 1 COD
+    let pag1 = state
+        .pagamento_registra(
+            &ordine.id,
+            "rata",
+            22500,
+            false,
+            "2026-07-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // Spedizione 1
+    let sped1 = state
+        .spedizione_crea(
+            "lotto-cod-1",
+            "2026-06-10",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            22500,
+            "",
+            &[rn(&riga1.id, "LOT-1")],
+        )
+        .unwrap();
+
+    // Rata 2 COD
+    let pag2 = state
+        .pagamento_registra(
+            &ordine.id,
+            "saldo",
+            22500,
+            false,
+            "2026-07-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // Spedizione 2
+    let sped2 = state
+        .spedizione_crea(
+            "lotto-cod-2",
+            "2026-06-11",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            22500,
+            "",
+            &[rn(&riga2.id, "LOT-2")],
+        )
+        .unwrap();
+
+    // Modifica pagamento 1 a 20000
+    state
+        .record_update("pagamento", &pag1.id, campi(&[("importo", json!(20000))]))
+        .unwrap();
+
+    // Verifica che sped1 abbia 20000 e sped2 sia rimasta 22500
+    let s1 = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    let s2 = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1.data, "contrassegno"), 20000);
+    assert_eq!(i64_field(&s2.data, "contrassegno"), 22500);
+
+    // Modifica pagamento 2 a 21000
+    state
+        .record_update("pagamento", &pag2.id, campi(&[("importo", json!(21000))]))
+        .unwrap();
+
+    let s1_bis = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    let s2_bis = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1_bis.data, "contrassegno"), 20000);
+    assert_eq!(i64_field(&s2_bis.data, "contrassegno"), 21000);
+}
+
+#[test]
+fn contrassegno_casi_estremi_multi_spedizione_parziali_e_rate_libere() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let banca = state
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+    state.conto_predefinito_set(&banca.id, "incassi").unwrap();
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Rossi"))]))
+        .unwrap();
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("stato", json!("Confermato")),
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+            ]),
+        )
+        .unwrap();
+
+    // 3 righe da 200€ ciascuna (totale 600€)
+    let r1 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino 1")),
+                ("qta", json!(1)),
+                ("prezzo", json!(20000)),
+            ]),
+        )
+        .unwrap();
+    let r2 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino 2")),
+                ("qta", json!(1)),
+                ("prezzo", json!(20000)),
+            ]),
+        )
+        .unwrap();
+    let r3 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prodotto_nome", json!("Vaccino 3")),
+                ("qta", json!(1)),
+                ("prezzo", json!(20000)),
+            ]),
+        )
+        .unwrap();
+
+    // Scadenzario con 4 pagamenti:
+    // P1: 150€ COD (scad. 2026-07-01)
+    let p1 = state
+        .pagamento_registra(
+            &ordine.id,
+            "rata",
+            15000,
+            false,
+            "2026-07-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // P2: 250€ COD (scad. 2026-08-01)
+    let p2 = state
+        .pagamento_registra(
+            &ordine.id,
+            "rata",
+            25000,
+            false,
+            "2026-08-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // P3: 100€ Banca ordinaria (scad. 2026-09-01)
+    let p3 = state
+        .pagamento_registra(
+            &ordine.id,
+            "rata",
+            10000,
+            false,
+            "2026-09-01",
+            &banca.id,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    // P4: 100€ COD (scad. 2026-10-01)
+    let p4 = state
+        .pagamento_registra(
+            &ordine.id,
+            "saldo",
+            10000,
+            false,
+            "2026-10-01",
+            CONTO_CONTRASSEGNO,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+
+    // 1. Spedizione 1: spedisce r1, COD proposto deve essere 150€ (P1)
+    let da_spedire_1 = state.righe_da_spedire().unwrap();
+    let o1 = da_spedire_1
+        .iter()
+        .find(|o| o.ordine_id == ordine.id)
+        .unwrap();
+    assert_eq!(o1.cod_importo, 15000);
+    assert_eq!(o1.cod_mezzo, "contrassegno");
+
+    let sped1 = state
+        .spedizione_crea(
+            "lotto-1",
+            "2026-06-10",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            15000,
+            "",
+            &[rn(&r1.id, "L1")],
+        )
+        .unwrap();
+
+    // 2. Spedizione 2: P1 è legato a sped1. COD proposto per r2 deve essere P2 (250€)
+    let da_spedire_2 = state.righe_da_spedire().unwrap();
+    let o2 = da_spedire_2
+        .iter()
+        .find(|o| o.ordine_id == ordine.id)
+        .unwrap();
+    assert_eq!(o2.cod_importo, 25000);
+
+    let sped2 = state
+        .spedizione_crea(
+            "lotto-2",
+            "2026-06-15",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            25000,
+            "",
+            &[rn(&r2.id, "L2")],
+        )
+        .unwrap();
+
+    // 3. Spedizione 3: P1 e P2 sono legati. Per r3, COD proposto deve essere P4 (100€ COD non legato)
+    let da_spedire_3 = state.righe_da_spedire().unwrap();
+    let o3 = da_spedire_3
+        .iter()
+        .find(|o| o.ordine_id == ordine.id)
+        .unwrap();
+    assert_eq!(o3.cod_importo, 10000);
+
+    let sped3 = state
+        .spedizione_crea(
+            "lotto-3",
+            "2026-06-20",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            10000,
+            "",
+            &[rn(&r3.id, "L3")],
+        )
+        .unwrap();
+
+    // Tutte le 3 righe sono spedite: nessuna riga rimasta in da_spedire per questo ordine
+    let da_spedire_vuoto = state.righe_da_spedire().unwrap();
+    assert!(da_spedire_vuoto.iter().all(|o| o.ordine_id != ordine.id));
+
+    // Verifica che i pagamenti siano rimasti 4 e il totale sia esattamente 600€
+    let pagamenti_dopo = state.pagamenti_ordine(&ordine.id).unwrap();
+    assert_eq!(pagamenti_dopo.len(), 4);
+    assert_eq!(pagamenti_dopo.iter().map(|p| p.importo).sum::<i64>(), 60000);
+
+    let p1_dopo = pagamenti_dopo.iter().find(|p| p.id == p1.id).unwrap();
+    let p2_dopo = pagamenti_dopo.iter().find(|p| p.id == p2.id).unwrap();
+    let p3_dopo = pagamenti_dopo.iter().find(|p| p.id == p3.id).unwrap();
+    let p4_dopo = pagamenti_dopo.iter().find(|p| p.id == p4.id).unwrap();
+    assert_eq!(p1_dopo.spedizione_id, sped1.id);
+    assert_eq!(p2_dopo.spedizione_id, sped2.id);
+    assert_eq!(p4_dopo.spedizione_id, sped3.id);
+    assert_eq!(p3_dopo.spedizione_id, "");
+
+    // Test di riallineamento estremo:
+    // Modifichiamo P2 (legato a Spedizione 2) da 250€ a 220€
+    state
+        .record_update("pagamento", &p2.id, campi(&[("importo", json!(22000))]))
+        .unwrap();
+
+    // Spedizione 2 si riallinea a 220€; Spedizione 1 (150€) e Spedizione 3 (100€) restano intatte
+    let s1 = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    let s2 = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    let s3 = state.record_get("spedizione", &sped3.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1.data, "contrassegno"), 15000);
+    assert_eq!(i64_field(&s2.data, "contrassegno"), 22000);
+    assert_eq!(i64_field(&s3.data, "contrassegno"), 10000);
+
+    // Modifichiamo P4 (legato a Spedizione 3) da 100€ a 130€
+    state
+        .record_update("pagamento", &p4.id, campi(&[("importo", json!(13000))]))
+        .unwrap();
+
+    let s1_bis = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    let s2_bis = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    let s3_bis = state.record_get("spedizione", &sped3.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1_bis.data, "contrassegno"), 15000);
+    assert_eq!(i64_field(&s2_bis.data, "contrassegno"), 22000);
+    assert_eq!(i64_field(&s3_bis.data, "contrassegno"), 13000);
+
+    // Spostiamo P1 su un conto banca (prepagato): Spedizione 1 deve azzerare contrassegno
+    state
+        .record_update("pagamento", &p1.id, campi(&[("conto_id", json!(banca.id))]))
+        .unwrap();
+
+    let s1_ter = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    let s2_ter = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    let s3_ter = state.record_get("spedizione", &sped3.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1_ter.data, "contrassegno"), 0);
+    assert_eq!(str_field(&s1_ter.data, "mezzo"), "");
+    assert_eq!(i64_field(&s2_ter.data, "contrassegno"), 22000);
+    assert_eq!(i64_field(&s3_ter.data, "contrassegno"), 13000);
+}
+
+#[test]
+fn passaggio_da_contrassegno_a_banca_azzera_spedizione_senza_rubare_rate_libere() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let cliente = state
+        .record_create(
+            "cliente",
+            campi(&[
+                ("nome", json!("Mario")),
+                ("cognome", json!("Rossi")),
+                ("citta", json!("Milano")),
+                ("cap", json!("20100")),
+                ("indirizzo", json!("Via Roma 1")),
+            ]),
+        )
+        .unwrap();
+
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+
+    let contrassegno = state
+        .record_create(
+            "conto",
+            campi(&[
+                ("nome", json!("Contrassegno CORRIERE_B")),
+                ("tipo", json!("contrassegno")),
+            ]),
+        )
+        .unwrap();
+
+    let banca = state
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca Banca Demo")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+                ("stato", json!("confermato")),
+            ]),
+        )
+        .unwrap();
+
+    let r1 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prezzo", json!(15000)),
+                ("qta", json!(1)),
+                ("stato_riga", json!("da_spedire")),
+            ]),
+        )
+        .unwrap();
+
+    let _r2 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prezzo", json!(20000)),
+                ("qta", json!(1)),
+                ("stato_riga", json!("da_spedire")),
+            ]),
+        )
+        .unwrap();
+
+    // Rata 1: 150€ contrassegno
+    let p1 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(15000)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+                ("scadenza", json!("2026-07-01")),
+            ]),
+        )
+        .unwrap();
+
+    // Rata 2: 200€ contrassegno (libera, per la seconda spedizione futura)
+    let p2 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(20000)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+                ("scadenza", json!("2026-07-15")),
+            ]),
+        )
+        .unwrap();
+
+    // Spedizione parziale solo per r1 (150€)
+    let sped1 = state
+        .spedizione_crea(
+            "lotto-r1",
+            "2026-06-05",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            15000,
+            "",
+            &[rn(&r1.id, "L1")],
+        )
+        .unwrap();
+
+    // Verifica che Sped 1 abbia 150€ contrassegno e che P1 sia collegato a sped1
+    let p1_check = state.record_get("pagamento", &p1.id).unwrap().unwrap();
+    let p2_check = state.record_get("pagamento", &p2.id).unwrap().unwrap();
+    assert_eq!(str_field(&p1_check.data, "spedizione_id"), sped1.id);
+    assert_eq!(str_field(&p2_check.data, "spedizione_id"), "");
+
+    // ORA: L'utente imposta P1 su conto Banca
+    state
+        .record_update("pagamento", &p1.id, campi(&[("conto_id", json!(banca.id))]))
+        .unwrap();
+
+    // VERIFICHE CRUCIALI:
+    // 1. Spedizione 1 deve diventare prepagata (contrassegno = 0, mezzo = "")
+    let sped1_aggiornata = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    assert_eq!(i64_field(&sped1_aggiornata.data, "contrassegno"), 0);
+    assert_eq!(str_field(&sped1_aggiornata.data, "mezzo"), "");
+
+    // 2. Rata 2 (200€) NON deve essere stata rubata da Spedizione 1!
+    let p2_dopo = state.record_get("pagamento", &p2.id).unwrap().unwrap();
+    assert_eq!(str_field(&p2_dopo.data, "spedizione_id"), "");
+    assert_eq!(i64_field(&p2_dopo.data, "importo"), 20000);
+    assert_eq!(str_field(&p2_dopo.data, "conto_id"), contrassegno.id);
+
+    // 3. Se l'utente rimette P1 a contrassegno, Spedizione 1 si riallinea a 150€
+    state
+        .record_update(
+            "pagamento",
+            &p1.id,
+            campi(&[("conto_id", json!(contrassegno.id))]),
+        )
+        .unwrap();
+    let sped1_ripristinata = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    assert_eq!(i64_field(&sped1_ripristinata.data, "contrassegno"), 15000);
+    assert_eq!(str_field(&sped1_ripristinata.data, "mezzo"), "contrassegno");
+}
+
+#[test]
+fn cancellazione_tutte_le_rate_e_creazione_nuova_rata_contrassegno_unica() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let cliente = state
+        .record_create(
+            "cliente",
+            campi(&[
+                ("nome", json!("Laura")),
+                ("cognome", json!("Bianchi")),
+                ("citta", json!("Torino")),
+                ("cap", json!("10100")),
+                ("indirizzo", json!("Via Po 10")),
+            ]),
+        )
+        .unwrap();
+
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("DHL"))]))
+        .unwrap();
+
+    let contrassegno = state
+        .record_create(
+            "conto",
+            campi(&[
+                ("nome", json!("Contrassegno DHL")),
+                ("tipo", json!("contrassegno")),
+            ]),
+        )
+        .unwrap();
+
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+                ("stato", json!("confermato")),
+            ]),
+        )
+        .unwrap();
+
+    let riga = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prezzo", json!(45000)),
+                ("qta", json!(1)),
+                ("stato_riga", json!("da_spedire")),
+            ]),
+        )
+        .unwrap();
+
+    // Due rate iniziali: 225€ e 225€
+    let r1 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(22500)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+            ]),
+        )
+        .unwrap();
+
+    let r2 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(22500)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+            ]),
+        )
+        .unwrap();
+
+    // Spediamo l'ordine: la prima rata (225€) viene agganciata alla spedizione
+    let sped = state
+        .spedizione_crea(
+            "lotto-unico",
+            "2026-06-05",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            22500,
+            "",
+            &[rn(&riga.id, "LU")],
+        )
+        .unwrap();
+
+    let s_init = state.record_get("spedizione", &sped.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s_init.data, "contrassegno"), 22500);
+
+    // ORA: Cancelliamo TUTTE le rate esistenti
+    state.record_delete("pagamento", &r1.id).unwrap();
+    state.record_delete("pagamento", &r2.id).unwrap();
+
+    // Verifica: poiché non ci sono più rate contrassegno, la spedizione si azzera
+    let s_vuota = state.record_get("spedizione", &sped.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s_vuota.data, "contrassegno"), 0);
+    assert_eq!(str_field(&s_vuota.data, "mezzo"), "");
+
+    // ORA: Creiamo UNA RATA NUOVA UNICA da 450€ contrassegno
+    let p_nuovo = state
+        .pagamento_registra(
+            &ordine.id,
+            "saldo",
+            45000,
+            false,
+            "2026-07-05",
+            &contrassegno.id,
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+
+    // VERIFICHE:
+    // 1. La spedizione esistente si riallinea automaticamente all'intero importo della rata unica (450€)
+    let s_riallineata = state.record_get("spedizione", &sped.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s_riallineata.data, "contrassegno"), 45000);
+    assert_eq!(str_field(&s_riallineata.data, "mezzo"), "contrassegno");
+
+    // 2. Il nuovo pagamento riceve il collegamento 1-a-1 con la spedizione (spedizione_id)
+    let p_check = state.record_get("pagamento", &p_nuovo.id).unwrap().unwrap();
+    assert_eq!(str_field(&p_check.data, "spedizione_id"), sped.id);
+}
+
+#[test]
+fn due_spedizioni_con_contrassegno_date_scadenza_indipendenti() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+
+    let cliente = state
+        .record_create(
+            "cliente",
+            campi(&[
+                ("nome", json!("Paolo")),
+                ("cognome", json!("Verdi")),
+                ("citta", json!("Bologna")),
+                ("cap", json!("40100")),
+                ("indirizzo", json!("Via D'Azeglio 5")),
+            ]),
+        )
+        .unwrap();
+
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("BRT"))]))
+        .unwrap();
+
+    let contrassegno = state
+        .record_create(
+            "conto",
+            campi(&[
+                ("nome", json!("Contrassegno BRT")),
+                ("tipo", json!("contrassegno")),
+            ]),
+        )
+        .unwrap();
+
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!("2026-06-01")),
+                ("stato", json!("confermato")),
+            ]),
+        )
+        .unwrap();
+
+    let r1 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prezzo", json!(20000)),
+                ("qta", json!(1)),
+                ("stato_riga", json!("da_spedire")),
+            ]),
+        )
+        .unwrap();
+
+    let r2 = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("prezzo", json!(30000)),
+                ("qta", json!(1)),
+                ("stato_riga", json!("da_spedire")),
+            ]),
+        )
+        .unwrap();
+
+    // Rata 1 (200€) e Rata 2 (300€) entrambe a contrassegno
+    let p1 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(20000)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+                ("scad_da_spedizione", json!(true)),
+            ]),
+        )
+        .unwrap();
+
+    let p2 = state
+        .record_create(
+            "pagamento",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("tipo", json!("rata")),
+                ("importo", json!(30000)),
+                ("saldato", json!(false)),
+                ("conto_id", json!(contrassegno.id)),
+                ("scad_da_spedizione", json!(true)),
+            ]),
+        )
+        .unwrap();
+
+    // 1. PRIMA SPEDIZIONE effettuata il 2026-06-01 (con R1, 200€)
+    let sped1 = state
+        .spedizione_crea(
+            "lotto-p1",
+            "2026-06-01",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            20000,
+            "",
+            &[rn(&r1.id, "LP1")],
+        )
+        .unwrap();
+
+    // Verifica scadenza Rata 1: 2026-06-01 + 30gg = 2026-07-01
+    let p1_dopo_sped1 = state.record_get("pagamento", &p1.id).unwrap().unwrap();
+    assert_eq!(str_field(&p1_dopo_sped1.data, "spedizione_id"), sped1.id);
+    assert_eq!(str_field(&p1_dopo_sped1.data, "scadenza"), "2026-07-01");
+
+    // 2. SECONDA SPEDIZIONE effettuata il 2026-06-20 (con R2, 300€)
+    let sped2 = state
+        .spedizione_crea(
+            "lotto-p2",
+            "2026-06-20",
+            &corriere.id,
+            1,
+            1,
+            "",
+            false,
+            "contrassegno",
+            30000,
+            "",
+            &[rn(&r2.id, "LP2")],
+        )
+        .unwrap();
+
+    // VERIFICHE CRUCIALI:
+    // A. La seconda rata riceve spedizione_id della seconda spedizione
+    // B. La scadenza della seconda rata è calcolata dalla data della SECONDA spedizione: 2026-06-20 + 30gg = 2026-07-20
+    let p2_dopo_sped2 = state.record_get("pagamento", &p2.id).unwrap().unwrap();
+    assert_eq!(str_field(&p2_dopo_sped2.data, "spedizione_id"), sped2.id);
+    assert_eq!(str_field(&p2_dopo_sped2.data, "scadenza"), "2026-07-20");
+
+    // C. La scadenza della PRIMA rata resta fedele alla PRIMA spedizione (2026-07-01) e NON viene sovrascritta!
+    let p1_dopo_sped2 = state.record_get("pagamento", &p1.id).unwrap().unwrap();
+    assert_eq!(str_field(&p1_dopo_sped2.data, "spedizione_id"), sped1.id);
+    assert_eq!(str_field(&p1_dopo_sped2.data, "scadenza"), "2026-07-01");
+
+    // 3. CAMBIO DI P2 SU CONTO BANCARIO (anziché contrassegno):
+    let banca = state
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca Nazionale")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+
+    state
+        .record_update("pagamento", &p2.id, campi(&[("conto_id", json!(banca.id))]))
+        .unwrap();
+
+    // Verifiche sul passaggio a banca:
+    // A. Spedizione 2 diventa prepagata (contrassegno = 0, mezzo = "")
+    let s2_aggiornata = state.record_get("spedizione", &sped2.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s2_aggiornata.data, "contrassegno"), 0);
+    assert_eq!(str_field(&s2_aggiornata.data, "mezzo"), "");
+
+    // B. La scadenza di P2 ricalcola l'offset a +7gg dalla propria spedizione (2026-06-20 + 7gg = 2026-06-27)
+    let p2_banca = state.record_get("pagamento", &p2.id).unwrap().unwrap();
+    assert_eq!(str_field(&p2_banca.data, "scadenza"), "2026-06-27");
+
+    // C. Spedizione 1 e P1 restano del tutto inalterate a contrassegno
+    let s1_check = state.record_get("spedizione", &sped1.id).unwrap().unwrap();
+    assert_eq!(i64_field(&s1_check.data, "contrassegno"), 20000);
+    assert_eq!(str_field(&s1_check.data, "mezzo"), "contrassegno");
+    let p1_check = state.record_get("pagamento", &p1.id).unwrap().unwrap();
+    assert_eq!(str_field(&p1_check.data, "scadenza"), "2026-07-01");
+}
+
+#[test]
+fn aggiornamento_app_preserva_importi_e_dati_spedizioni_preesistenti() {
+    let app_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+
+    let sped_id: String;
+    let pag_id: String;
+    let ord_id: String;
+
+    // FASE 1: Creazione dati con app in stato iniziale (dati storici/pre-esistenti)
+    {
+        let state = AppState::init(app_dir.path().to_path_buf()).unwrap();
+        onboarda(&state, data_dir.path().to_str().unwrap(), "Operatore");
+
+        let cliente = state
+            .record_create(
+                "cliente",
+                campi(&[
+                    ("nome", json!("Giovanni")),
+                    ("cognome", json!("Neri")),
+                    ("citta", json!("Firenze")),
+                    ("cap", json!("50100")),
+                    ("indirizzo", json!("Via dei Calzaiuoli 1")),
+                ]),
+            )
+            .unwrap();
+
+        let corriere = state
+            .record_create("corriere", campi(&[("nome", json!("TNT"))]))
+            .unwrap();
+
+        let contrassegno = state
+            .record_create(
+                "conto",
+                campi(&[
+                    ("nome", json!("Contrassegno TNT")),
+                    ("tipo", json!("contrassegno")),
+                ]),
+            )
+            .unwrap();
+
+        let ordine = state
+            .record_create(
+                "ordine",
+                campi(&[
+                    ("cliente_id", json!(cliente.id)),
+                    ("data", json!("2026-05-10")),
+                    ("stato", json!("confermato")),
+                ]),
+            )
+            .unwrap();
+        ord_id = ordine.id.clone();
+
+        let riga = state
+            .record_create(
+                "riga_ordine",
+                campi(&[
+                    ("ordine_id", json!(ordine.id)),
+                    ("prezzo", json!(45000)),
+                    ("qta", json!(1)),
+                    ("stato_riga", json!("da_spedire")),
+                ]),
+            )
+            .unwrap();
+
+        // Pagamento storico (senza spedizione_id valorizzato)
+        let pag = state
+            .record_create(
+                "pagamento",
+                campi(&[
+                    ("ordine_id", json!(ordine.id)),
+                    ("tipo", json!("saldo")),
+                    ("importo", json!(45000)),
+                    ("saldato", json!(false)),
+                    ("conto_id", json!(contrassegno.id)),
+                    ("scadenza", json!("2026-06-10")),
+                ]),
+            )
+            .unwrap();
+        pag_id = pag.id.clone();
+
+        // Spedizione storica creata
+        let sped = state
+            .spedizione_crea(
+                "lotto-storico",
+                "2026-05-11",
+                &corriere.id,
+                1,
+                1,
+                "",
+                false,
+                "contrassegno",
+                45000,
+                "",
+                &[rn(&riga.id, "L-HIST")],
+            )
+            .unwrap();
+        sped_id = sped.id.clone();
+    }
+
+    // FASE 2: Riavvio/Aggiornamento dell'applicazione sulla stessa cartella dati
+    {
+        let state_aggiornata = AppState::init(app_dir.path().to_path_buf()).unwrap();
+
+        // Verifica che la spedizione pre-esistente mantenga ESATTAMENTE i suoi importi e dati
+        let s = state_aggiornata
+            .record_get("spedizione", &sped_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(i64_field(&s.data, "contrassegno"), 45000);
+        assert_eq!(str_field(&s.data, "mezzo"), "contrassegno");
+        assert_eq!(str_field(&s.data, "data"), "2026-05-11");
+
+        // Verifica che il pagamento pre-esistente mantenga ESATTAMENTE i suoi importi e scadenze
+        let p = state_aggiornata
+            .record_get("pagamento", &pag_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(i64_field(&p.data, "importo"), 45000);
+        assert_eq!(str_field(&p.data, "scadenza"), "2026-06-10");
+        assert!(!bool_field(&p.data, "saldato"));
+
+        // Verifica attraverso la query delle spedizioni
+        let tutte_sped = state_aggiornata.spedizioni_lista().unwrap();
+        let mia_sped = tutte_sped.iter().find(|sp| sp.id == sped_id).unwrap();
+        assert_eq!(mia_sped.contrassegno, 45000);
+        assert_eq!(mia_sped.mezzo, "contrassegno");
+
+        // Verifica attraverso i pagamenti ordine
+        let pagamenti_ordine = state_aggiornata.pagamenti_ordine(&ord_id).unwrap();
+        let mio_pag = pagamenti_ordine.iter().find(|pg| pg.id == pag_id).unwrap();
+        assert_eq!(mio_pag.importo, 45000);
+        assert_eq!(mio_pag.scadenza, "2026-06-10");
+    }
+}
+
+#[test]
 fn diagnostica_destinatario_e_il_medico() {
     // Ordine Diagnostica: nessun cliente, il destinatario È il medico. La
     // spedizione deve usare l'indirizzo del medico. FASE 4D.
@@ -7853,6 +8976,14 @@ fn ordini_lista_espone_le_linee_per_categoria() {
     let lista = state.ordini_lista().unwrap();
     let linee = |id: &str| lista.iter().find(|x| x.id == id).unwrap().linee.clone();
     assert_eq!(linee(&o_imm.id), vec!["Immunoterapia"]);
+    assert!(
+        lista
+            .iter()
+            .find(|x| x.id == o_imm.id)
+            .unwrap()
+            .produzione_operativa,
+        "un ordine Immunoterapia con una riga libera appartiene alla coda Produzione"
+    );
     // Distinte e ordinate alfabeticamente; la riga Diagnostica fa comparire l'ordine
     // anche sotto quel filtro.
     assert_eq!(linee(&o_mix.id), vec!["Diagnostica", "Immunoterapia"]);
@@ -8243,7 +9374,7 @@ fn laboratorio_export_assegna_numeri_e_somma_acconti() {
             "riga_ordine",
             campi(&[
                 ("ordine_id", json!(o1.id)),
-                ("paziente", json!("Lucia")),
+                ("paziente", json!("")), // vuoto: ricade sulla ragione sociale del cliente ("Rossi")
                 ("qta", json!(1)),
                 ("prezzo", json!(0)),
                 ("formulazione", json!("spray")),
@@ -8264,7 +9395,7 @@ fn laboratorio_export_assegna_numeri_e_somma_acconti() {
         )
         .unwrap();
 
-    // o2 Immunoterapia con acconto solo PREVISTO (non incassato) → col C = previsto 9000.
+    // o2 Immunoterapia con acconto solo PREVISTO (non incassato) → col 0 = previsto 9000.
     let o2 = state
         .record_create(
             "ordine",
@@ -8301,21 +9432,57 @@ fn laboratorio_export_assegna_numeri_e_somma_acconti() {
 
     let mut xl = calamine::open_workbook_auto(&path).unwrap();
     let range = xl.worksheet_range("Produzione").unwrap();
-    let data_j = |row: u32| {
+    let val_str = |row: u32, col: u32| {
         range
-            .get_value((row, 9))
+            .get_value((row, col))
             .map(|v| v.to_string())
             .unwrap_or_default()
     };
+
+    // Colonna 5: Paziente (con fallback su cliente "Rossi" per r2)
+    assert_eq!(val_str(1, 5), "Mario");
     assert_eq!(
-        data_j(1),
+        val_str(2, 5),
+        "Rossi",
+        "riga senza paziente ricade sul cliente"
+    );
+    assert_eq!(val_str(3, 5), "Anna");
+
+    // Colonna 7: Data prevista
+    assert_eq!(
+        val_str(1, 7),
         "10 luglio",
         "la data sulla riga vince sul fallback ordine"
     );
     assert_eq!(
-        data_j(2),
+        val_str(2, 7),
         "3 giugno",
         "le righe senza data usano il fallback ordine/export"
+    );
+
+    // Colonna 8: vuota tra Data prevista e Formulazione
+    assert_eq!(val_str(0, 8), "", "colonna 8 header vuota");
+    assert_eq!(val_str(1, 8), "", "colonna 8 riga 1 vuota");
+
+    // Colonna 9: Formulazione
+    assert_eq!(val_str(1, 9), "polimerizzato");
+    assert_eq!(val_str(2, 9), "spray");
+
+    // Riga dei totali (riga 4, subito sotto le 3 righe dati):
+    // Col 0: Totale Acconto = 90 + 90 = 180.0
+    // Col 1: "TOTALE"
+    // Col 6: Totale Valore = 400 + 270 = 670.0
+    use calamine::DataType;
+    assert_eq!(
+        range.get_value((4, 0)).unwrap().as_f64(),
+        Some(180.0),
+        "totale acconti in colonna 0"
+    );
+    assert_eq!(val_str(4, 1), "TOTALE", "scritta TOTALE in colonna 1");
+    assert_eq!(
+        range.get_value((4, 6)).unwrap().as_f64(),
+        Some(670.0),
+        "totale valore in colonna 6"
     );
 
     // Fallback legacy persistito sugli ordini del lotto quando l'export riceve un valore.
@@ -8482,7 +9649,7 @@ fn anagrafiche_default_seminate_e_idempotenti() {
     assert_eq!(keriba.len(), 3);
     assert!(keriba
         .iter()
-        .all(|r| r.data.get("prezzo_base_default") == Some(&json!(6000))));
+        .all(|r| r.data.get("prezzo_base_default") == Some(&json!(0))));
     // Immunoterapia: prodotti = tipo preparazione × fiale (non più allergeni), prezzi reali.
     let immuno: Vec<_> = prodotti
         .iter()
@@ -8493,7 +9660,7 @@ fn anagrafiche_default_seminate_e_idempotenti() {
         .iter()
         .find(|r| r.data.get("nome") == Some(&json!("Polimerizzato 2 fiale")))
         .expect("prodotto «Polimerizzato 2 fiale» mancante");
-    assert_eq!(poli2.data.get("prezzo_base_default"), Some(&json!(40000)));
+    assert_eq!(poli2.data.get("prezzo_base_default"), Some(&json!(0)));
     // Catalogo Diagnostica standard (Laboratorio) con codice: es. A-004 = Acarus siro.
     let acaro = prodotti
         .iter()
@@ -8529,7 +9696,7 @@ fn anagrafiche_default_seminate_e_idempotenti() {
     let r2 = state
         .prezzo_suggerito(&prod_pol2.id, Some(santiago.id.clone()))
         .unwrap();
-    assert_eq!(r2.prezzo, 40000);
+    assert_eq!(r2.prezzo, 0);
     assert_eq!(r2.fonte.as_str(), "default");
 
     // Idempotente: ri-seminare non duplica e non modifica record già inizializzati.
@@ -8815,7 +9982,7 @@ fn lotto_unisci_fonde_piu_lotti_in_uno() {
     let gls = state
         .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
         .unwrap();
-    let carrai = state
+    let corriere_a = state
         .record_create("corriere", campi(&[("nome", json!("CORRIERE_A"))]))
         .unwrap();
 
@@ -8867,7 +10034,7 @@ fn lotto_unisci_fonde_piu_lotti_in_uno() {
         .spedizione_crea(
             "lotto2",
             "2026-06-06",
-            &carrai.id,
+            &corriere_a.id,
             8,
             12,
             "",
@@ -8884,7 +10051,7 @@ fn lotto_unisci_fonde_piu_lotti_in_uno() {
     assert_eq!(lista.len(), 2);
     let collo_carrai = lista
         .iter()
-        .find(|spedizione| spedizione.corriere_id == carrai.id)
+        .find(|spedizione| spedizione.corriere_id == corriere_a.id)
         .unwrap();
     assert_eq!(
         (collo_carrai.colli, collo_carrai.peso),
@@ -9278,7 +10445,7 @@ fn demo_popola_crea_pagamenti_e_azzera_pulisce() {
         "serve almeno una spedizione demo multi-riga per coprire i colli"
     );
     for s in sped.iter().filter(|s| s.n_righe > 0) {
-        let attesi = if s.corriere_profilo == "carrai" {
+        let attesi = if s.corriere_profilo == "corriere_a" {
             1
         } else {
             s.n_righe as i64
@@ -9598,4 +10765,215 @@ fn dashboard_da_saldare_esclude_preventivi_e_provv_pagate_maturano() {
     assert_eq!(s.provv_potenziale, 4300);
     // Maturate = Spedito (500, per stato) + Confermato pagato (2000, perché già pagata) = 2500.
     assert_eq!(s.provv_maturato, 2500);
+}
+
+#[test]
+fn spedizione_avviso_ignorato_o_segnato_manuale_non_ricompare() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Operatore");
+
+    let cliente = state
+        .record_create(
+            "cliente",
+            campi(&[
+                ("nome", json!("Mario Rossi")),
+                ("email", json!("demo@example.invalid")),
+            ]),
+        )
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("cliente_id", json!(cliente.id)),
+                ("data", json!(cleanup::oggi_iso())),
+                ("stato", json!("Confermato")),
+            ]),
+        )
+        .unwrap();
+    let riga = state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("qta", json!(1)),
+                ("prezzo", json!(1000)),
+            ]),
+        )
+        .unwrap();
+
+    let gls = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+
+    let sped = state
+        .spedizione_crea(
+            "lotto-test-1",
+            &cleanup::oggi_iso(),
+            &gls.id,
+            1,
+            1,
+            "",
+            false,
+            "",
+            0,
+            "",
+            &[rn(&riga.id, "12345")],
+        )
+        .unwrap();
+
+    assert!(!sped.avvisato);
+    assert_eq!(sped.ultimo_avviso_canale, None);
+
+    // Il suggerimento deve essere presente nella lista
+    let bundle = state.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
+    let sug_sped = bundle
+        .suggerimenti
+        .iter()
+        .find(|s| s.tipo == "spedizione")
+        .expect("il suggerimento spedizione deve essere presente");
+
+    // Ignora il suggerimento (es. l'operatore clicca sulla X o sull'azione)
+    state
+        .suggerimenti_nascondi(std::slice::from_ref(&sug_sped.id))
+        .unwrap();
+
+    // Ora il collo deve risultare avvisato con canale "manuale"
+    let sped_dopo = state.spedizioni_lista().unwrap();
+    let sped_trovata = sped_dopo.iter().find(|s| s.id == sped.id).unwrap();
+    assert!(sped_trovata.avvisato);
+    assert_eq!(
+        sped_trovata.ultimo_avviso_canale.as_deref(),
+        Some("manuale")
+    );
+
+    // Il suggerimento non deve più comparire né nella lista ordinaria né nella lista completa
+    let bundle_dopo = state.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
+    assert!(
+        bundle_dopo
+            .suggerimenti
+            .iter()
+            .all(|s| s.tipo != "spedizione"),
+        "il suggerimento non deve più comparire nella lista ordinaria"
+    );
+
+    let bundle_completo = state.suggerimenti_lista_completa().unwrap();
+    assert!(
+        bundle_completo
+            .suggerimenti
+            .iter()
+            .all(|s| s.tipo != "spedizione"),
+        "il suggerimento non deve comparire neanche con ricalcolo completo"
+    );
+}
+
+#[test]
+fn suggerimento_preventivi_aggrega_solo_candidati_maturi() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Operatore");
+
+    let crea = |nome: &str, giorni_fa: u64| {
+        let ordine = state
+            .record_create(
+                "ordine",
+                campi(&[("stato", json!("Nuovo")), ("marcatore", json!(""))]),
+            )
+            .unwrap();
+        let preventivo_id = format!("preventivo/{}", ordine.id);
+        let ordine_id = ordine.id;
+        let fingerprint = nome.to_string();
+        let creato_ms = now_ms().saturating_sub(giorni_fa * 24 * 60 * 60 * 1000);
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit_built_checked(move |_| {
+                        let mut mutations = vec![Mutation::new(
+                            "preventivo",
+                            preventivo_id.clone(),
+                            EventBody::Created,
+                        )];
+                        for (field, value) in campi(&[
+                            ("ordine_id", json!(ordine_id)),
+                            ("fingerprint_corrente", json!(fingerprint)),
+                            ("creato_ms", json!(creato_ms)),
+                        ]) {
+                            mutations.push(Mutation::new(
+                                "preventivo",
+                                preventivo_id.clone(),
+                                EventBody::FieldSet { field, value },
+                            ));
+                        }
+                        Ok(mutations)
+                    })
+                    .map_err(es)
+            })
+            .unwrap();
+    };
+    crea("maturo", 8);
+    crea("recente", 1);
+
+    let ordinario = state.suggerimenti_lista_con_soglia_preventivi(7).unwrap();
+    let card = ordinario
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "preventivo")
+        .unwrap();
+    assert!(card.titolo.contains("preventivo non trasmesso"));
+
+    let completo = state.suggerimenti_lista_completa().unwrap();
+    let card = completo
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "preventivo")
+        .unwrap();
+    assert!(card.titolo.contains("2 preventivi non trasmessi"));
+}
+
+#[test]
+fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Operatore");
+
+    for (data_richiesta, importo) in [("2025-12-20", 1_000), ("2026-01-10", 2_000)] {
+        state
+            .record_create(
+                "rimborso",
+                campi(&[
+                    ("data_richiesta", json!(data_richiesta)),
+                    ("data_rimborso", json!("")),
+                    ("importo", json!(importo)),
+                ]),
+            )
+            .unwrap();
+    }
+
+    let anno_2026 = state
+        .suggerimenti_lista_con_soglia_preventivi_per_anno(0, 2026)
+        .unwrap();
+    let rimborso_2026 = anno_2026
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "rimborso")
+        .unwrap();
+    assert_eq!(rimborso_2026.titolo, "Completa il rimborso aperto");
+    assert!(rimborso_2026.dettaglio.contains("20,00"));
+
+    let tutti = state
+        .suggerimenti_lista_con_soglia_preventivi_per_anno(0, 0)
+        .unwrap();
+    let rimborsi_tutti = tutti
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "rimborso")
+        .unwrap();
+    assert_eq!(rimborsi_tutti.titolo, "Completa 2 rimborsi aperti");
 }

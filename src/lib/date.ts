@@ -117,12 +117,26 @@ export function estremiPeriodoIso(
   annoGlobale = 0,
   oggi = new Date(),
 ): [string, string] | null {
-  if (periodo === "tutto") return null;
-  if (periodo === "custom") return [da || "0000-01-01", a || "9999-12-31"];
-  if (periodo === "mese") return estremiMeseIso(oggi);
-  if (periodo === "scorso") return estremiMeseIso(oggi, -1);
+  if (periodo === "tutto") {
+    return annoGlobale !== 0
+      ? [`${annoGlobale}-01-01`, `${annoGlobale}-12-31`]
+      : null;
+  }
+  if (periodo === "custom") {
+    const limiteDal = annoGlobale !== 0 ? `${annoGlobale}-01-01` : "0000-01-01";
+    const limiteAl = annoGlobale !== 0 ? `${annoGlobale}-12-31` : "9999-12-31";
+    const dal = da || limiteDal;
+    const al = a || limiteAl;
+    return [dal < limiteDal ? limiteDal : dal, al > limiteAl ? limiteAl : al];
+  }
+  const riferimento =
+    annoGlobale !== 0
+      ? new Date(annoGlobale, oggi.getMonth(), oggi.getDate())
+      : oggi;
+  if (periodo === "mese") return estremiMeseIso(riferimento);
+  if (periodo === "scorso") return estremiMeseIso(riferimento, -1);
   if (periodo === "trimestre") {
-    return [estremiMeseIso(oggi, -2)[0], estremiMeseIso(oggi)[1]];
+    return [estremiMeseIso(riferimento, -2)[0], estremiMeseIso(riferimento)[1]];
   }
   const anno = annoGlobale !== 0 ? annoGlobale : oggi.getFullYear();
   return [`${anno}-01-01`, `${anno}-12-31`];

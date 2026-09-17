@@ -112,6 +112,18 @@ describe("date locali", () => {
       "2024-01-01",
       "2024-12-31",
     ]);
+    expect(estremiPeriodoIso("tutto", "", "", 2024, oggi)).toEqual([
+      "2024-01-01",
+      "2024-12-31",
+    ]);
+    expect(estremiPeriodoIso("mese", "", "", 2024, oggi)).toEqual([
+      "2024-01-01",
+      "2024-01-31",
+    ]);
+    expect(estremiPeriodoIso("custom", "2023-06-01", "2025-02-01", 2024, oggi)).toEqual([
+      "2024-01-01",
+      "2024-12-31",
+    ]);
   });
 
   it("mantiene fallback e valori non ISO nella formattazione italiana", () => {

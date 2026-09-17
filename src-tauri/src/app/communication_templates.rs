@@ -21,6 +21,11 @@ const MAX_CORPO_BYTES: usize = 100_000;
 const PREVENTIVO_OGGETTO_BASE: &str = "Preventivo {{numero_preventivo}}";
 const PREVENTIVO_CORPO_BASE_LEGACY: &str = "Gentile {{nome_cliente}},\nLe inviamo il preventivo {{numero_preventivo}} relativo a {{riferimento_ordine}} e le condizioni generali di vendita.\nRestiamo in attesa della Sua conferma e dei dati di fatturazione e consegna.\nGrazie.\nPharmaTek";
 const PREVENTIVO_CORPO_BASE: &str = "Gentile cliente,\nLe alleghiamo il preventivo del Suo ordine. Le condizioni di vendita sono specificate nel preventivo.\nResteremo in attesa della Sua conferma; inoltre, Le chiediamo gentilmente di confermarci i dati di fatturazione (nome, cognome, codice fiscale), l’indirizzo di consegna, la Sua modalità di pagamento e, facoltativamente, il Suo indirizzo e-mail.\nGrazie.\nPharmaTek";
+const INVIO_PRODUZIONE_OGGETTO_BASE_LEGACY: &str =
+    "Production order {{lotto_produzione}} — {{data_produzione}}";
+const INVIO_PRODUZIONE_CORPO_BASE_LEGACY: &str = "Dear Laboratorio International Sales Team,\nPlease find attached the production documentation for lot {{lotto_produzione}}, submitted on {{data_produzione}}.\nThe package contains {{numero_prodotti}} production item(s).\nPlease let us know if any further information is required.\n\nKind regards,\nPharmaTek";
+const INVIO_PRODUZIONE_OGGETTO_BASE: &str = "Production order — {{data_produzione}}";
+const INVIO_PRODUZIONE_CORPO_BASE: &str = "Dear Laboratorio International Sales Team,\nPlease find attached the production documentation submitted on {{data_produzione}}.\nThe package contains {{numero_prodotti}} production item(s).\nPlease let us know if any further information is required.\n\nKind regards,\nPharmaTek";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +34,7 @@ pub enum TipoModelloComunicazione {
     SollecitoPreventivo,
     SollecitoPagamento,
     PreavvisoSpedizione,
+    InvioProduzione,
 }
 
 impl TipoModelloComunicazione {
@@ -38,6 +44,7 @@ impl TipoModelloComunicazione {
             Self::SollecitoPreventivo => "sollecito_preventivo",
             Self::SollecitoPagamento => "sollecito_pagamento",
             Self::PreavvisoSpedizione => "preavviso_spedizione",
+            Self::InvioProduzione => "invio_produzione",
         }
     }
 
@@ -47,6 +54,7 @@ impl TipoModelloComunicazione {
             Self::SollecitoPreventivo => "Sollecito preventivo",
             Self::SollecitoPagamento => "Sollecito pagamento",
             Self::PreavvisoSpedizione => "Preavviso spedizione",
+            Self::InvioProduzione => "Invio produzione Laboratorio",
         }
     }
 }
@@ -161,6 +169,13 @@ fn catalogo_variabili(tipo: TipoModelloComunicazione) -> BTreeMap<&'static str, 
                 ("istruzioni_pagamento", "Istruzioni di pagamento"),
                 ("iban", "IBAN"),
                 ("modalita_pagamento", "Modalità di pagamento"),
+            ]);
+        }
+        TipoModelloComunicazione::InvioProduzione => {
+            catalogo.extend([
+                ("lotto_produzione", "Lotto di produzione"),
+                ("data_produzione", "Data di produzione"),
+                ("numero_prodotti", "Numero prodotti"),
             ]);
         }
     }
@@ -297,7 +312,7 @@ struct DefaultTemplate {
 
 fn defaults() -> Vec<DefaultTemplate> {
     use TipoModelloComunicazione::{
-        PreavvisoSpedizione, Preventivo, SollecitoPagamento, SollecitoPreventivo,
+        InvioProduzione, PreavvisoSpedizione, Preventivo, SollecitoPagamento, SollecitoPreventivo,
     };
     vec![
         DefaultTemplate {
@@ -312,13 +327,18 @@ fn defaults() -> Vec<DefaultTemplate> {
         },
         DefaultTemplate {
             tipo: SollecitoPagamento,
-            oggetto: "Promemoria pagamento ordine {{riferimento_ordine}}",
-            corpo: "Gentile {{nome_cliente}},\ndai nostri sistemi risulta ancora da saldare {{totale_scaduto}} per {{riferimento_ordine}}.\n{{dettaglio_rate}}\n{{istruzioni_pagamento}}\nRestiamo in attesa di un Suo gentile riscontro.\nPharmaTek",
+            oggetto: "Promemoria pagamento",
+            corpo: "Gentile {{nome_cliente}},\ndai nostri sistemi risulta ancora da saldare {{totale_scaduto}}.\n{{dettaglio_rate}}\n{{istruzioni_pagamento}}\nRestiamo in attesa di un Suo gentile riscontro.\nPharmaTek",
         },
         DefaultTemplate {
             tipo: PreavvisoSpedizione,
-            oggetto: "Spedizione ordine {{riferimento_ordine}}",
-            corpo: "Gentile {{nome_cliente}},\nil Suo ordine {{riferimento_ordine}} sarà affidato al corriere {{corriere}} il {{data_spedizione}}.\nTempi e tracciamento: {{tracking}}.\nImporto residuo: {{importo_residuo}}.\n{{istruzioni_pagamento}}\nDistinti saluti,\nPharmaTek",
+            oggetto: "Avviso spedizione PharmaTek",
+            corpo: "Gentile {{nome_cliente}},\nin merito all'ordine del suo farmaco antiallergico individualizzato, Le comunichiamo che il prodotto verrà affidato al corriere il {{data_spedizione}}.\nI tempi di consegna sono di 6 giorni lavorativi.\nImporto residuo: {{importo_residuo}}.\n{{istruzioni_pagamento}}\n\nDistinti saluti,\nPharmaTek",
+        },
+        DefaultTemplate {
+            tipo: InvioProduzione,
+            oggetto: INVIO_PRODUZIONE_OGGETTO_BASE,
+            corpo: INVIO_PRODUZIONE_CORPO_BASE,
         },
     ]
 }
@@ -335,6 +355,16 @@ impl AppState {
             titolo: TipoModelloComunicazione::Preventivo.label().into(),
             oggetto: PREVENTIVO_OGGETTO_BASE.into(),
             corpo: PREVENTIVO_CORPO_BASE_LEGACY.into(),
+            attivo: true,
+        })
+        .map(|(_, _, fingerprint)| fingerprint)
+        .unwrap_or_default();
+        let legacy_invio_produzione_fingerprint = valida_input(ModelloComunicazioneSalvaInput {
+            id: modello_base_id(TipoModelloComunicazione::InvioProduzione),
+            tipo: TipoModelloComunicazione::InvioProduzione,
+            titolo: TipoModelloComunicazione::InvioProduzione.label().into(),
+            oggetto: INVIO_PRODUZIONE_OGGETTO_BASE_LEGACY.into(),
+            corpo: INVIO_PRODUZIONE_CORPO_BASE_LEGACY.into(),
             attivo: true,
         })
         .map(|(_, _, fingerprint)| fingerprint)
@@ -377,7 +407,16 @@ impl AppState {
                                         && payload.versione_id == versione_seed_v1
                                         && payload.fingerprint == legacy_preventivo_fingerprint
                                 });
-                            if migra_preventivo_legacy {
+                            let migra_invio_produzione_legacy = input.tipo
+                                == TipoModelloComunicazione::InvioProduzione
+                                && corrente.as_ref().is_some_and(|payload| {
+                                    payload.predefinito
+                                        && payload.versione == 1
+                                        && payload.versione_id == versione_seed_v1
+                                        && payload.fingerprint
+                                            == legacy_invio_produzione_fingerprint
+                                });
+                            if migra_preventivo_legacy || migra_invio_produzione_legacy {
                                 let versione_id = format!("mv-{id}-seed-v2");
                                 let payload = ModelloPayload {
                                     schema_version: SCHEMA_UNIFICATO,
@@ -749,6 +788,53 @@ mod tests {
             .unwrap();
     }
 
+    fn imposta_invio_produzione_seed_legacy(state: &AppState) {
+        let id = modello_base_id(TipoModelloComunicazione::InvioProduzione);
+        let (input, variabili_usate, fingerprint) = valida_input(ModelloComunicazioneSalvaInput {
+            id: id.clone(),
+            tipo: TipoModelloComunicazione::InvioProduzione,
+            titolo: TipoModelloComunicazione::InvioProduzione.label().into(),
+            oggetto: INVIO_PRODUZIONE_OGGETTO_BASE_LEGACY.into(),
+            corpo: INVIO_PRODUZIONE_CORPO_BASE_LEGACY.into(),
+            attivo: true,
+        })
+        .unwrap();
+        let payload = ModelloPayload {
+            schema_version: SCHEMA_UNIFICATO,
+            modello_id: id.clone(),
+            versione_id: format!("mv-{id}-seed-v1"),
+            versione: 1,
+            tipo: input.tipo,
+            titolo: input.titolo,
+            oggetto: input.oggetto,
+            corpo: input.corpo,
+            attivo: input.attivo,
+            predefinito: true,
+            variabili_usate,
+            fingerprint,
+            aggiornato_ms: 0,
+            aggiornato_da_utente: "sistema".into(),
+            aggiornato_da_dispositivo: "legacy".into(),
+        };
+        let value = serde_json::to_value(payload).unwrap();
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit_built_checked(move |_| {
+                        Ok(vec![Mutation::new(
+                            ENTITA_MODELLO,
+                            &id,
+                            EventBody::FieldSet {
+                                field: "corrente".into(),
+                                value,
+                            },
+                        )])
+                    })
+                    .map_err(es)
+            })
+            .unwrap();
+    }
+
     #[test]
     fn parser_accetta_variabili_note_e_rifiuta_errori() {
         let (_, usate, _) = valida_input(pagamento(
@@ -766,10 +852,10 @@ mod tests {
     }
 
     #[test]
-    fn seed_crea_quattro_modelli_unificati() {
+    fn seed_crea_cinque_modelli_unificati() {
         let (_app, _data, state) = stato_test();
         let modelli = state.modelli_comunicazione_lista().unwrap();
-        assert_eq!(modelli.len(), 4);
+        assert_eq!(modelli.len(), 5);
         assert!(modelli.iter().all(|modello| modello.versione == 1));
         assert!(modelli.iter().all(|modello| modello.predefinito));
         assert!(modelli
@@ -799,6 +885,40 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|modello| modello.tipo == TipoModelloComunicazione::Preventivo)
+            .unwrap();
+        assert_eq!(ancora.versione_id, aggiornato.versione_id);
+        assert_eq!(
+            state
+                .modello_comunicazione_storico(&aggiornato.id)
+                .unwrap()
+                .into_iter()
+                .filter(|versione| versione.versione == 2)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn seed_aggiorna_invio_produzione_legacy_ed_e_idempotente() {
+        let (_app, _data, state) = stato_test();
+        imposta_invio_produzione_seed_legacy(&state);
+
+        let aggiornato = state
+            .modelli_comunicazione_lista()
+            .unwrap()
+            .into_iter()
+            .find(|modello| modello.tipo == TipoModelloComunicazione::InvioProduzione)
+            .unwrap();
+        assert_eq!(aggiornato.oggetto, INVIO_PRODUZIONE_OGGETTO_BASE);
+        assert_eq!(aggiornato.corpo, INVIO_PRODUZIONE_CORPO_BASE);
+        assert_eq!(aggiornato.versione, 2);
+        assert!(aggiornato.versione_id.ends_with("-seed-v2"));
+
+        let ancora = state
+            .modelli_comunicazione_lista()
+            .unwrap()
+            .into_iter()
+            .find(|modello| modello.tipo == TipoModelloComunicazione::InvioProduzione)
             .unwrap();
         assert_eq!(ancora.versione_id, aggiornato.versione_id);
         assert_eq!(

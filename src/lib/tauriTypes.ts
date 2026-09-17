@@ -89,7 +89,11 @@ export interface AllegatoComunicazioneInput {
 
 export interface DocumentoCacheSalvaInput {
   nome: string;
-  mime: "application/pdf" | "image/png";
+  mime:
+    | "application/pdf"
+    | "image/png"
+    | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    | "application/zip";
   dati: number[];
 }
 
@@ -204,7 +208,67 @@ export type TipoModelloComunicazione =
   | "preventivo"
   | "sollecito_preventivo"
   | "sollecito_pagamento"
-  | "preavviso_spedizione";
+  | "preavviso_spedizione"
+  | "invio_produzione";
+
+export interface PrescriptionsFolder {
+  path: string;
+  available: boolean;
+}
+
+export interface PrescriptionFile {
+  path: string;
+  name: string;
+  mime: string;
+  size: number;
+  modifiedMs: number;
+  confidence: "exact" | "fuzzy" | "suggestion" | "manual";
+  score: number;
+  selected: boolean;
+}
+
+export interface PrescriptionPatient {
+  key: string;
+  name: string;
+  productCount: number;
+  files: PrescriptionFile[];
+}
+
+export interface ProductionPrescriptionScan {
+  folder: string;
+  lot: string;
+  productionDate: string;
+  productCount: number;
+  hasImmunotherapy: boolean;
+  hasDiagnostics: boolean;
+  patients: PrescriptionPatient[];
+  previousSendMs: number;
+  previousSendUser: string;
+  previousSendDevice: string;
+  previousSendCommunicationId: string;
+}
+
+export interface PrescriptionSelectionInput {
+  patient: string;
+  paths: string[];
+}
+
+export interface ProductionAttachments {
+  attachments: AllegatoComunicazioneInput[];
+  zipOmittedLarge: boolean;
+  productionDate: string;
+  productCount: number;
+}
+
+export interface PrescriptionsProgress {
+  id: string;
+  phase: "preparing" | "indexing" | "matching" | "excel" | "archiving" | "validating" | "complete" | "cancelled" | "error";
+  progress: number | null;
+  current: number;
+  total: number;
+  message: string;
+  done: boolean;
+}
 
 export interface VariabileModelloComunicazione {
   chiave: string;
@@ -368,6 +432,7 @@ export interface Preventivo {
   /** Istante di creazione del preventivo, distinto dalla data operativa dell'ordine. */
   creatoMs: number;
   ordineStato: string;
+  ordineMarcatore?: string;
   linee: string[];
   clienteId: string;
   clienteNome: string;
@@ -599,6 +664,8 @@ export interface OrdineDto {
   lottoProduzione: string;
   /** true se il lotto è stato unito ad un altro (separabile). FASE 5B. */
   lottoProduzioneUnito: boolean;
+  /** Derivato dal backend: l'ordine compare in una delle code di Produzione. */
+  produzioneOperativa: boolean;
 }
 
 /** Una riga d'ordine ancora da spedire (FASE 4). */
@@ -706,6 +773,10 @@ export interface BollettazioneRow {
   source: string;
   sourceRow: number;
   reference: string;
+  /** Valorizzato quando il file contiene un riferimento corretto automaticamente. */
+  rawReference?: string;
+  /** Avviso da mostrare all'operatore prima della conferma. */
+  referenceWarning?: string;
   patient: string;
   doctor: string;
   treatment: string;
@@ -795,12 +866,15 @@ export interface Spedizione extends DatiDestinatarioSpedizione {
   /** Importo contrassegno/assegno in centesimi (anche parziale). */
   contrassegno: number;
   note: string;
-  /** Profilo distinta del corriere: "gls" | "carrai". */
+  /** Profilo distinta del corriere: "gls" | "corriere_a". */
   corriereProfilo: string;
   /** True se la spedizione è stata fusa in un altro lotto (gruppo "unito", separabile). */
   unito: boolean;
   /** True se altri colli con lo stesso destinatario sono uniti in questo collo. */
   destinatariUniti: boolean;
+  avvisato?: boolean;
+  ultimoAvvisoCanale?: string;
+  ultimoAvvisoMs?: number;
   nRighe: number;
   righe: SpedizioneRiga[];
   pagamenti: PagamentoSpedizione[];
@@ -868,6 +942,7 @@ export interface Pagamento {
   note: string;
   scadDaSpedizione: boolean;
   scadRelGiorni: number;
+  spedizioneId?: string;
 }
 
 /** Riga della vista unica Crediti (Contabilità → Crediti): atteso + saldato. */
@@ -1061,7 +1136,7 @@ export type TipoSuggerimento =
   | "provvigione"
   | "produzione"
   | "spedizione"
-  | "duplicati";
+  | "preventivo";
 
 export interface SuggerimentoCollegamento {
   path: string;
@@ -1096,6 +1171,8 @@ export interface SuggerimentiPreferenzeInput {
   tipiAbilitati: TipoSuggerimento[];
   notificheAttive: boolean;
   giorniAvviso: Record<TipoSuggerimento, number>;
+  /** 0 = tutti gli anni; altrimenti limita le azioni al contesto di lavoro. */
+  anno?: number;
 }
 
 export interface Dispositivo {

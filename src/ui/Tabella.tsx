@@ -250,6 +250,8 @@ export type TabellaProps<T> = DataTableProps<T> & {
   caricamentoIniziale?: boolean;
   /** Un cambio di chiave riadatta la tabella senza fade (es. apertura/chiusura di una row). */
   ridimensionamentoSenzaSfumaturaKey?: string | number;
+  /** Disattiva la virtualizzazione a blocchi (chunking) per renderizzare una singola tabella continua (es. nei modali). */
+  disattivaChunking?: boolean;
 };
 
 const eventoResetLarghezze = "pt:tabella-reset-larghezze";
@@ -272,6 +274,7 @@ export function Tabella<T>(props: TabellaProps<T>) {
     fixedColumnWidths,
     caricamentoIniziale = false,
     ridimensionamentoSenzaSfumaturaKey,
+    disattivaChunking,
     ...dataTableProps
   } = props;
   const { densitaTabelle, ridurreAnimazioni, sidebar } = usePrefs();
@@ -347,14 +350,16 @@ export function Tabella<T>(props: TabellaProps<T>) {
   const estimatedRowHeight = densitaTabelle === "compatta" ? 37 : 53;
   
   // Dividiamo i records in chunk solo se non c'è già una paginazione forzata a blocchi piccoli
+  // e se il chunking non è esplicitamente disattivato (es. nei modali)
   const chunks = useMemo(() => {
+    if (disattivaChunking) return [totalRecords];
     if (totalRecords.length <= CHUNK_SIZE) return [totalRecords];
     const res = [];
     for (let i = 0; i < totalRecords.length; i += CHUNK_SIZE) {
       res.push(totalRecords.slice(i, i + CHUNK_SIZE));
     }
     return res;
-  }, [totalRecords]);
+  }, [totalRecords, disattivaChunking]);
 
   // Entrata "a cascata" delle prime righe, UNA volta sola appena la tabella ha dati
   // (fetch-then-render: niente animazione sul vuoto iniziale). Dopo la finestra il flag

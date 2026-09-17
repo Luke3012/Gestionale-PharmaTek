@@ -7,7 +7,8 @@
 //! restano file binari in `meta/avatars/<userId>.png` (sincronizzati da OneDrive),
 //! referenziati dagli eventi solo per nome.
 //!
-//! - `config.json` (in `%APPDATA%`, locale al PC): `device_id`, `data_dir`, `user_id`.
+//! - `config.json` (in `%APPDATA%`, locale al PC): identità, cartella dati e
+//!   percorso locale delle prescrizioni (mai sincronizzato nel log eventi).
 //! - Proiezione SQLite: `%APPDATA%/projection.sqlite` (fuori da OneDrive).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -42,6 +43,7 @@ mod dto;
 mod lifecycle;
 mod operation_lock;
 mod order_save;
+pub(crate) mod prescriptions;
 pub(crate) mod preventivi;
 mod production;
 mod reports;
@@ -87,6 +89,9 @@ pub struct AppConfig {
     pub data_dir: Option<String>,
     #[serde(default)]
     pub user_id: Option<String>,
+    /// Cartella locale delle prescrizioni. Non viene mai sincronizzata.
+    #[serde(default)]
+    pub prescriptions_dir: Option<String>,
 }
 
 /// Motore attivo + watcher (tenuto vivo finché l'app è aperta).
@@ -166,6 +171,8 @@ pub struct AppState {
     /// raccolti restano visibili nello stato originario, ma il worker non li
     /// considera finché l'utente non li rimette esplicitamente in coda.
     communication_startup_held: Mutex<Option<HashSet<String>>>,
+    /// Indice leggero, in memoria, dei file nella cartella prescrizioni.
+    prescriptions_index: Mutex<Option<prescriptions::PrescriptionIndex>>,
 }
 
 const RETENZIONE_APPLIED_EVENTI: usize = 10_000;
@@ -475,6 +482,11 @@ impl AppState {
                         .map(|pagamento| str_field(&pagamento.data, "ordine_id"))
                 }) {
                     riallinea_contrassegno_spedizioni_ordine(engine, &ordine_id)?;
+                    let data_sped =
+                        engine.with_projection(|p| ordine_data_spedizione(p, &ordine_id));
+                    if !data_sped.is_empty() {
+                        riallinea_scadenze_da_spedizione(engine, &ordine_id, &data_sped)?;
+                    }
                 }
             }
             engine
@@ -1309,12 +1321,29 @@ fn open_runtime_internal(
     use tauri::Emitter;
     fs::create_dir_all(app_dir).map_err(e)?;
     let sqlite = app_dir.join("projection.sqlite");
+    #[cfg(not(test))]
+    let reporter: Option<crate::sync::ProgressReporter> = app_handle.as_ref().map(|h| {
+        let handle_for_progress = h.clone();
+        Arc::new(move |current: usize, total: usize, phase: &str| {
+            let _ = handle_for_progress.emit(
+                "pt:sync-progress",
+                serde_json::json!({
+                    "current": current,
+                    "total": total,
+                    "phase": phase,
+                }),
+            );
+        }) as crate::sync::ProgressReporter
+    });
+    #[cfg(test)]
+    let reporter: Option<crate::sync::ProgressReporter> = None;
+
     let engine = Arc::new(
         match restore_anchor {
-            Some(anchor) => {
-                Engine::open_with_restore_anchor(data_dir, sqlite, device_id, author, anchor)
-            }
-            None => Engine::open(data_dir, sqlite, device_id, author),
+            Some(anchor) => Engine::open_with_restore_anchor_and_reporter(
+                data_dir, sqlite, device_id, author, anchor, reporter,
+            ),
+            None => Engine::open_with_reporter(data_dir, sqlite, device_id, author, reporter),
         }
         .map_err(es)?,
     );
@@ -1884,6 +1913,7 @@ fn pagamento_dto(
         note: str_field(&r.data, "note"),
         scad_da_spedizione: bool_field(&r.data, "scad_da_spedizione"),
         scad_rel_giorni: i64_field(&r.data, "scad_rel_giorni"),
+        spedizione_id: str_field(&r.data, "spedizione_id"),
     }
 }
 
@@ -2068,10 +2098,9 @@ fn pagamenti_per_ordine(
     out
 }
 
-/// Per ogni ordine, la **prima rata utile non saldata** su conto di **transito**
-/// (contrassegno/assegno) → `(mezzo, importo)` da proporre per l'incasso alla consegna
-/// in fase di spedizione. "Prima utile" = scadenza più vicina (quelle senza scadenza in
-/// coda). Ordini senza rate su transito non compaiono. FASE 4.
+/// Per ogni ordine, la prima rata utile non saldata da proporre per l'incasso
+/// alla consegna in fase di spedizione (preferenza transito contrassegno/assegno,
+/// escludendo rate già vincolate a spedizioni attive).
 fn cod_atteso_per_ordine(p: &crate::projection::Projection) -> HashMap<String, (String, i64)> {
     // Conti di transito: id -> tipo (contrassegno|assegno).
     let tipi: HashMap<String, String> = p
@@ -2083,43 +2112,59 @@ fn cod_atteso_per_ordine(p: &crate::projection::Projection) -> HashMap<String, (
             (tipo == "contrassegno" || tipo == "assegno").then_some((r.id, tipo))
         })
         .collect();
-    let mut per: HashMap<String, Vec<(String, String, i64)>> = HashMap::new();
+
+    let spedizioni_attive: HashSet<String> = p
+        .list("spedizione")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+
+    let mut per: HashMap<String, Vec<(String, String, i64, bool)>> = HashMap::new();
     for r in p.list("pagamento").unwrap_or_default() {
         if bool_field(&r.data, "saldato") {
             continue; // solo rate ancora da incassare
         }
-        let conto = str_field(&r.data, "conto_id");
-        if let Some(tipo) = tipi.get(&conto) {
-            let oid = str_field(&r.data, "ordine_id");
-            if oid.is_empty() {
-                continue;
-            }
-            per.entry(oid).or_default().push((
-                str_field(&r.data, "scadenza"),
-                tipo.clone(),
-                i64_field(&r.data, "importo"),
-            ));
+        let oid = str_field(&r.data, "ordine_id");
+        if oid.is_empty() {
+            continue;
         }
+        let sid = str_field(&r.data, "spedizione_id");
+        if !sid.is_empty() && spedizioni_attive.contains(&sid) {
+            // Già legato a una spedizione attiva: non va riproposto per una nuova spedizione
+            continue;
+        }
+        let conto = str_field(&r.data, "conto_id");
+        let tipo_conto = tipi.get(&conto).cloned().unwrap_or_default();
+        let is_transito = !tipo_conto.is_empty();
+        per.entry(oid).or_default().push((
+            str_field(&r.data, "scadenza"),
+            tipo_conto,
+            i64_field(&r.data, "importo"),
+            is_transito,
+        ));
     }
     per.into_iter()
         .filter_map(|(oid, mut v)| {
-            // Scadenza più vicina prima; le vuote in coda.
+            // Transito prima; a parità, scadenza più vicina prima (le vuote in coda).
             v.sort_by(|a, b| {
-                let ka = if a.0.is_empty() {
-                    "9999-99-99"
-                } else {
-                    a.0.as_str()
-                };
-                let kb = if b.0.is_empty() {
-                    "9999-99-99"
-                } else {
-                    b.0.as_str()
-                };
-                ka.cmp(kb)
+                b.3.cmp(&a.3).then_with(|| {
+                    let ka = if a.0.is_empty() {
+                        "9999-99-99"
+                    } else {
+                        a.0.as_str()
+                    };
+                    let kb = if b.0.is_empty() {
+                        "9999-99-99"
+                    } else {
+                        b.0.as_str()
+                    };
+                    ka.cmp(kb)
+                })
             });
             v.into_iter()
                 .next()
-                .map(|(_, mezzo, imp)| (oid, (mezzo, imp)))
+                .map(|(_, mezzo, imp, _)| (oid, (mezzo, imp)))
         })
         .collect()
 }
@@ -2379,13 +2424,13 @@ impl DestCollo {
 }
 
 /// Profilo di esportazione di un corriere: il campo `profilo` se impostato, altrimenti
-/// dedotto dal nome (contiene "carrai" → carrai, altrimenti gls). FASE 4B.
+/// dedotto dal nome (contiene "corriere_a" → corriere_a, altrimenti gls). FASE 4B.
 fn profilo_corriere(nome: &str, profilo: &str) -> String {
     if !profilo.is_empty() {
         return profilo.to_string();
     }
-    if nome.to_lowercase().contains("carrai") {
-        "carrai".to_string()
+    if nome.to_lowercase().contains("corriere_a") {
+        "corriere_a".to_string()
     } else {
         "gls".to_string()
     }
@@ -2393,8 +2438,15 @@ fn profilo_corriere(nome: &str, profilo: &str) -> String {
 
 /// Numero di righe (prodotti) per ordine. Base per i colli proposti (FASE 4).
 fn righe_count_ordini(p: &crate::projection::Projection) -> HashMap<String, i64> {
+    let righe = p.list("riga_ordine").unwrap_or_default();
+    righe_count_ordini_da_righe(&righe)
+}
+
+pub(crate) fn righe_count_ordini_da_righe(
+    righe: &[crate::projection::Record],
+) -> HashMap<String, i64> {
     let mut out: HashMap<String, i64> = HashMap::new();
-    for riga in p.list("riga_ordine").unwrap_or_default() {
+    for riga in righe {
         *out.entry(str_field(&riga.data, "ordine_id")).or_insert(0) += 1;
     }
     out
@@ -2404,6 +2456,14 @@ fn righe_count_ordini(p: &crate::projection::Projection) -> HashMap<String, i64>
 /// (FASE 4D). Base per il filtro per linea del Giornaliero unificato: un ordine
 /// compare sotto una linea se ha **almeno una** riga di quella categoria.
 fn linee_ordini(p: &crate::projection::Projection) -> HashMap<String, Vec<String>> {
+    let righe = p.list("riga_ordine").unwrap_or_default();
+    linee_ordini_da_righe(p, &righe)
+}
+
+pub(crate) fn linee_ordini_da_righe(
+    p: &crate::projection::Projection,
+    righe: &[crate::projection::Record],
+) -> HashMap<String, Vec<String>> {
     let categorie: HashMap<String, String> = p
         .list("prodotto")
         .unwrap_or_default()
@@ -2411,7 +2471,7 @@ fn linee_ordini(p: &crate::projection::Projection) -> HashMap<String, Vec<String
         .map(|r| (r.id, str_field(&r.data, "categoria")))
         .collect();
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for riga in p.list("riga_ordine").unwrap_or_default() {
+    for riga in righe {
         let cat = categorie
             .get(&str_field(&riga.data, "prodotto_id"))
             .cloned()
@@ -2693,24 +2753,55 @@ fn riallinea_scadenze_da_spedizione(
     let aggiornamenti: Vec<(String, String)> = engine.with_projection(|p| {
         let conti = conti_info(p);
         let mut out = Vec::new();
-        for r in p.list("pagamento").unwrap_or_default() {
-            if str_field(&r.data, "ordine_id") != ordine_id
-                || !bool_field(&r.data, "scad_da_spedizione")
-                || !matches!(str_field(&r.data, "tipo").as_str(), "saldo" | "rata")
-            {
-                continue;
-            }
-            let tipo_conto = conti
-                .get(&str_field(&r.data, "conto_id"))
-                .map(|(_, t, _)| t.clone())
-                .unwrap_or_default();
-            let base = if tipo_conto == "contrassegno" || tipo_conto == "assegno" {
-                30
+        let rate: Vec<crate::projection::Record> = p
+            .list("pagamento")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                str_field(&r.data, "ordine_id") == ordine_id
+                    && bool_field(&r.data, "scad_da_spedizione")
+                    && matches!(str_field(&r.data, "tipo").as_str(), "saldo" | "rata")
+            })
+            .collect();
+        if rate.is_empty() {
+            return out;
+        }
+        // Raggruppa per spedizione_id (le rate legate a una spedizione specifica
+        // hanno la propria ancora, quelle senza spedizione_id formano il piano residuo/generale).
+        let mut gruppi: HashMap<String, Vec<crate::projection::Record>> = HashMap::new();
+        for r in rate {
+            let sid = str_field(&r.data, "spedizione_id");
+            gruppi.entry(sid).or_default().push(r);
+        }
+
+        for (sid, rate_gruppo) in gruppi {
+            let data_riferimento = if !sid.is_empty() {
+                p.get("spedizione", &sid)
+                    .ok()
+                    .flatten()
+                    .map(|s| str_field(&s.data, "data"))
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| data_sped.to_string())
             } else {
-                7
+                data_sped.to_string()
             };
-            let rel = i64_field(&r.data, "scad_rel_giorni").max(0);
-            out.push((r.id, aggiungi_giorni_iso(data_sped, base + rel)));
+
+            for r in &rate_gruppo {
+                let tipo_conto = conti
+                    .get(&str_field(&r.data, "conto_id"))
+                    .map(|(_, t, _)| t.as_str())
+                    .unwrap_or_default();
+                let base = if tipo_conto == "contrassegno" || tipo_conto == "assegno" {
+                    30
+                } else {
+                    7
+                };
+                let rel = i64_field(&r.data, "scad_rel_giorni").max(0);
+                out.push((
+                    r.id.clone(),
+                    aggiungi_giorni_iso(&data_riferimento, base + rel),
+                ));
+            }
         }
         out
     });
@@ -2772,8 +2863,13 @@ fn annulla_spedizione_inner(engine: &Engine, id: &str) -> AppResult<Vec<String>>
 
 /// Totale per ordine = somma(`qta` × `prezzo`) sulle righe. In centesimi.
 fn totali_ordini(p: &crate::projection::Projection) -> HashMap<String, i64> {
+    let righe = p.list("riga_ordine").unwrap_or_default();
+    totali_ordini_da_righe(&righe)
+}
+
+pub(crate) fn totali_ordini_da_righe(righe: &[crate::projection::Record]) -> HashMap<String, i64> {
     let mut totali: HashMap<String, i64> = HashMap::new();
-    for riga in p.list("riga_ordine").unwrap_or_default() {
+    for riga in righe {
         let ordine_id = str_field(&riga.data, "ordine_id");
         let qta = i64_field(&riga.data, "qta");
         let prezzo = i64_field(&riga.data, "prezzo");
@@ -2795,8 +2891,11 @@ fn importo_spedizione_parziale(p: &crate::projection::Projection, spedizione_id:
 /// dopo la spedizione, una rata viene spostata su/da un conto contrassegno o assegno.
 /// Il dettaglio pagamenti della spedizione è già calcolato dinamicamente; qui si
 /// aggiorna anche `mezzo`/`contrassegno`, che sono i campi letti dall'export.
-fn riallinea_contrassegno_spedizioni_ordine(engine: &Engine, ordine_id: &str) -> AppResult<()> {
-    let aggiornamenti: Vec<(String, String, i64)> = engine.with_projection(|p| {
+pub(crate) fn riallinea_contrassegno_spedizioni_ordine(
+    engine: &Engine,
+    ordine_id: &str,
+) -> AppResult<()> {
+    let (aggiornamenti_spedizioni, pagamenti_da_legare) = engine.with_projection(|p| {
         let spedizioni_ids: HashSet<String> = p
             .list("riga_ordine")
             .unwrap_or_default()
@@ -2806,65 +2905,158 @@ fn riallinea_contrassegno_spedizioni_ordine(engine: &Engine, ordine_id: &str) ->
             .filter(|id| !id.is_empty())
             .collect();
         if spedizioni_ids.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
-        let conti = conti_info(p);
-        let conti_nomi: HashMap<String, String> = conti
-            .iter()
-            .map(|(id, (nome, _, _))| (id.clone(), nome.clone()))
+        let mut spedizioni_records: Vec<_> = spedizioni_ids
+            .into_iter()
+            .filter_map(|sid| p.get("spedizione", &sid).ok().flatten())
             .collect();
+        spedizioni_records.sort_by(|a, b| {
+            let da = str_field(&a.data, "data");
+            let db = str_field(&b.data, "data");
+            da.cmp(&db).then(a.id.cmp(&b.id))
+        });
+
+        let conti = conti_info(p);
         let conti_tipi: HashMap<String, String> = conti
             .iter()
             .map(|(id, (_, tipo, _))| (id.clone(), tipo.clone()))
             .collect();
 
-        spedizioni_ids
+        let mut pagamenti_transito: Vec<_> = p
+            .list("pagamento")
+            .unwrap_or_default()
             .into_iter()
-            .filter_map(|spedizione_id| {
-                let spedizione = p.get("spedizione", &spedizione_id).ok().flatten()?;
-                let mut singola = HashSet::new();
-                singola.insert(spedizione_id.clone());
-                let importi = importi_spedizione_parziali(p, &singola);
-                let mut pagamenti_transito = Vec::new();
-                for (ordine, importo) in importi {
-                    pagamenti_transito.extend(
-                        pagamenti_spedizione_calcolati(
-                            p,
-                            &ordine,
-                            importo,
-                            &conti_nomi,
-                            &conti_tipi,
-                        )
-                        .into_iter()
-                        .filter(|pagamento| {
-                            matches!(pagamento.conto_tipo.as_str(), "contrassegno" | "assegno")
-                        }),
-                    );
-                }
-
-                let mezzo = pagamenti_transito
-                    .first()
-                    .map(|pagamento| pagamento.conto_tipo.clone())
-                    .unwrap_or_default();
-                let importo = pagamenti_transito
-                    .iter()
-                    .map(|pagamento| pagamento.importo)
-                    .sum::<i64>();
-                (str_field(&spedizione.data, "mezzo") != mezzo
-                    || i64_field(&spedizione.data, "contrassegno") != importo)
-                    .then_some((spedizione_id, mezzo, importo))
+            .filter(|r| {
+                str_field(&r.data, "ordine_id") == ordine_id
+                    && !bool_field(&r.data, "saldato")
+                    && conti_tipi
+                        .get(&str_field(&r.data, "conto_id"))
+                        .is_some_and(|t| t == "contrassegno" || t == "assegno")
             })
-            .collect()
+            .collect();
+        pagamenti_transito.sort_by(|a, b| {
+            let sa = str_field(&a.data, "scadenza");
+            let sb = str_field(&b.data, "scadenza");
+            let ka = if sa.is_empty() {
+                "9999-99-99"
+            } else {
+                sa.as_str()
+            };
+            let kb = if sb.is_empty() {
+                "9999-99-99"
+            } else {
+                sb.as_str()
+            };
+            ka.cmp(kb).then(a.id.cmp(&b.id))
+        });
+
+        let mut out = Vec::new();
+        let mut pagamenti_usati = HashSet::new();
+        let mut spedizioni_gestite = HashSet::new();
+        let mut da_legare = Vec::new();
+
+        let pagamenti_ordine: Vec<_> = p
+            .list("pagamento")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                str_field(&r.data, "ordine_id") == ordine_id && !bool_field(&r.data, "saldato")
+            })
+            .collect();
+
+        // 1. Spedizioni che hanno pagamenti con spedizione_id esplicito
+        for sped in &spedizioni_records {
+            let mut match_pag = Vec::new();
+            for pag in &pagamenti_ordine {
+                if str_field(&pag.data, "spedizione_id") == sped.id {
+                    match_pag.push(pag.clone());
+                    pagamenti_usati.insert(pag.id.clone());
+                }
+            }
+            if !match_pag.is_empty() {
+                spedizioni_gestite.insert(sped.id.clone());
+                let match_transito: Vec<_> = match_pag
+                    .iter()
+                    .filter(|pag| {
+                        conti_tipi
+                            .get(&str_field(&pag.data, "conto_id"))
+                            .is_some_and(|t| t == "contrassegno" || t == "assegno")
+                    })
+                    .collect();
+
+                if !match_transito.is_empty() {
+                    let mezzo = conti_tipi
+                        .get(&str_field(&match_transito[0].data, "conto_id"))
+                        .cloned()
+                        .unwrap_or_default();
+                    let importo: i64 = match_transito
+                        .iter()
+                        .map(|p| i64_field(&p.data, "importo"))
+                        .sum();
+                    if str_field(&sped.data, "mezzo") != mezzo
+                        || i64_field(&sped.data, "contrassegno") != importo
+                    {
+                        out.push((sped.id.clone(), mezzo, importo));
+                    }
+                } else {
+                    // I pagamenti collegati a questa spedizione sono stati spostati su conti non di transito (es. banca):
+                    // la spedizione diventa prepagata (contrassegno = 0) e non deve rubare rate contrassegno libere.
+                    if !str_field(&sped.data, "mezzo").is_empty()
+                        || i64_field(&sped.data, "contrassegno") != 0
+                    {
+                        out.push((sped.id.clone(), String::new(), 0));
+                    }
+                }
+            }
+        }
+
+        // 2. Per le spedizioni rimaste (senza spedizione_id esplicito), assegna i pagamenti transito liberi (1-to-1 in ordine cronologico)
+        let mut pagamenti_liberi: Vec<_> = pagamenti_transito
+            .into_iter()
+            .filter(|p| {
+                !pagamenti_usati.contains(&p.id) && str_field(&p.data, "spedizione_id").is_empty()
+            })
+            .collect();
+
+        for sped in &spedizioni_records {
+            if spedizioni_gestite.contains(&sped.id) {
+                continue;
+            }
+            if !pagamenti_liberi.is_empty() {
+                let pag = pagamenti_liberi.remove(0);
+                da_legare.push((pag.id.clone(), sped.id.clone()));
+                let mezzo = conti_tipi
+                    .get(&str_field(&pag.data, "conto_id"))
+                    .cloned()
+                    .unwrap_or_default();
+                let importo = i64_field(&pag.data, "importo");
+                if str_field(&sped.data, "mezzo") != mezzo
+                    || i64_field(&sped.data, "contrassegno") != importo
+                {
+                    out.push((sped.id.clone(), mezzo, importo));
+                }
+            } else if !str_field(&sped.data, "mezzo").is_empty()
+                || i64_field(&sped.data, "contrassegno") != 0
+            {
+                out.push((sped.id.clone(), String::new(), 0));
+            }
+        }
+
+        (out, da_legare)
     });
 
-    for (spedizione_id, mezzo, importo) in aggiornamenti {
+    for (spedizione_id, mezzo, importo) in aggiornamenti_spedizioni {
         set_fields(
             engine,
             "spedizione",
             &spedizione_id,
             &[("mezzo", json!(mezzo)), ("contrassegno", json!(importo))],
         )?;
+    }
+    for (pid, sid) in pagamenti_da_legare {
+        set_fields(engine, "pagamento", &pid, &[("spedizione_id", json!(sid))])?;
     }
     Ok(())
 }
@@ -3235,13 +3427,20 @@ fn valida_provv_pagamento_snapshot(
     Ok(())
 }
 
-fn calcola_base_provvigione(
-    p: &crate::projection::Projection,
-    _ordine_id: &str,
+pub(crate) fn quota_spedizione_agenti(p: &crate::projection::Projection) -> i64 {
+    p.get("parametri_globali", "agenti")
+        .ok()
+        .flatten()
+        .map(|param| i64_field(&param.data, "quota_spedizione"))
+        .unwrap_or(0)
+}
+
+pub(crate) fn calcola_base_provvigione_con_quota(
     totale_ordine: i64,
     tipo_provv: &str,
     scorpora_iva: bool,
     detrai_spedizione: bool,
+    quota_spedizione: i64,
 ) -> i64 {
     if tipo_provv == "fisso" {
         return totale_ordine;
@@ -3250,12 +3449,6 @@ fn calcola_base_provvigione(
     let mut base = totale_ordine;
 
     if detrai_spedizione {
-        let quota_spedizione =
-            if let Some(param) = p.get("parametri_globali", "agenti").ok().flatten() {
-                i64_field(&param.data, "quota_spedizione")
-            } else {
-                0
-            };
         base = (base - quota_spedizione).max(0);
     }
 
@@ -3264,6 +3457,28 @@ fn calcola_base_provvigione(
     }
 
     base
+}
+
+fn calcola_base_provvigione(
+    p: &crate::projection::Projection,
+    _ordine_id: &str,
+    totale_ordine: i64,
+    tipo_provv: &str,
+    scorpora_iva: bool,
+    detrai_spedizione: bool,
+) -> i64 {
+    let quota = if detrai_spedizione {
+        quota_spedizione_agenti(p)
+    } else {
+        0
+    };
+    calcola_base_provvigione_con_quota(
+        totale_ordine,
+        tipo_provv,
+        scorpora_iva,
+        detrai_spedizione,
+        quota,
+    )
 }
 
 /// Provvigione in centesimi: importo fisso (euro→centesimi) o percentuale sul totale.

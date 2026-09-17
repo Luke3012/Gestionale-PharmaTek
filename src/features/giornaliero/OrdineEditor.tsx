@@ -81,6 +81,10 @@ import {
 } from "../contabilita/statiRimborso";
 import { RateizzaModal, type RateizzaTarget } from "../contabilita/RateizzaModal";
 import {
+  calcolaScadRelGiorni,
+  useScadenzarioEditor,
+} from "./useScadenzarioEditor";
+import {
   aggiungiGiorniRate,
   calcolaRate,
   dataLocaleOggi,
@@ -89,7 +93,6 @@ import {
 } from "../contabilita/rateizzazione";
 import {
   èContoTransito,
-  opzioniContiConTransito,
   risolviContoPreferito,
 } from "../contabilita/contoPreferito";
 import {
@@ -141,9 +144,8 @@ import {
   pagamentoPersistitoConImportoPreview,
   pagamentoPreviewLocale,
   proponiPagamentoAggiuntivo,
+  selezionaProssimoPagamentoDaSaldare,
 } from "./ordineScadenzario";
-import { PremiumAction } from "../../premium/PremiumAction";
-import { PremiumOnly, usePremiumAccess } from "../../premium/PremiumAccess";
 import { usePrefs } from "../../lib/prefs";
 import { PreventivoEditorModal } from "../preventivi/PreventivoEditorModal";
 import { DocumentoPreviewModal } from "../preventivi/DocumentoPreviewModal";
@@ -152,6 +154,8 @@ import {
   type DocumentoA4,
 } from "../preventivi/rendererDocumenti";
 import { avviaInvioRapidoPreventivo } from "../preventivi/invioRapidoPreventivo";
+import { PremiumAction } from "../../premium/PremiumAction";
+import { confermaInvioManualeDopoEsportazione } from "../preventivi/invioManualePreventivo";
 import { apriFinestraPreventivo } from "../preventivi/apriFinestraPreventivo";
 import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { OverlaySalvataggioFinestra } from "../../ui/OverlaySalvataggioFinestra";
@@ -419,7 +423,15 @@ export function OrdineEditor({
       <DocumentoPreviewModal
         opened={!!preventivoDocumento}
         documento={preventivoDocumento}
+        azioniPremium
         azioniAffollate={!!ritornoAnteprima}
+        onFileEsportato={async () => {
+          if (!preventivoAnteprima) return;
+          const aggiornato = await confermaInvioManualeDopoEsportazione(
+            preventivoAnteprima,
+          );
+          if (aggiornato) setPreventivoAnteprima(aggiornato);
+        }}
         onClose={() => {
           setPreventivoInApertura(true);
           setPreventivoDocumento(null);
@@ -458,12 +470,15 @@ export function OrdineEditor({
                     : "Modifica preventivo"}
                 </Button>
               )}
-              <Button
-                variant="default"
+              <PremiumAction
+                buttonVariant="default"
                 leftSection={<IconSend size={16} />}
+                title="Invia preventivo"
+                message="Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium."
+                lockedPresentation="modal"
                 loading={invioPreventivoInCorso}
                 disabled={!!preventivoDocumento?.overflow.length}
-                onClick={() => {
+                onAction={() => {
                   if (invioPreventivoInCorso) return;
                   setInvioPreventivoInCorso(true);
                   void avviaInvioRapidoPreventivo(preventivoAnteprima).finally(
@@ -472,7 +487,7 @@ export function OrdineEditor({
                 }}
               >
                 Invia preventivo
-              </Button>
+              </PremiumAction>
             </Group>
           ) : null
         }
@@ -544,24 +559,51 @@ export function OrdineForm({
   // Scadenzario locale (solo nuovo ordine): si materializza al salvataggio.
   const [bozze, setBozze] = useState<Bozza[]>([]);
   const bozzeToccate = useRef(false);
-  const [pagTarget, setPagTarget] = useState<PagamentoModalTarget | null>(null);
+  const totale = useMemo(
+    () => totaleRigheForm(righe),
+    [righe],
+  );
+  const {
+    codTutto,
+    setCodTutto,
+    toggleCod: toggleCodHook,
+    pagTarget,
+    setPagTarget,
+    rateizzaTarget,
+    setRateizzaTarget,
+    contrassegnoContoId,
+    optionsConti,
+    optionsContiAcconto,
+  } = useScadenzarioEditor({
+    conti,
+    categoria,
+    totale,
+    onCodTuttoAttivato: () => {
+      bozzeToccate.current = false;
+      accontoTocco.current = true;
+      setAccontoIncassato(false);
+    },
+    onCodTuttoDisattivato: () => {
+      bozzeToccate.current = false;
+      accontoTocco.current = false;
+      setAccontoIncassato(false);
+    },
+  });
   const ricaricaPagamentoInCorso = useRef<Promise<void> | null>(null);
   const [rimborsoExtra, setRimborsoExtra] = useState<RimborsoModalTarget | null>(null);
   const [rimborsoEsistente, setRimborsoEsistente] = useState<Rimborso | null>(null);
   const [rimborsoRichiesto, setRimborsoRichiesto] = useState<Rimborso | null>(null);
   const [rimborsiEffettuati, setRimborsiEffettuati] = useState(0);
-  const [rateizzaTarget, setRateizzaTarget] = useState<RateizzaTarget | null>(null);
   const [schedaCliente, setSchedaCliente] = useState<{
     ordineId: string;
     numero?: string;
     chiudiOrdineDopo: boolean;
   } | null>(null);
-  const premium = usePremiumAccess();
   const { ordineFinestra } = usePrefs();
   const [preventivoEsistente, setPreventivoEsistente] = useState(false);
 
   const caricaStatoPreventivo = useCallback(() => {
-    if (!ordineId || !premium.enabled) {
+    if (!ordineId) {
       setPreventivoEsistente(false);
       return Promise.resolve();
     }
@@ -569,7 +611,7 @@ export function OrdineForm({
       .preventivoGet(ordineId)
       .then((preventivo) => setPreventivoEsistente(preventivo.esiste))
       .catch(() => setPreventivoEsistente(false));
-  }, [ordineId, premium.enabled]);
+  }, [ordineId]);
 
   useEffect(() => {
     void caricaStatoPreventivo();
@@ -684,8 +726,9 @@ export function OrdineForm({
   const [creandoMed, setCreandoMed] = useState(false);
   const [medEditId, setMedEditId] = useState<string | null>(null);
 
-  // Keriba: "salda tutto alla consegna" → unico saldo in contrassegno, scad. +30gg.
-  const [codTutto, setCodTutto] = useState(false);
+  const [patchPagamentiVirtuali, setPatchPagamentiVirtuali] = useState<
+    Record<string, { contoId?: string; scadenza?: string; scadDaSpedizione?: boolean }>
+  >({});
   const baselineOrdineRealtimeRef = useRef<CampiOrdineRealtime | null>(null);
   const baselineRigheRealtimeRef = useRef<RigaForm[]>([]);
   const campiOrdineLocaliRef = useRef<CampiOrdineRealtime>({});
@@ -866,8 +909,10 @@ export function OrdineForm({
           setPagamentiSospesiLocalmente(new Set());
         }
         if (typeof ord.data.acconto === "number" && opts.sincronizzaAcconto) {
-          setAcconto(ord.data.acconto / 100);
-          setAccontoIniziale(ord.data.acconto);
+          const haAccontoNeiPagamenti = pags.some((p) => p.tipo === "acconto");
+          const accontoEffettivo = haAccontoNeiPagamenti ? ord.data.acconto : 0;
+          setAcconto(accontoEffettivo > 0 ? accontoEffettivo / 100 : "");
+          setAccontoIniziale(accontoEffettivo);
         }
       } catch {
         /* lista già aggiornata altrove */
@@ -882,6 +927,7 @@ export function OrdineForm({
 
   // Materializza lo scadenzario locale (bozze) sull'ordine appena creato.
   async function persistiBozze(id: string, bozzeDaSalvare = bozze) {
+    const bozzeSpediz = bozzeDaSalvare.filter((b) => b.scadDaSpedizione && (b.tipo === "saldo" || b.tipo === "rata"));
     for (const b of bozzeDaSalvare) {
       const pag = await api.pagamentoRegistra({
         ordineId: id,
@@ -897,23 +943,77 @@ export function OrdineForm({
       // Scadenza legata alla spedizione (saldo/rate): si marca così alla prima spedizione il
       // backend la riallinea a «spedizione + 7gg» (contrassegno/assegno +30). FASE 7.
       if (b.scadDaSpedizione && (b.tipo === "saldo" || b.tipo === "rata")) {
+        const idxSpediz = bozzeSpediz.indexOf(b);
         await api.recordUpdate("pagamento", pag.id, {
           scad_da_spedizione: true,
-          scad_rel_giorni: b.scadRelGiorni ?? 0,
+          scad_rel_giorni: calcolaScadRelGiorni(idxSpediz, 0, b.scadRelGiorni),
         });
       }
     }
   }
 
   function aggiornaScadenzaBozza(key: string, val: string) {
+    if (ordineId) {
+      if (key.startsWith("__local_pagamento__")) {
+        setPagamentiLocali((correnti) =>
+          correnti.map((p) => (p.id === key ? { ...p, scadenza: val } : p))
+        );
+        return;
+      }
+      if (key.startsWith("__preview_scadenzario__")) {
+        setPatchPagamentiVirtuali((correnti) => ({
+          ...correnti,
+          [key]: { ...correnti[key], scadenza: val },
+        }));
+        return;
+      }
+    }
     setBozze((bs) => bs.map((b) => (b.key === key ? { ...b, scadenza: val } : b)));
   }
 
   function aggiornaContoBozza(key: string, contoId: string) {
+    if (ordineId) {
+      if (key.startsWith("__local_pagamento__")) {
+        setPagamentiLocali((correnti) =>
+          correnti.map((p) =>
+            p.id === key ? { ...p, ...campiContoLocale(conti, contoId), contoId } : p
+          )
+        );
+        return;
+      }
+      if (key.startsWith("__preview_scadenzario__")) {
+        const cTipo = ((conti.find((c) => c.id === contoId)?.data.tipo as string) || "");
+        const èTransito = èContoTransito(cTipo);
+        setPatchPagamentiVirtuali((correnti) => ({
+          ...correnti,
+          [key]: {
+            ...correnti[key],
+            contoId,
+            ...(èTransito ? { scadDaSpedizione: true } : {}),
+          },
+        }));
+        return;
+      }
+    }
     setBozze((bs) => bs.map((b) => (b.key === key ? { ...b, contoId } : b)));
   }
 
   function aggiornaScadDaSpedizioneBozza(key: string, val: boolean) {
+    if (ordineId) {
+      if (key.startsWith("__local_pagamento__")) {
+        setPagamentiLocali((correnti) =>
+          correnti.map((p) => (p.id === key ? { ...p, scadDaSpedizione: val } : p))
+        );
+        return;
+      }
+      if (key.startsWith("__preview_scadenzario__")) {
+        setPatchPagamentiVirtuali((correnti) => ({
+          ...correnti,
+          [key]: { ...correnti[key], scadDaSpedizione: val },
+        }));
+        return;
+      }
+    }
     setBozze((bs) => bs.map((b) => (b.key === key ? { ...b, scadDaSpedizione: val } : b)));
   }
 
@@ -1004,10 +1104,7 @@ export function OrdineForm({
     [agenti, agenteId]
   );
 
-  const totale = useMemo(
-    () => totaleRigheForm(righe),
-    [righe]
-  );
+
   const numProdotti = useMemo(
     () => righe.filter((r) => r.prodottoId || r.prodottoNome.trim()).length,
     [righe]
@@ -1029,11 +1126,17 @@ export function OrdineForm({
     }
     prodottiPrecedentiRef.current = numProdotti;
   }, [caricamento, numProdotti]);
-  const accontoCentsCorrente = Math.min(centsDi(acconto), totale);
   const pagamentoDraftOrdine = useMemo(
     () => (ordineId && pagamentoDraft?.ordineId === ordineId ? pagamentoDraft : null),
     [ordineId, pagamentoDraft]
   );
+  const draftHaConvertitoAcconto =
+    pagTarget?.pagamento?.tipo === "acconto" &&
+    pagamentoDraftOrdine != null &&
+    pagamentoDraftOrdine.tipo !== "acconto";
+  const accontoCentsCorrente = draftHaConvertitoAcconto
+    ? 0
+    : Math.min(centsDi(acconto), totale);
   const haPagamentiProtetti = useMemo(
     () => [...pagamenti, ...pagamentiLocali].some((pag) => pag.saldato || pag.verificato),
     [pagamenti, pagamentiLocali]
@@ -1058,13 +1161,6 @@ export function OrdineForm({
     const raw = medici.find((m) => m.id === medicoId)?.data.rate_saldo_default;
     return numeroRateSaldoPredefinito(categoria, raw);
   }, [categoria, medicoId, medici]);
-
-  // Conto built-in "Contrassegno" (per il COD del Keriba). Sempre presente (init).
-  const contrassegnoContoId = useMemo(
-    () => conti.find((c) => (c.data.tipo as string) === "contrassegno")?.id ?? "",
-    [conti]
-  );
-
   const pagamentiPreview = useMemo(() => {
     if (!ordineId) return pagamenti;
 
@@ -1116,17 +1212,28 @@ export function OrdineForm({
 
     if (totale > 0) {
       const creaPreview = (tipo: "acconto" | "saldo", importo: number): Pagamento => {
-        const cId = tipo === "acconto" ? contoAccontoResolved : contoSaldoResolved;
+        const id = `__preview_scadenzario__${tipo}`;
+        const patch = patchPagamentiVirtuali[id];
+        const defaultContoId = tipo === "acconto" ? contoAccontoResolved : contoSaldoResolved;
+        const cId = patch?.contoId || defaultContoId;
+        const cTipo = (conti.find((c) => c.id === cId)?.data.tipo as string) || "";
+        const transito = èContoTransito(cTipo);
+        const daSped = patch?.scadDaSpedizione !== undefined
+          ? patch.scadDaSpedizione
+          : (tipo === "saldo" || transito);
+        const scad = patch?.scadenza !== undefined
+          ? patch.scadenza
+          : (tipo === "acconto" ? data : "");
         return {
-          id: `__preview_scadenzario__${tipo}`,
+          id,
           ordineId,
           tipo,
           importo,
           saldato: false,
-          scadenza: tipo === "acconto" ? data : "",
+          scadenza: daSped ? "" : scad,
           ...campiContoLocale(conti, cId),
           ...CAMPI_PAGAMENTO_LOCALE,
-          scadDaSpedizione: tipo === "saldo",
+          scadDaSpedizione: daSped,
           scadRelGiorni: 0,
         };
       };
@@ -1153,6 +1260,7 @@ export function OrdineForm({
     pagamentoDraftOrdine,
     pagamentiEffettivi,
     pagamentiLocali,
+    patchPagamentiVirtuali,
     totale,
     totaleSalvato,
     contoAccontoResolved,
@@ -1190,12 +1298,13 @@ export function OrdineForm({
     accontoCentsCorrente !== accontoIniziale ||
     pagamentiLocali.length > 0 ||
     pagamentiSospesiLocalmente.size > 0 ||
+    Object.keys(patchPagamentiVirtuali).length > 0 ||
     pagamenti.length === 0
   );
   const prossimaRataDaSaldare = useMemo(() => {
     if (!ordineId || scopertoScadenzario > 0) return null;
-    return [...pagamentiPreview].filter((p) => !pagamentoPreviewLocale(p) && pagamentoApertoDaSaldare(p)).sort(confrontaPagamentiAperti)[0] ?? null;
-  }, [ordineId, pagamentiPreview, scopertoScadenzario]);
+    return selezionaProssimoPagamentoDaSaldare(pagamentiPreview, conti);
+  }, [ordineId, pagamentiPreview, scopertoScadenzario, conti]);
   const azioneAggiungiPagamento = useMemo<PagamentoModalTarget | null>(() => {
     if (!ordineId) return null;
     const ordineGiaSaldato = residuo <= 0;
@@ -1285,6 +1394,12 @@ export function OrdineForm({
           // usata in creazione.
           if (mie.length === 0 && pagamentiCaricati.length === 0) {
             accontoTocco.current = false;
+            setAcconto("");
+            setAccontoIniziale(0);
+          } else if (
+            pagamentiCaricati.length > 0 &&
+            !pagamentiCaricati.some((pag) => pag.tipo === "acconto")
+          ) {
             setAcconto("");
             setAccontoIniziale(0);
           }
@@ -1594,7 +1709,6 @@ export function OrdineForm({
   ]);
 
   // Righe dello scadenzario da mostrare: bozze (nuovo) o preview dei pagamenti reali (esistente).
-  const optionsConti = useMemo(() => opzioniContiConTransito(conti), [conti]);
   const nomeConto = (id: string) => (conti.find((c) => c.id === id)?.data.nome as string) || "";
   const righeScad = (
     ordineId
@@ -1660,6 +1774,7 @@ export function OrdineForm({
     pagamenti: firmaScadenzario(pagamenti),
     pagamentiLocali: firmaScadenzario(pagamentiLocali),
     pagamentiSospesiLocalmente: [...pagamentiSospesiLocalmente].sort(),
+    patchPagamentiVirtuali,
   });
   const [firmaFormIniziale, setFirmaFormIniziale] = useState("");
   const formModificato =
@@ -1772,17 +1887,18 @@ export function OrdineForm({
     const ultimaBozza = ultima ? bozze.find((b) => b.key === ultima.id) : undefined;
     const contoId = ultimaBozza?.contoId || contoSaldoResolved;
     const tipo = ultimaBozza?.tipo === "acconto" ? "saldo" : "rata";
-    const scadDaSpedizione = ultimaBozza?.scadDaSpedizione ?? false;
+    const scadDaSpedizione = true;
     const baseScadenza = ultima?.scadenza || data;
     const nuovaScadenza = aggiungiGiorni(baseScadenza, 30);
-    const scadRelGiorni = scadDaSpedizione ? (ultimaBozza?.scadRelGiorni ?? 0) + 30 : 0;
+    const bozzeSpediz = bozze.filter((b) => b.scadDaSpedizione && (b.tipo === "saldo" || b.tipo === "rata"));
+    const scadRelGiorni = bozzeSpediz.length * 30;
 
     return {
       key: `__bozza_resto-${Date.now()}`,
       tipo,
       importo: diff,
       saldato: false,
-      scadenza: nuovaScadenza,
+      scadenza: scadDaSpedizione ? "" : nuovaScadenza,
       contoId,
       scadDaSpedizione,
       scadRelGiorni,
@@ -1804,10 +1920,11 @@ export function OrdineForm({
     const ultimoReal = ultima ? pagamenti.find((p) => p.id === ultima.id) : undefined;
     const contoId = ultimoReal?.contoId || contoSaldoResolved;
     const tipo = ultimoReal?.tipo === "acconto" ? "saldo" : "rata";
-    const scadDaSpedizione = ultimoReal?.scadDaSpedizione ?? false;
+    const scadDaSpedizione = true;
     const baseScadenza = ultima?.scadenza || data;
     const nuovaScadenza = aggiungiGiorni(baseScadenza, 30);
-    const scadRelGiorni = scadDaSpedizione ? (ultimoReal?.scadRelGiorni ?? 0) + 30 : 0;
+    const pagSpediz = pagamenti.filter((p) => p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata"));
+    const scadRelGiorni = pagSpediz.length * 30;
 
     return {
       id: `__local_pagamento__resto-${Date.now()}`,
@@ -1940,24 +2057,32 @@ export function OrdineForm({
       const isLocale = localiAttuali.some((pagamento) => pagamento.id === rata.id);
       if (isLocale) {
         nextLocali = nextLocali.map((pagamento) =>
-          pagamento.id === rata.id ? { ...pagamento, importo: nuovoImporto } : pagamento
+          pagamento.id === rata.id
+            ? {
+                ...pagamento,
+                importo: nuovoImporto,
+                scadDaSpedizione: pagamento.scadDaSpedizione ?? true,
+                scadenza: (pagamento.scadDaSpedizione ?? true) && !pagamento.saldato ? "" : pagamento.scadenza,
+              }
+            : pagamento
         );
       } else {
         nextSospesi.add(rata.id);
         const pagamentoReale = pagamenti.find((pagamento) => pagamento.id === rata.id);
+        const daSped = pagamentoReale ? (pagamentoReale.scadDaSpedizione ?? true) : true;
         nextLocali.push({
           id: `__local_pagamento__adegua-${Date.now()}`,
           ordineId: ordineId!,
           tipo: rata.tipo,
           importo: nuovoImporto,
           saldato: rata.saldato,
-          scadenza: rata.scadenza || "",
+          scadenza: daSped && !rata.saldato ? "" : (rata.scadenza || ""),
           contoId: pagamentoReale?.contoId || "",
           contoNome: pagamentoReale?.contoNome || "",
           contoTipo: pagamentoReale?.contoTipo || "",
           ...CAMPI_PAGAMENTO_LOCALE,
           note: pagamentoReale?.note || "",
-          scadDaSpedizione: pagamentoReale?.scadDaSpedizione ?? false,
+          scadDaSpedizione: daSped,
           scadRelGiorni: pagamentoReale?.scadRelGiorni ?? 0,
         });
       }
@@ -2450,22 +2575,7 @@ export function OrdineForm({
    * Gli ordini già salvati con dati fattura la aprono automaticamente al caricamento. */
   /** Keriba: attiva/disattiva "salda tutto alla consegna" (contrassegno + 30gg). */
   function toggleCod() {
-    setCodTutto((v) => {
-      const next = !v;
-      bozzeToccate.current = false;
-      if (next) {
-        accontoTocco.current = true; // niente acconto suggerito
-        setAcconto("");
-        setAccontoIncassato(false);
-      } else {
-        accontoTocco.current = false; // riprende il suggerimento acconto
-        if (categoria === "Keriba") {
-          setAcconto(totale > 0 ? totale / 100 : "");
-          setAccontoIncassato(false);
-        }
-      }
-      return next;
-    });
+    toggleCodHook(setAcconto);
   }
 
   async function salva(
@@ -2571,7 +2681,8 @@ export function OrdineForm({
       scadenzarioDaMaterializzare ||
       scadenzarioDaSvuotare ||
       pagamentiLocali.length > 0 ||
-      pagamentiSospesiLocalmente.size > 0;
+      pagamentiSospesiLocalmente.size > 0 ||
+      Object.keys(patchPagamentiVirtuali).length > 0;
     let bozzeDaSalvare = bozze;
     let righeDaSalvare = righe;
     let totaleDopoSalvataggio = totale;
@@ -2723,6 +2834,7 @@ export function OrdineForm({
         }
       }
 
+      const localiSpediz = pagamentiLocaliDaSalvare.filter((p) => p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata"));
       for (const pLocale of pagamentiLocaliDaSalvare) {
         const pag = await api.pagamentoRegistra({
           ordineId: id!,
@@ -2736,9 +2848,14 @@ export function OrdineForm({
           note: pLocale.note?.trim() || null,
         });
         if (pLocale.scadDaSpedizione && (pLocale.tipo === "saldo" || pLocale.tipo === "rata")) {
+          const idxLoc = localiSpediz.indexOf(pLocale);
+          const offsetBase = pagamenti.filter(
+            (p) => !pagamentiSospesiDaSalvare.has(p.id) && p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata")
+          ).length;
+          const relGiorni = calcolaScadRelGiorni(idxLoc, offsetBase, pLocale.scadRelGiorni);
           await api.recordUpdate("pagamento", pag.id, {
             scad_da_spedizione: true,
-            scad_rel_giorni: pLocale.scadRelGiorni ?? 0,
+            scad_rel_giorni: relGiorni,
           });
         }
       }
@@ -2783,9 +2900,45 @@ export function OrdineForm({
       }
 
       if (id) {
-        const pagamentiAggiornati = !ordineId || ((deveRiconciliareScadenzario || forzaRiallineamento) && !saltaRiallineamento)
+        let pagamentiAggiornati = !ordineId || ((deveRiconciliareScadenzario || forzaRiallineamento) && !saltaRiallineamento)
           ? await riallineaPagamentiAperti(id)
           : await api.pagamentiOrdine(id);
+        const patchDaApplicare = Object.entries(patchPagamentiVirtuali);
+        if (patchDaApplicare.length > 0) {
+          await Promise.all(
+            patchDaApplicare.map(([key, patch]) => {
+              const tipo = key.endsWith("__acconto") ? "acconto" : "saldo";
+              const pagamento = pagamentiAggiornati.find(
+                (corrente) => corrente.tipo === tipo && !corrente.saldato,
+              );
+              if (!pagamento) return Promise.resolve();
+              const fields: Record<string, unknown> = {};
+              if (patch.contoId) fields.conto_id = patch.contoId;
+              if (patch.scadenza !== undefined) fields.scadenza = patch.scadenza;
+              if (patch.scadDaSpedizione !== undefined) {
+                fields.scad_da_spedizione = patch.scadDaSpedizione;
+                fields.scad_rel_giorni = 0;
+                if (patch.scadDaSpedizione) fields.scadenza = "";
+              }
+              if (Object.keys(fields).length === 0) return Promise.resolve();
+              return api.recordUpdate("pagamento", pagamento.id, fields);
+            }),
+          );
+          pagamentiAggiornati = await api.pagamentiOrdine(id);
+          setPatchPagamentiVirtuali({});
+        }
+
+        const apertiDaSpediz = pagamentiAggiornati
+          .filter((p) => p.scadDaSpedizione && !p.saldato && (p.tipo === "saldo" || p.tipo === "rata"))
+          .sort(confrontaPagamentiAperti);
+        for (let idx = 0; idx < apertiDaSpediz.length; idx += 1) {
+          const targetRel = idx * 30;
+          if (apertiDaSpediz[idx].scadRelGiorni !== targetRel) {
+            await api.recordUpdate("pagamento", apertiDaSpediz[idx].id, { scad_rel_giorni: targetRel });
+            apertiDaSpediz[idx].scadRelGiorni = targetRel;
+          }
+        }
+
         if (ordineId) {
           setPagamenti(pagamentiAggiornati);
           setPagamentiLocali([]);
@@ -2808,9 +2961,9 @@ export function OrdineForm({
       setMarcatoreIniziale(marcatore);
       toast.success(ordineId ? "Ordine salvato." : "Ordine creato.");
       if (inTauri) void api.notificheCheck().catch(() => {});
-      if (generaPreventivoDopo && id && premium.enabled) {
+      if (generaPreventivoDopo && id) {
         await apriPreventivoCollegato(id, "editor");
-      } else if (stampaSchedaDopo && id && premium.enabled) {
+      } else if (stampaSchedaDopo && id) {
         setSchedaCliente({
           ordineId: id,
           numero: numero ?? undefined,
@@ -3004,6 +3157,7 @@ export function OrdineForm({
           residuo={residuo}
           righe={righeScad}
           optionsConti={optionsConti}
+          optionsContiAcconto={optionsContiAcconto}
           importoRateizzabile={importoRateizzabile}
           saldoAttesoCorrente={saldoAttesoCorrente}
           scopertoScadenzario={scopertoScadenzario}
@@ -3085,14 +3239,11 @@ export function OrdineForm({
 
         <div className="pt-modal-footer" style={{ justifyContent: "space-between" }}>
           <div className="pt-modal-actions">
-            <PremiumAction
-              buttonVariant={preventivoEsistente ? "light" : "default"}
+            <Button
+              variant={preventivoEsistente ? "light" : "default"}
               leftSection={<IconFileInvoice size={16} />}
               disabled={salvando || caricamento}
-              lockedPresentation="modal"
-              title="Preventivi"
-              message="La creazione, l’anteprima e la stampa dei preventivi richiedono un pagamento aggiuntivo."
-              onAction={() => {
+              onClick={() => {
                 if (ordineId && preventivoEsistente) {
                   void apriPreventivoCollegato(ordineId, "anteprima");
                 } else if (ordineId && !formModificato) {
@@ -3107,7 +3258,7 @@ export function OrdineForm({
                 : preventivoEsistente
                   ? "Visualizza preventivo"
                   : "Genera preventivo"}
-            </PremiumAction>
+            </Button>
           </div>
           <div className="pt-modal-actions">
             <Button
@@ -3128,14 +3279,11 @@ export function OrdineForm({
               Annulla
             </Button>
             {ordineId ? (
-              <PremiumAction
-                buttonVariant="default"
+              <Button
+                variant="default"
                 leftSection={<IconPrinter size={16} />}
                 disabled={salvando || caricamento}
-                lockedPresentation="modal"
-                title="Stampa scheda cliente"
-                message="La compilazione, l’anteprima e la stampa della scheda cliente richiedono un pagamento aggiuntivo."
-                onAction={() =>
+                onClick={() =>
                   setSchedaCliente({
                     ordineId,
                     numero,
@@ -3144,18 +3292,16 @@ export function OrdineForm({
                 }
               >
                 Stampa
-              </PremiumAction>
+              </Button>
             ) : (
-              <PremiumOnly>
-                <Button
-                  variant="default"
-                  leftSection={<IconPrinter size={16} />}
-                  onClick={() => void salva(true)}
-                  loading={salvando || caricamento}
-                >
-                  Salva e stampa
-                </Button>
-              </PremiumOnly>
+              <Button
+                variant="default"
+                leftSection={<IconPrinter size={16} />}
+                onClick={() => void salva(true)}
+                loading={salvando || caricamento}
+              >
+                Salva e stampa
+              </Button>
             )}
             <Button
               color="accent"
@@ -3236,7 +3382,7 @@ export function OrdineForm({
         }}
       />
 
-      {premium.enabled && schedaCliente && (
+      {schedaCliente && (
         <Suspense fallback={null}>
           <SchedaClienteModalLazy
             ordineId={schedaCliente.ordineId}

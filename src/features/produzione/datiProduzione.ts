@@ -148,3 +148,13 @@ export function suggerimentiDiagnostica(
   const allergeni = [...[...delCliente].sort((x, y) => x.localeCompare(y)), ...altri];
   return { allergeni, tipiTest: [...new Set([...TIPI_TEST, ...tipi])] };
 }
+
+/**
+ * Paziente effettivo da usare nell'anteprima e nell'export Laboratorio:
+ * se non specificato nella riga di prodotto (o vuoto/spazi), ricade automaticamente
+ * sulla ragione sociale principale del cliente. Non deve mai essere vuoto se il cliente è presente.
+ */
+export function pazienteEffettivoProduzione(rigaPaziente: unknown, clienteNome?: string): string {
+  const p = (typeof rigaPaziente === "string" ? rigaPaziente : "").trim();
+  return p || (clienteNome || "").trim();
+}

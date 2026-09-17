@@ -67,7 +67,10 @@ diverso porta la riga fra quelle **Da controllare**.
 
 `Referencia` viene proposto in `riga_ordine.numero`.
 
-Il valore resta una stringa: non viene convertito in numero e non vengono rimossi zeri iniziali.
+Il valore resta una stringa. I riferimenti numerici che rispettano il formato Laboratorio vengono
+normalizzati in modo conservativo (per esempio `05080720` → `5080720` e `0581348` → `5081348`):
+il valore originale resta disponibile nell'avviso mostrato all'operatore. I riferimenti non
+riconoscibili restano invariati.
 Se la quantità della riga ordine è maggiore di uno, resta valida la regola esistente di un numero
 lotto per ogni unità, separato da newline.
 
@@ -81,13 +84,16 @@ Il nome commerciale e `Vials` vengono ricondotti al catalogo Immunoterapia esist
 | Trattamento del laboratorio | Prodotto del gestionale |
 |---|---|
 | `BELTAVAC …` | `Polimerizzato N fiala/fiale` |
+| `BELTAVAC … PRO2` | `Polimerizzato PRO` |
 | `BELTAORAL …` | `Sublinguale N fiale` |
+| `BELTAORAL … PRO2` | `Sublinguale PRO` |
 | `VEB …` | `Lisato batterico N fiale` |
 
 `N` deriva da `Vials`, non da `Cantidad`.
 
 Se famiglia o numero di fiale non corrispondono a un prodotto esistente, il sistema non crea un
-nuovo prodotto: la riga passa fra quelle **Da controllare**.
+nuovo prodotto: la riga passa fra quelle **Da controllare**. Se manca il prodotto PRO, viene
+proposta la variante standard disponibile, ma l'associazione resta obbligatoriamente da verificare.
 
 ### 3.3 Formulazione e posologia
 
@@ -98,7 +104,8 @@ La formulazione viene ricavata dalle parole già presenti nel trattamento:
 - `Spray` → `spray`;
 - BELTAORAL senza `Spray` → `gocce`;
 - VEB `NasaleOrale` → `nasale`;
-- VEB sublinguale senza `Spray` → `gocce`.
+- VEB sublinguale senza `Spray` → `gocce`;
+- VEB `Sottocutanea` → `VEB sottocute`.
 
 La sequenza posologica viene letta soltanto quando è chiaramente separata dal nome commerciale:
 
@@ -123,8 +130,10 @@ come posologia.
 Alias ricorrenti come `Derm. farinae`, `Dermatophagoides farinae`, `Gramíneas espontáneas`,
 `Olea europaea`, `Gato` e `Perro` vengono ricondotti ai nomi già usati dal gestionale.
 
-L'ordine degli allergeni viene mantenuto e i duplicati vengono rimossi. Più di dieci elementi
-richiedono controllo manuale, coerentemente col limite attuale del campo.
+L'ordine degli allergeni viene mantenuto e i duplicati vengono rimossi. Gli allergeni e i ceppi
+sono metadati facoltativi: se assenti o non riconoscibili non bloccano l'associazione né la
+spedizione. Oltre dieci elementi vengono omessi dalla proposta automatica, lasciando comunque
+possibile la revisione dell'ordine e del prodotto.
 
 ### 3.5 Dati già compilati
 
@@ -166,7 +175,9 @@ Il confronto è locale e deterministico:
 - tollera l'ordine invertito di nome e cognome;
 - usa similarità per token, trigrammi e distanza Damerau-Levenshtein;
 - usa paziente/cliente come segnale principale;
-- usa medico, famiglia del prodotto, numero di fiale e allergeni come conferme.
+- usa medico, famiglia del prodotto e numero di fiale come conferme; il medico può corrispondere
+  anche per cognome o iniziale;
+- considera allergeni e ceppi metadati facoltativi, non vincoli di associazione.
 
 Pesi del punteggio:
 
@@ -175,14 +186,14 @@ Pesi del punteggio:
 | Paziente o cliente | 45% |
 | Medico | 30% |
 | Prodotto e numero di fiale | 15% |
-| Formulazione, posologia e allergeni | 10% |
+| Formulazione e posologia | 10% |
 
 Un abbinamento è automatico soltanto quando:
 
 - la somiglianza del paziente è almeno `0,86`;
-- la somiglianza del medico è almeno `0,80`;
-- famiglia e numero di fiale sono compatibili;
-- il punteggio complessivo è almeno `0,88`;
+- la somiglianza del medico compatibile è almeno `0,55`;
+- il prodotto del catalogo è esatto (famiglia e numero di fiale coerenti);
+- il punteggio complessivo è almeno `0,80`;
 - supera la seconda alternativa di almeno `0,10`.
 
 Negli altri casi l'operatore deve scegliere.
@@ -191,6 +202,12 @@ Negli altri casi l'operatore deve scegliere.
 
 Gli abbinamenti vengono risolti sull'intero gruppo di file, non riga per riga in modo isolato.
 Una riga ordine non può essere assegnata a due riferimenti diversi.
+
+Quando più righe del file sono indistinguibili e il gestionale contiene lo stesso numero di righe
+con paziente, medico, prodotto e ordine compatibili, il resolver verifica la cardinalità del gruppo
+e assegna le righe in modo deterministico. Queste righe sono equivalenti dal punto di vista della
+spedizione: l'eventuale scambio fra i loro lotti non cambia ordine o prodotto. Un gruppo con
+alternative su ordini diversi o con cardinalità diversa resta **Da controllare**.
 
 Questo permette di distinguere correttamente:
 
@@ -324,6 +341,8 @@ bollettazione_analizza(paths: string[]) -> {
   rows[] {
     source
     reference
+    rawReference?
+    referenceWarning?
     source_data
     normalized_treatment
     status
@@ -476,7 +495,7 @@ La UI non è una barriera di sicurezza: entrambi i comandi verificano il gate pr
 - i tre campioni producono rispettivamente 40, 14 e 108 righe valide;
 - entrambi i tracciati vengono riconosciuti;
 - `Total`, filtri e righe vuote sono ignorati;
-- riferimenti con zero iniziale restano invariati;
+- riferimenti numerici correggibili vengono normalizzati conservando originale e avviso;
 - un file guasto non elimina i risultati degli altri file;
 - i file sorgente non vengono modificati o copiati.
 
@@ -486,10 +505,14 @@ entrano nel repository.
 ### 10.2 Conversioni
 
 - BELTAVAC, BELTAORAL e VEB scelgono la famiglia corretta;
+- `PRO2` cerca rispettivamente `Polimerizzato PRO` o `Sublinguale PRO`, con fallback standard
+  soltanto da verificare;
+- VEB `Sottocutanea` produce la formulazione `VEB sottocute`;
 - `Vials` sceglie il prodotto senza cambiare `qta`;
 - `2,2`, `2,2,2` e `1,2,3,3` diventano posologie con `+`;
 - `PRO2`, `PRO3`, ml e numero di fiale non diventano posologie;
 - percentuali e suffissi vengono rimossi dagli allergeni;
+- allergeni e ceppi mancanti non impediscono l'associazione;
 - alias noti vengono normalizzati e termini nuovi restano tag liberi;
 - un valore esistente diverso genera un conflitto e non viene sovrascritto.
 
@@ -503,7 +526,8 @@ entrano nel repository.
 - prodotti e allergeni differenti nello stesso ordine;
 - cliente o ordine non trovato;
 - quantità multipla senza abbastanza riferimenti;
-- assegnazione uno-a-uno sull'intero import.
+- assegnazione uno-a-uno sull'intero import;
+- gruppi equivalenti con cardinalità verificata e conflitti fra ordini lasciati alla revisione.
 
 ### 10.4 Dominio
 

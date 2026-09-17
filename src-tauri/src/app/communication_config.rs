@@ -27,9 +27,9 @@ const ENTITA_CONFIGURAZIONE_CANALE: &str = "configurazione_canale";
 const ID_CONFIGURAZIONE_EMAIL: &str = "email";
 
 const DEFAULT_NOME_MITTENTE: &str = "PharmaTek";
-const DEFAULT_EMAIL_MITTENTE: &str = "";
-const DEFAULT_REPLY_TO: &str = "";
-const DEFAULT_DESTINATARIO_PROVA: &str = "";
+const DEFAULT_EMAIL_MITTENTE: &str = "demo@example.invalid";
+const DEFAULT_REPLY_TO: &str = "demo@example.invalid";
+const DEFAULT_DESTINATARIO_PROVA: &str = "demo@example.invalid";
 const DEFAULT_SMTP_HOST: &str = "smtp.example.invalid";
 const DEFAULT_SMTP_PORT: u16 = 465;
 const DEFAULT_IMAP_HOST: &str = "imap.example.invalid";
@@ -760,15 +760,15 @@ mod tests {
     #[test]
     fn preset_aruba_e_decisioni_utente_sono_coerenti() {
         let config = ConfigurazioneEmailCondivisa::default();
-        assert_eq!(config.indirizzo_mittente, "");
+        assert_eq!(config.indirizzo_mittente, "demo@example.invalid");
         assert_eq!(config.smtp_host, "smtp.example.invalid");
         assert_eq!(config.smtp_port, 465);
         assert_eq!(config.imap_host, "imap.example.invalid");
         assert_eq!(config.imap_port, 993);
         assert!(config.salva_posta_inviata);
-        assert_eq!(config.reply_to, "");
+        assert_eq!(config.reply_to, "demo@example.invalid");
         assert!(!config.reply_to_abilitato);
-        assert_eq!(config.destinatario_prova, "");
+        assert_eq!(config.destinatario_prova, "demo@example.invalid");
     }
 
     #[test]
@@ -819,7 +819,7 @@ mod tests {
             canale: CanaleComunicazione::Email,
             destinatario_entita: "cliente".into(),
             destinatario_id: "cliente-1".into(),
-            recapito: "".into(),
+            recapito: "demo@example.invalid".into(),
             oggetto: "Preventivo P-1".into(),
             corpo: "In allegato trova il preventivo.".into(),
             modello_id: String::new(),

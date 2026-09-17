@@ -23,6 +23,8 @@ const MAX_OGGETTO_CHARS: usize = 300;
 const MAX_ALLEGATI: usize = 20;
 const MAX_PDF_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_XLSX_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ZIP_BYTES: usize = 20 * 1024 * 1024;
 const CACHE_DOCUMENTI_SCHEMA: &str = "pt-cache://";
 const CACHE_DOCUMENTI_NOMI: &str = ".nomi-invio";
 const DURATA_CACHE_DOCUMENTI: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -31,6 +33,9 @@ const INTERRUZIONE_SOSPENDI: &str = "sospendi";
 const INTERRUZIONE_ANNULLA: &str = "annulla";
 const INTERRUZIONE_RIPRENDI: &str = "riprendi";
 const DESTINATARIO_DIAGNOSTICA_WHATSAPP: &str = "diagnostica_whatsapp";
+const DESTINATARIO_LABORATORIO_LABORATORIO: &str = "laboratorio_laboratorio";
+const ID_LABORATORIO_LABORATORIO: &str = "laboratorio";
+const EMAIL_LABORATORIO_LABORATORIO: &str = "laboratorio@example.invalid";
 
 fn classifica_errore_whatsapp(messaggio: &str) -> (String, String) {
     let testo = messaggio.to_lowercase();
@@ -132,11 +137,14 @@ impl StatoComunicazione {
         matches!(self, Self::InvioAzionato | Self::ConsegnaVerificata)
     }
 
-    /// Gli invii attivi proteggono il documento dalla pulizia per età. Gli
-    /// esiti terminali possono invece riutilizzarlo durante il periodo di
-    /// conservazione locale, così un reinvio non richiede la rigenerazione.
+    /// Stati attivi dai quali l'utente o il worker devono poter proseguire
+    /// usando lo stesso allegato. Gli invii falliti restano invece coperti
+    /// dalla normale finestra di recupero della cache.
     fn richiede_documento_temporaneo(self) -> bool {
-        matches!(self, Self::InCoda | Self::Sospeso | Self::InInvio)
+        matches!(
+            self,
+            Self::Bozza | Self::DaRevisionare | Self::InCoda | Self::Sospeso | Self::InInvio
+        )
     }
 }
 
@@ -308,7 +316,7 @@ pub struct WhatsappVerificaProvaDto {
 
 fn pdf_diagnostico_whatsapp() -> Vec<u8> {
     let contenuto = b"BT /F1 18 Tf 72 750 Td (Collaudo WhatsApp PharmaTek) Tj 0 -28 Td /F1 11 Tf (Documento diagnostico generato localmente.) Tj ET";
-    let oggetti = vec![
+    let oggetti = [
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
@@ -502,10 +510,19 @@ fn estensione_documento_cache(mime: &str, dati: &[u8]) -> AppResult<(&'static st
         "image/png" if dati.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) => {
             Ok(("png", MAX_PNG_BYTES))
         }
-        "application/pdf" | "image/png" => {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if dati.starts_with(b"PK\x03\x04") =>
+        {
+            Ok(("xlsx", MAX_XLSX_BYTES))
+        }
+        "application/zip" if dati.starts_with(b"PK\x03\x04") => Ok(("zip", MAX_ZIP_BYTES)),
+        "application/pdf"
+        | "image/png"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        | "application/zip" => {
             Err("il contenuto del documento non corrisponde al formato dichiarato".into())
         }
-        _ => Err("sono ammessi soltanto documenti PDF e immagini PNG".into()),
+        _ => Err("sono ammessi soltanto PDF, PNG, XLSX e ZIP".into()),
     }
 }
 
@@ -521,7 +538,7 @@ fn nome_file_cache_da_riferimento(riferimento: &str) -> AppResult<&str> {
             .map(|(hash, ext)| {
                 hash.len() == 64
                     && hash.chars().all(|c| c.is_ascii_hexdigit())
-                    && matches!(ext, "pdf" | "png")
+                    && matches!(ext, "pdf" | "png" | "xlsx" | "zip")
             })
             .unwrap_or(false);
     if !valido {
@@ -531,7 +548,12 @@ fn nome_file_cache_da_riferimento(riferimento: &str) -> AppResult<&str> {
 }
 
 fn nome_allegato_sicuro(nome: &str, mime: &str) -> String {
-    let estensione = if mime == "image/png" { "png" } else { "pdf" };
+    let estensione = match mime {
+        "image/png" => "png",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/zip" => "zip",
+        _ => "pdf",
+    };
     let base = Path::new(nome.trim())
         .file_stem()
         .and_then(|value| value.to_str())
@@ -657,9 +679,28 @@ fn prepara(
     let mut allegati = input.allegati;
     valida_allegati(&mut allegati)?;
 
-    let recapito = match input.canale {
-        CanaleComunicazione::Email => normalizza_email(&input.recapito)?,
-        CanaleComunicazione::Whatsapp => normalizza_telefono(&input.recapito)?,
+    let destinatario_laboratorio = destinatario_entita == DESTINATARIO_LABORATORIO_LABORATORIO
+        || destinatario_id == ID_LABORATORIO_LABORATORIO;
+    if destinatario_laboratorio
+        && (destinatario_entita != DESTINATARIO_LABORATORIO_LABORATORIO
+            || destinatario_id != ID_LABORATORIO_LABORATORIO
+            || input.canale != CanaleComunicazione::Email)
+    {
+        return Err("il destinatario Laboratorio è riservato e non può essere modificato".into());
+    }
+    let recapito = if destinatario_laboratorio {
+        EMAIL_LABORATORIO_LABORATORIO.into()
+    } else {
+        match input.canale {
+            CanaleComunicazione::Email => {
+                let recapito = normalizza_email(&input.recapito)?;
+                if recapito.eq_ignore_ascii_case(EMAIL_LABORATORIO_LABORATORIO) {
+                    return Err("usa il flusso Produzioni per inviare e-mail a Laboratorio".into());
+                }
+                recapito
+            }
+            CanaleComunicazione::Whatsapp => normalizza_telefono(&input.recapito)?,
+        }
     };
 
     let mut payload = json!({
@@ -853,7 +894,10 @@ impl AppState {
         self.app_dir.join("document-cache")
     }
 
-    fn riferimenti_documenti_cache_in_uso(&self) -> AppResult<std::collections::HashSet<String>> {
+    fn riferimenti_documenti_cache_in_uso(
+        &self,
+        proteggi_falliti: bool,
+    ) -> AppResult<std::collections::HashSet<String>> {
         let mut riferimenti: std::collections::HashSet<String> =
             self.with_communication_engine(|engine| {
                 Ok(engine.with_projection(|projection| {
@@ -863,8 +907,13 @@ impl AppState {
                         .into_iter()
                         .filter(|record| !record.deleted)
                         .filter(|record| {
-                            StatoComunicazione::parse(&str_field(&record.data, "stato"))
-                                .is_ok_and(StatoComunicazione::richiede_documento_temporaneo)
+                            StatoComunicazione::parse(&str_field(&record.data, "stato")).is_ok_and(
+                                |stato| {
+                                    stato.richiede_documento_temporaneo()
+                                        || (proteggi_falliti
+                                            && stato == StatoComunicazione::Fallito)
+                                },
+                            )
                         })
                         .filter_map(|record| {
                             record
@@ -892,6 +941,29 @@ impl AppState {
         Ok(riferimenti)
     }
 
+    fn riferimenti_documenti_produzione_terminati(
+        &self,
+    ) -> AppResult<std::collections::HashSet<String>> {
+        self.with_communication_engine(|engine| {
+            Ok(engine.with_projection(|projection| {
+                projection
+                    .list(ENTITA_COMUNICAZIONE)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|record| !record.deleted)
+                    .filter_map(|record| dto(record).ok())
+                    .filter(|comunicazione| {
+                        comunicazione.tipo_modello == "invio_produzione"
+                            && (comunicazione.stato.positivo()
+                                || comunicazione.stato == StatoComunicazione::Annullato)
+                    })
+                    .flat_map(|comunicazione| comunicazione.allegati)
+                    .map(|allegato| allegato.riferimento)
+                    .collect()
+            }))
+        })
+    }
+
     fn pulisci_cache_documenti_non_usata(&self) -> AppResult<usize> {
         let _io = self
             .document_cache_io
@@ -903,7 +975,8 @@ impl AppState {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(error) => return Err(super::e(error)),
         };
-        let riferimenti_in_uso = self.riferimenti_documenti_cache_in_uso()?;
+        let riferimenti_in_uso = self.riferimenti_documenti_cache_in_uso(false)?;
+        let produzioni_terminate = self.riferimenti_documenti_produzione_terminati()?;
         let mut rimossi = 0;
         let mut hash_presenti = std::collections::HashSet::new();
         for entry in entries.flatten() {
@@ -928,7 +1001,9 @@ impl AppState {
             {
                 continue;
             }
-            if !cache_documento_scaduta(&path) {
+            if !produzioni_terminate.contains(riferimento.as_deref().unwrap_or_default())
+                && !cache_documento_scaduta(&path)
+            {
                 continue;
             }
             if fs::remove_file(&path).is_ok() {
@@ -1020,6 +1095,14 @@ impl AppState {
         &self,
         allegati: &[AllegatoComunicazioneInput],
     ) -> AppResult<usize> {
+        self.documenti_cache_rilascia_con_policy(allegati, false)
+    }
+
+    pub fn documenti_cache_rilascia_con_policy(
+        &self,
+        allegati: &[AllegatoComunicazioneInput],
+        elimina_se_non_usati: bool,
+    ) -> AppResult<usize> {
         {
             let mut pending = self
                 .pending_document_cache
@@ -1029,7 +1112,11 @@ impl AppState {
                 pending.remove(&allegato.riferimento);
             }
         }
-        self.pulisci_cache_documenti_non_usata()
+        if elimina_se_non_usati {
+            self.rimuovi_documenti_cache_specifici_non_usati(allegati)
+        } else {
+            self.pulisci_cache_documenti_non_usata()
+        }
     }
 
     pub(super) fn documento_cache_leggi(
@@ -1101,6 +1188,59 @@ impl AppState {
             return Ok(());
         }
         self.pulisci_cache_documenti_non_usata().map(|_| ())
+    }
+
+    fn rimuovi_documenti_cache_specifici_non_usati(
+        &self,
+        allegati: &[AllegatoComunicazioneInput],
+    ) -> AppResult<usize> {
+        if allegati.is_empty() {
+            return Ok(0);
+        }
+        let _io = self
+            .document_cache_io
+            .lock()
+            .map_err(|_| "cache documenti non disponibile".to_string())?;
+        let riferimenti_in_uso = self.riferimenti_documenti_cache_in_uso(true)?;
+        let cartella = self.cartella_cache_documenti();
+        let mut rimossi = 0;
+        let mut elaborati = std::collections::HashSet::new();
+        for allegato in allegati {
+            if !elaborati.insert(allegato.riferimento.clone())
+                || riferimenti_in_uso.contains(&allegato.riferimento)
+            {
+                continue;
+            }
+            let nome = nome_file_cache_da_riferimento(&allegato.riferimento)?;
+            let (hash, _) = nome
+                .split_once('.')
+                .ok_or("riferimento allegato locale non valido")?;
+            if hash != allegato.sha256 {
+                return Err("riferimento allegato locale non coerente".into());
+            }
+            match fs::remove_file(cartella.join(nome)) {
+                Ok(()) => rimossi += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(super::e(error)),
+            }
+            let _ = fs::remove_dir_all(cartella.join(CACHE_DOCUMENTI_NOMI).join(hash));
+        }
+        Ok(rimossi)
+    }
+
+    fn rimuovi_cache_comunicazione_se_non_usata(
+        &self,
+        comunicazione: &ComunicazioneDto,
+    ) -> AppResult<()> {
+        if comunicazione.tipo_modello == "invio_produzione"
+            && (comunicazione.stato.positivo()
+                || comunicazione.stato == StatoComunicazione::Annullato)
+        {
+            self.rimuovi_documenti_cache_specifici_non_usati(&comunicazione.allegati)
+                .map(|_| ())
+        } else {
+            self.rimuovi_documenti_cache_non_usati(&comunicazione.allegati)
+        }
     }
 
     fn with_communication_engine<T>(
@@ -1190,6 +1330,58 @@ impl AppState {
                                         },
                                     ));
                                 }
+                            }
+                        }
+                        Ok(mutations)
+                    })
+                    .map(|_| ())
+                    .map_err(es)
+            });
+        }
+
+        if comunicazione.origine_entita == "lotto_produzione"
+            && comunicazione.tipo_modello == "invio_produzione"
+        {
+            let lot = comunicazione.origine_id.clone();
+            let sent_ms = comunicazione.inviata_ms;
+            let user = comunicazione.proprietario_utente_nome.clone();
+            let device = comunicazione.proprietario_dispositivo_nome.clone();
+            let communication_id = comunicazione.id.clone();
+            return self.with_engine(|engine| {
+                engine
+                    .emit_built_checked(move |projection| {
+                        let rows = projection
+                            .list("riga_ordine")
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|record| {
+                                !record.deleted
+                                    && str_field(&record.data, "lotto_produzione") == lot
+                            })
+                            .collect::<Vec<_>>();
+                        let mut mutations = Vec::new();
+                        for row in rows {
+                            for (field, value) in [
+                                ("ultimo_invio_laboratorio_ms", json!(sent_ms)),
+                                ("ultimo_invio_laboratorio_utente", json!(user.clone())),
+                                (
+                                    "ultimo_invio_laboratorio_dispositivo",
+                                    json!(device.clone()),
+                                ),
+                                ("ultimo_invio_laboratorio_lotto", json!(lot.clone())),
+                                (
+                                    "ultimo_invio_laboratorio_comunicazione_id",
+                                    json!(communication_id.clone()),
+                                ),
+                            ] {
+                                mutations.push(Mutation::new(
+                                    "riga_ordine",
+                                    row.id.clone(),
+                                    EventBody::FieldSet {
+                                        field: field.into(),
+                                        value,
+                                    },
+                                ));
                             }
                         }
                         Ok(mutations)
@@ -1308,7 +1500,7 @@ impl AppState {
         })?;
         for comunicazione in positive {
             self.riallinea_esito_locale(&comunicazione)?;
-            let _ = self.rimuovi_documenti_cache_non_usati(&comunicazione.allegati);
+            let _ = self.rimuovi_cache_comunicazione_se_non_usata(&comunicazione);
         }
         Ok(())
     }
@@ -1412,14 +1604,18 @@ impl AppState {
         if preparata.destinatario_entita != DESTINATARIO_DIAGNOSTICA_WHATSAPP {
             self.with_engine(|engine| {
                 engine.with_projection(|projection| {
-                    projection
-                        .get(&preparata.destinatario_entita, &preparata.destinatario_id)
-                        .map_err(|error| error.to_string())?
-                        .filter(|record| !record.deleted)
-                        .ok_or_else(|| {
-                            "il destinatario non esiste più o è stato eliminato".to_string()
-                        })?;
-                    if !preparata.origine_entita.is_empty() {
+                    if preparata.destinatario_entita != DESTINATARIO_LABORATORIO_LABORATORIO {
+                        projection
+                            .get(&preparata.destinatario_entita, &preparata.destinatario_id)
+                            .map_err(|error| error.to_string())?
+                            .filter(|record| !record.deleted)
+                            .ok_or_else(|| {
+                                "il destinatario non esiste più o è stato eliminato".to_string()
+                            })?;
+                    }
+                    if !preparata.origine_entita.is_empty()
+                        && preparata.origine_entita != "lotto_produzione"
+                    {
                         let origine = projection
                             .get(&preparata.origine_entita, &preparata.origine_id)
                             .map_err(|error| error.to_string())?
@@ -1454,6 +1650,20 @@ impl AppState {
                                     "un elemento collegato non esiste più o è stato eliminato"
                                         .to_string()
                                 })?;
+                        }
+                    }
+                    if preparata.origine_entita == "lotto_produzione" {
+                        let exists = projection
+                            .list("riga_ordine")
+                            .unwrap_or_default()
+                            .into_iter()
+                            .any(|record| {
+                                !record.deleted
+                                    && str_field(&record.data, "lotto_produzione")
+                                        == preparata.origine_id
+                            });
+                        if !exists {
+                            return Err("il lotto di produzione non è più disponibile".into());
                         }
                     }
                     Ok(())
@@ -1547,6 +1757,38 @@ impl AppState {
         crate::premium::ensure_access(self)?;
         let id_owned = id.to_string();
         let dispositivo_corrente = self.config().device_id;
+        let recapito_da_aggiornare: Result<Option<String>, String> = if nuovo
+            == StatoComunicazione::InCoda
+        {
+            let info = self.with_communication_engine(|engine| {
+                Ok(engine.with_projection(|projection| {
+                    let record = projection.get(ENTITA_COMUNICAZIONE, id).ok().flatten()?;
+                    if record.deleted {
+                        return None;
+                    }
+                    let stato =
+                        StatoComunicazione::parse(&str_field(&record.data, "stato")).ok()?;
+                    if stato != StatoComunicazione::Fallito {
+                        return None;
+                    }
+                    let payload = record.data.get("payload").and_then(Value::as_object)?;
+                    let entita = str_field(payload, "destinatario_entita");
+                    let dest_id = str_field(payload, "destinatario_id");
+                    let recapito = str_field(payload, "recapito");
+                    let canale = CanaleComunicazione::parse(&str_field(payload, "canale")).ok()?;
+                    Some((entita, dest_id, canale, recapito))
+                }))
+            })?;
+            if let Some((entita, dest_id, canale, recapito)) = info {
+                self.recapito_destinatario_aggiornato(&entita, &dest_id, canale, &recapito)
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        };
+        let recapito_da_aggiornare_val = recapito_da_aggiornare.clone();
         let aggiornata = self.with_communication_engine(|engine| {
             engine
                 .emit_built_checked(move |projection| {
@@ -1647,7 +1889,7 @@ impl AppState {
                             nuovo.as_str()
                         ));
                     }
-                    Ok(vec![
+                    let mut mutations = vec![
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
@@ -1676,6 +1918,14 @@ impl AppState {
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
                             EventBody::FieldSet {
+                                field: "ultimo_errore".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
                                 field: "errore_codice".into(),
                                 value: json!(""),
                             },
@@ -1688,7 +1938,31 @@ impl AppState {
                                 value: json!(""),
                             },
                         ),
-                    ])
+                    ];
+                    let nuovo_rec = recapito_da_aggiornare_val
+                        .as_ref()
+                        .map_err(|e| format!("Impossibile riprovare l'invio: {e}"))?;
+                    if let Some(ref nuovo_rec) = nuovo_rec {
+                        if let Some(payload_obj) = corrente.data.get("payload").and_then(Value::as_object) {
+                            let recapito_attuale = str_field(payload_obj, "recapito");
+                            if &recapito_attuale != nuovo_rec {
+                                let mut nuovo_payload = payload_obj.clone();
+                                nuovo_payload.insert("recapito".into(), json!(nuovo_rec));
+                                let payload_bytes = serde_json::to_vec(&nuovo_payload).map_err(es)?;
+                                let nuovo_fp = sha256_hex(payload_bytes);
+                                nuovo_payload.insert("fingerprint".into(), json!(nuovo_fp));
+                                mutations.push(Mutation::new(
+                                    ENTITA_COMUNICAZIONE,
+                                    id_owned.clone(),
+                                    EventBody::FieldSet {
+                                        field: "payload".into(),
+                                        value: json!(nuovo_payload),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                    Ok(mutations)
                 })
                 .map_err(es)?;
             engine
@@ -1700,7 +1974,7 @@ impl AppState {
         })?;
         self.emetti_stato_comunicazione_locale(&aggiornata);
         if !aggiornata.stato.richiede_documento_temporaneo() {
-            let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+            let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         }
         Ok(aggiornata)
     }
@@ -1824,7 +2098,7 @@ impl AppState {
                 .and_then(dto)
         })?;
         self.emetti_stato_comunicazione_locale(&aggiornata);
-        let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+        let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         Ok(aggiornata)
     }
 
@@ -1930,7 +2204,11 @@ impl AppState {
         }
         for comunicazione in &comunicazioni {
             self.purga_comunicazione_locale(&comunicazione.id)?;
-            self.rimuovi_documenti_cache_non_usati(&comunicazione.allegati)?;
+            if comunicazione.tipo_modello == "invio_produzione" {
+                self.rimuovi_documenti_cache_specifici_non_usati(&comunicazione.allegati)?;
+            } else {
+                self.rimuovi_documenti_cache_non_usati(&comunicazione.allegati)?;
+            }
         }
         Ok(comunicazioni.len())
     }
@@ -1996,6 +2274,44 @@ impl AppState {
         let campagna_owned = campagna_id.to_string();
         let operazione_owned = operazione.to_string();
         let dispositivo_corrente = self.config().device_id;
+        let recapiti_aggiornati: std::collections::HashMap<String, Result<String, String>> =
+            if operazione_owned == "riprova_falliti" {
+                let fallite = self.with_communication_engine(|engine| {
+                    Ok(engine.with_projection(|projection| {
+                        projection
+                            .list(ENTITA_COMUNICAZIONE)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|record| !record.deleted)
+                            .filter_map(|record| dto(record).ok())
+                            .filter(|c| {
+                                c.campagna_id == campagna_owned
+                                    && c.stato == StatoComunicazione::Fallito
+                                    && c.proprietario_dispositivo_id == dispositivo_corrente
+                                    && !c.esito_ambiguo
+                            })
+                            .map(|c| {
+                                (
+                                    c.id,
+                                    c.destinatario_entita,
+                                    c.destinatario_id,
+                                    c.canale,
+                                    c.recapito,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }))
+                })?;
+                let mut mappa = std::collections::HashMap::new();
+                for (id, entita, dest_id, canale, recapito) in fallite {
+                    let esito =
+                        self.recapito_destinatario_aggiornato(&entita, &dest_id, canale, &recapito);
+                    mappa.insert(id, esito);
+                }
+                mappa
+            } else {
+                std::collections::HashMap::new()
+            };
         let aggiornate = self.with_communication_engine(|engine| {
             engine
                 .emit_built_checked(move |projection| {
@@ -2106,6 +2422,117 @@ impl AppState {
                             ));
                             continue;
                         }
+                        if operazione_owned == "riprova_falliti" {
+                            if stato == StatoComunicazione::Fallito
+                                && proprietario_dispositivo == dispositivo_corrente
+                                && !record
+                                    .data
+                                    .get("esito_ambiguo")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
+                            {
+                                match recapiti_aggiornati.get(&record.id) {
+                                    Some(Ok(nuovo_recapito)) => {
+                                        let recapito_attuale = payload
+                                            .map(|p| str_field(p, "recapito"))
+                                            .unwrap_or_default();
+                                        if nuovo_recapito != &recapito_attuale {
+                                            if let Some(payload_obj) = payload {
+                                                let mut nuovo_payload = payload_obj.clone();
+                                                nuovo_payload.insert("recapito".into(), json!(nuovo_recapito));
+                                                let payload_bytes = serde_json::to_vec(&nuovo_payload).map_err(es)?;
+                                                let nuovo_fp = sha256_hex(payload_bytes);
+                                                nuovo_payload.insert("fingerprint".into(), json!(nuovo_fp));
+                                                mutations.push(Mutation::new(
+                                                    ENTITA_COMUNICAZIONE,
+                                                    record.id.clone(),
+                                                    EventBody::FieldSet {
+                                                        field: "payload".into(),
+                                                        value: json!(nuovo_payload),
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "stato".into(),
+                                                value: json!(StatoComunicazione::InCoda.as_str()),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "stato_aggiornato_ms".into(),
+                                                value: json!(now),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: CAMPO_INTERRUZIONE_RICHIESTA.into(),
+                                                value: json!(""),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "ultimo_errore".into(),
+                                                value: json!(""),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "errore_codice".into(),
+                                                value: json!(""),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "errore_fase".into(),
+                                                value: json!(""),
+                                            },
+                                        ));
+                                    }
+                                    Some(Err(motivo)) => {
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "ultimo_errore".into(),
+                                                value: json!(format!("Recapito in anagrafica non valido: {motivo}")),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "errore_codice".into(),
+                                                value: json!("recapito_anagrafica_non_valido"),
+                                            },
+                                        ));
+                                        mutations.push(Mutation::new(
+                                            ENTITA_COMUNICAZIONE,
+                                            record.id.clone(),
+                                            EventBody::FieldSet {
+                                                field: "stato_aggiornato_ms".into(),
+                                                value: json!(now),
+                                            },
+                                        ));
+                                    }
+                                    None => {}
+                                }
+                            }
+                            continue;
+                        }
                         let nuovo = match operazione_owned.as_str() {
                             "sospendi" if stato == StatoComunicazione::InCoda => {
                                 Some(StatoComunicazione::Sospeso)
@@ -2135,18 +2562,7 @@ impl AppState {
                             {
                                 Some(StatoComunicazione::Annullato)
                             }
-                            "riprova_falliti"
-                                if stato == StatoComunicazione::Fallito
-                                    && proprietario_dispositivo == dispositivo_corrente
-                                    && !record
-                                        .data
-                                        .get("esito_ambiguo")
-                                        .and_then(Value::as_bool)
-                                        .unwrap_or(false) =>
-                            {
-                                Some(StatoComunicazione::InCoda)
-                            }
-                            "sospendi" | "riprendi" | "annulla" | "riprova_falliti" => None,
+                            "sospendi" | "riprendi" | "annulla" => None,
                             _ => return Err("operazione sulla campagna non riconosciuta".into()),
                         };
                         let Some(nuovo) = nuovo else {
@@ -2391,7 +2807,7 @@ impl AppState {
                 .and_then(dto)
         })?;
         self.emetti_stato_comunicazione_locale(&aggiornata);
-        let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+        let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         Ok(aggiornata)
     }
 
@@ -2506,7 +2922,7 @@ impl AppState {
                 .and_then(dto)
         })?;
         self.emetti_stato_comunicazione_locale(&aggiornata);
-        let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+        let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         Ok(aggiornata)
     }
 
@@ -2673,7 +3089,7 @@ impl AppState {
             // provocare un nuovo invio. Il worker lo riallineerà in seguito.
             let _ = self.riallinea_esito_locale(&aggiornata);
         }
-        let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+        let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         Ok(aggiornata)
     }
 
@@ -2793,7 +3209,7 @@ impl AppState {
         })?;
         self.emetti_stato_comunicazione_locale(&aggiornata);
         if !aggiornata.stato.richiede_documento_temporaneo() {
-            let _ = self.rimuovi_documenti_cache_non_usati(&aggiornata.allegati);
+            let _ = self.rimuovi_cache_comunicazione_se_non_usata(&aggiornata);
         }
         Ok(aggiornata)
     }
@@ -2904,6 +3320,57 @@ impl AppState {
                 Ok(completo)
             }
         })
+    }
+
+    fn recapito_destinatario_aggiornato(
+        &self,
+        destinatario_entita: &str,
+        destinatario_id: &str,
+        canale: CanaleComunicazione,
+        recapito_attuale: &str,
+    ) -> Result<String, String> {
+        if destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP {
+            return Ok(recapito_attuale.to_string());
+        }
+        let record = self
+            .with_engine(|engine| {
+                engine
+                    .with_projection(|projection| {
+                        projection
+                            .get(destinatario_entita, destinatario_id)
+                            .ok()
+                            .flatten()
+                    })
+                    .filter(|record| !record.deleted)
+                    .ok_or_else(|| "destinatario non trovato o eliminato".to_string())
+            })
+            .map_err(|e| e.to_string())?;
+
+        match canale {
+            CanaleComunicazione::Whatsapp => {
+                let tel = str_field(&record.data, "telefono");
+                if tel.trim().is_empty() {
+                    if !recapito_attuale.trim().is_empty() {
+                        return Ok(recapito_attuale.to_string());
+                    }
+                    return Err("numero di telefono mancante in anagrafica".to_string());
+                }
+                normalizza_telefono(&tel).map_err(|_| {
+                    "numero di telefono in anagrafica non valido per WhatsApp".to_string()
+                })
+            }
+            CanaleComunicazione::Email => {
+                let email = str_field(&record.data, "email");
+                if email.trim().is_empty() {
+                    if !recapito_attuale.trim().is_empty() {
+                        return Ok(recapito_attuale.to_string());
+                    }
+                    return Err("indirizzo email mancante in anagrafica".to_string());
+                }
+                normalizza_email(&email)
+                    .map_err(|_| "indirizzo email in anagrafica non valido".to_string())
+            }
+        }
     }
 
     fn gestisci_eventuale_errore_invio(&self, result: &AppResult<ComunicazioneDto>) {
@@ -3218,12 +3685,20 @@ impl AppState {
             })?;
         }
         let id_originale = originale.id.clone();
+        let recapito = self
+            .recapito_destinatario_aggiornato(
+                &originale.destinatario_entita,
+                &originale.destinatario_id,
+                originale.canale,
+                &originale.recapito,
+            )
+            .unwrap_or(originale.recapito);
         let nuova = self.comunicazione_crea_bozza(ComunicazioneCreaInput {
             idempotency_key: format!("reinvio:{id_originale}:{}", ulid::Ulid::generate()),
             destinatario_entita: originale.destinatario_entita,
             destinatario_id: originale.destinatario_id,
             canale: originale.canale,
-            recapito: originale.recapito,
+            recapito,
             oggetto: originale.oggetto,
             corpo: originale.corpo,
             modello_id: originale.modello_id,
@@ -3730,6 +4205,26 @@ mod tests {
     }
 
     #[test]
+    fn cache_accetta_excel_e_zip_con_firma_zip() {
+        assert_eq!(
+            estensione_documento_cache(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                b"PK\x03\x04xlsx",
+            )
+            .unwrap()
+            .0,
+            "xlsx"
+        );
+        assert_eq!(
+            estensione_documento_cache("application/zip", b"PK\x03\x04zip")
+                .unwrap()
+                .0,
+            "zip"
+        );
+        assert!(estensione_documento_cache("application/zip", b"not-a-zip").is_err());
+    }
+
+    #[test]
     fn whatsapp_accetta_pdf_o_immagine_seguita_dal_pdf() {
         assert!(allegati_whatsapp_supportati(&[]));
         assert!(allegati_whatsapp_supportati(&[allegato_test("image/png")]));
@@ -3809,7 +4304,7 @@ mod tests {
             destinatario_entita: "cliente".into(),
             destinatario_id: "c1".into(),
             canale: CanaleComunicazione::Email,
-            recapito: "   ".into(),
+            recapito: "  demo@example.invalid ".into(),
             oggetto: "Avviso".into(),
             corpo: "Messaggio di prova".into(),
             modello_id: String::new(),
@@ -3861,8 +4356,8 @@ mod tests {
     #[test]
     fn normalizza_i_recapiti_senza_perdere_la_validazione() {
         assert_eq!(
-            normalizza_email("  ").unwrap(),
-            ""
+            normalizza_email(" demo@example.invalid ").unwrap(),
+            "demo@example.invalid"
         );
         assert_eq!(
             normalizza_telefono("333 123 4567").unwrap(),
@@ -3927,6 +4422,50 @@ mod tests {
     }
 
     #[test]
+    fn rilascio_immediato_elimina_solo_un_allegato_non_referenziato() {
+        let (_app, _data, state) = stato_test(true);
+        let allegato = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Prescrizioni temporanee.zip".into(),
+                mime: "application/zip".into(),
+                dati: b"PK\x03\x04temporaneo".to_vec(),
+            })
+            .unwrap();
+        let path = state
+            .documento_cache_percorso_verificato(&allegato)
+            .unwrap();
+        assert!(path.exists());
+        assert_eq!(
+            state
+                .documenti_cache_rilascia_con_policy(&[allegato], true)
+                .unwrap(),
+            1
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn stati_attivi_proteggono_gli_allegati() {
+        for stato in [
+            StatoComunicazione::Bozza,
+            StatoComunicazione::DaRevisionare,
+            StatoComunicazione::InCoda,
+            StatoComunicazione::Sospeso,
+            StatoComunicazione::InInvio,
+        ] {
+            assert!(stato.richiede_documento_temporaneo());
+        }
+        for stato in [
+            StatoComunicazione::InvioAzionato,
+            StatoComunicazione::ConsegnaVerificata,
+            StatoComunicazione::Fallito,
+            StatoComunicazione::Annullato,
+        ] {
+            assert!(!stato.richiede_documento_temporaneo());
+        }
+    }
+
+    #[test]
     fn cache_documenti_elimina_solo_gli_artefatti_scaduti() {
         let (_app, _data, state) = stato_test(true);
         let allegato = state
@@ -3960,7 +4499,7 @@ mod tests {
                 "cliente",
                 Map::from_iter([
                     ("nome".into(), json!("Cliente preventivo")),
-                    ("email".into(), json!("")),
+                    ("email".into(), json!("demo@example.invalid")),
                 ]),
             )
             .unwrap();
@@ -4119,7 +4658,7 @@ mod tests {
                 "cliente",
                 Map::from_iter([
                     ("nome".into(), json!("Cliente preventivo modificato")),
-                    ("email".into(), json!("")),
+                    ("email".into(), json!("demo@example.invalid")),
                 ]),
             )
             .unwrap();
@@ -4193,7 +4732,7 @@ mod tests {
                 "cliente",
                 Map::from_iter([
                     ("nome".into(), json!("Cliente scheda")),
-                    ("email".into(), json!("")),
+                    ("email".into(), json!("demo@example.invalid")),
                 ]),
             )
             .unwrap();
@@ -4287,7 +4826,7 @@ mod tests {
                 "cliente",
                 Map::from_iter([
                     ("nome".into(), json!("Cliente spedizione")),
-                    ("email".into(), json!("")),
+                    ("email".into(), json!("demo@example.invalid")),
                 ]),
             )
             .unwrap();
@@ -4354,6 +4893,110 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn invio_produzione_accetta_solo_destinatario_fisso_e_traccia_il_lotto() {
+        let (_app, _data, state) = stato_test(true);
+        let order = state
+            .record_create(
+                "ordine",
+                Map::from_iter([("categoria".into(), json!("Immunoterapia"))]),
+            )
+            .unwrap();
+        let row = state
+            .record_create(
+                "riga_ordine",
+                Map::from_iter([
+                    ("ordine_id".into(), json!(order.id)),
+                    ("lotto_produzione".into(), json!("lot-test")),
+                ]),
+            )
+            .unwrap();
+        let mut invalid = input_email("produzione:destinatario-invalido");
+        invalid.destinatario_entita = DESTINATARIO_LABORATORIO_LABORATORIO.into();
+        invalid.destinatario_id = ID_LABORATORIO_LABORATORIO.into();
+        invalid.canale = CanaleComunicazione::Whatsapp;
+        invalid.recapito = "+393331234567".into();
+        assert!(state.comunicazione_crea_bozza(invalid).is_err());
+
+        let mut input = input_email("produzione:invio-valido");
+        input.destinatario_entita = DESTINATARIO_LABORATORIO_LABORATORIO.into();
+        input.destinatario_id = ID_LABORATORIO_LABORATORIO.into();
+        input.recapito = "questo valore viene ignorato dal backend".into();
+        input.origine_entita = "lotto_produzione".into();
+        input.origine_id = "lot-test".into();
+        input.tipo_modello = "invio_produzione".into();
+        let allegato = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Prescrizioni lotto.zip".into(),
+                mime: "application/zip".into(),
+                dati: b"PK\x03\x04produzione".to_vec(),
+            })
+            .unwrap();
+        let allegato_path = state
+            .documento_cache_percorso_verificato(&allegato)
+            .unwrap();
+        input.allegati = vec![allegato.clone()];
+        let draft = state.comunicazione_crea_bozza(input).unwrap();
+        assert_eq!(draft.recapito, EMAIL_LABORATORIO_LABORATORIO);
+        state
+            .documenti_cache_rilascia_con_policy(&[allegato], true)
+            .unwrap();
+        assert!(
+            allegato_path.exists(),
+            "la bozza deve proteggere l'allegato di produzione"
+        );
+        state.comunicazione_metti_in_coda(&draft.id).unwrap();
+        let mut adapter = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: true,
+                riferimento_esterno: "smtp-production".into(),
+                copia_posta_inviata: true,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+        state
+            .comunicazione_processa_con_adattatore(&draft.id, &mut adapter)
+            .unwrap();
+        assert!(
+            !allegato_path.exists(),
+            "dopo l'invio il file di produzione non è più necessario"
+        );
+        let residuo_post_arresto = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Prescrizioni lotto.zip".into(),
+                mime: "application/zip".into(),
+                dati: b"PK\x03\x04produzione".to_vec(),
+            })
+            .unwrap();
+        assert!(allegato_path.exists());
+        state
+            .documenti_cache_rilascia(&[residuo_post_arresto])
+            .unwrap();
+        assert!(
+            !allegato_path.exists(),
+            "la manutenzione deve rimuovere anche un residuo di un invio già concluso"
+        );
+        let updated = state.record_get("riga_ordine", &row.id).unwrap().unwrap();
+        assert_eq!(
+            str_field(&updated.data, "ultimo_invio_laboratorio_lotto"),
+            "lot-test"
+        );
+        assert!(
+            updated
+                .data
+                .get("ultimo_invio_laboratorio_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0
+        );
+        assert_eq!(
+            str_field(&updated.data, "ultimo_invio_laboratorio_comunicazione_id"),
+            draft.id
+        );
     }
 
     #[test]
@@ -6042,5 +6685,248 @@ mod tests {
                 Map::from_iter([("nome".into(), json!("Consentito"))]),
             )
             .is_ok());
+    }
+
+    #[test]
+    fn riprova_campagna_aggiorna_numero_telefono_se_modificato_in_anagrafica() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Mario Rossi")),
+                    ("telefono".into(), json!("+393280000000")),
+                ]),
+            )
+            .unwrap();
+
+        let mut input = input_email("campagna:retry-aggiorna:1");
+        input.canale = CanaleComunicazione::Whatsapp;
+        input.destinatario_id = cliente.id.clone();
+        input.recapito = "+393280000000".into();
+        input.campagna_id = "campagna:retry-aggiorna".into();
+
+        let bozza = state.comunicazione_crea_bozza(input).unwrap();
+        state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+
+        let mut adapter = MockCommunicationAdapter {
+            esito: Err(ErroreAdattatore {
+                classe: ClasseErroreAdattatore::InvioNonAzionato,
+                messaggio: "numero non valido su whatsapp".into(),
+            }),
+            invocazioni: 0,
+        };
+        let fallita = state
+            .comunicazione_processa_con_adattatore(&bozza.id, &mut adapter)
+            .unwrap();
+        assert_eq!(fallita.stato, StatoComunicazione::Fallito);
+        assert_eq!(fallita.recapito, "+393280000000");
+
+        // Aggiorniamo il numero in anagrafica
+        state
+            .record_update(
+                "cliente",
+                &cliente.id,
+                Map::from_iter([("telefono".into(), json!("338 111 2233"))]),
+            )
+            .unwrap();
+
+        // Eseguiamo "Riprova falliti" sulla campagna
+        let aggiornate = state
+            .campagna_comunicazione_riprova_fallite("campagna:retry-aggiorna")
+            .unwrap();
+        let riprovata = aggiornate.iter().find(|item| item.id == bozza.id).unwrap();
+        assert_eq!(riprovata.stato, StatoComunicazione::InCoda);
+        assert_eq!(riprovata.recapito, "+393381112233");
+        assert!(riprovata.ultimo_errore.is_empty());
+    }
+
+    #[test]
+    fn riprova_campagna_mantiene_fallito_se_telefono_anagrafica_non_valido() {
+        let (_app, _data, state) = stato_test(true);
+        let cli_valido = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Cliente Valido")),
+                    ("telefono".into(), json!("+393280000001")),
+                ]),
+            )
+            .unwrap();
+        let cli_invalido = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Cliente Invalido")),
+                    ("telefono".into(), json!("+393280000002")),
+                ]),
+            )
+            .unwrap();
+
+        let crea = |key: &str, cli_id: &str, num: &str| {
+            let mut input = input_email(key);
+            input.canale = CanaleComunicazione::Whatsapp;
+            input.destinatario_id = cli_id.into();
+            input.recapito = num.into();
+            input.campagna_id = "campagna:retry-invalid".into();
+            let bozza = state.comunicazione_crea_bozza(input).unwrap();
+            state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+            bozza
+        };
+        let b1 = crea("c:retry-inv:1", &cli_valido.id, "+393280000001");
+        let b2 = crea("c:retry-inv:2", &cli_invalido.id, "+393280000002");
+
+        let mut adapter = MockCommunicationAdapter {
+            esito: Err(ErroreAdattatore {
+                classe: ClasseErroreAdattatore::InvioNonAzionato,
+                messaggio: "errore".into(),
+            }),
+            invocazioni: 0,
+        };
+        state
+            .comunicazione_processa_con_adattatore(&b1.id, &mut adapter)
+            .unwrap();
+        state
+            .comunicazione_processa_con_adattatore(&b2.id, &mut adapter)
+            .unwrap();
+
+        // Aggiorniamo cli_valido con un nuovo numero valido e cli_invalido con uno non valido
+        state
+            .record_update(
+                "cliente",
+                &cli_valido.id,
+                Map::from_iter([("telefono".into(), json!("338 555 4433"))]),
+            )
+            .unwrap();
+        state
+            .record_update(
+                "cliente",
+                &cli_invalido.id,
+                Map::from_iter([("telefono".into(), json!("123"))]),
+            )
+            .unwrap();
+
+        let aggiornate = state
+            .campagna_comunicazione_riprova_fallite("campagna:retry-invalid")
+            .unwrap();
+        let item1 = aggiornate.iter().find(|i| i.id == b1.id).unwrap();
+        let item2 = aggiornate.iter().find(|i| i.id == b2.id).unwrap();
+
+        // Il valido è rimesso in coda col nuovo numero
+        assert_eq!(item1.stato, StatoComunicazione::InCoda);
+        assert_eq!(item1.recapito, "+393385554433");
+
+        // L'invalido resta Fallito e segnala l'errore dell'anagrafica
+        assert_eq!(item2.stato, StatoComunicazione::Fallito);
+        assert_eq!(item2.errore_codice, "recapito_anagrafica_non_valido");
+        assert!(item2
+            .ultimo_errore
+            .contains("Recapito in anagrafica non valido"));
+    }
+
+    #[test]
+    fn riprova_singola_aggiorna_e_valida_recapito() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Singolo Retry")),
+                    ("telefono".into(), json!("+393280000000")),
+                ]),
+            )
+            .unwrap();
+
+        let mut input = input_email("singola:retry:1");
+        input.canale = CanaleComunicazione::Whatsapp;
+        input.destinatario_id = cliente.id.clone();
+        input.recapito = "+393280000000".into();
+
+        let bozza = state.comunicazione_crea_bozza(input).unwrap();
+        state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+
+        let mut adapter = MockCommunicationAdapter {
+            esito: Err(ErroreAdattatore {
+                classe: ClasseErroreAdattatore::InvioNonAzionato,
+                messaggio: "fallito".into(),
+            }),
+            invocazioni: 0,
+        };
+        state
+            .comunicazione_processa_con_adattatore(&bozza.id, &mut adapter)
+            .unwrap();
+
+        // 1. Con numero invalido in anagrafica, la rimessa in coda fallisce
+        state
+            .record_update(
+                "cliente",
+                &cliente.id,
+                Map::from_iter([("telefono".into(), json!("abc"))]),
+            )
+            .unwrap();
+        let err = state.comunicazione_metti_in_coda(&bozza.id).unwrap_err();
+        assert!(err.contains("non valido per WhatsApp"));
+
+        // 2. Con numero valido in anagrafica, viene rimessa in coda col nuovo recapito
+        state
+            .record_update(
+                "cliente",
+                &cliente.id,
+                Map::from_iter([("telefono".into(), json!("339 999 8877"))]),
+            )
+            .unwrap();
+        let riprovata = state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+        assert_eq!(riprovata.stato, StatoComunicazione::InCoda);
+        assert_eq!(riprovata.recapito, "+393399998877");
+    }
+
+    #[test]
+    fn reinvio_comunicazione_usa_nuovo_recapito() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([
+                    ("nome".into(), json!("Reinvio Cliente")),
+                    ("email".into(), json!("demo@example.invalid")),
+                ]),
+            )
+            .unwrap();
+
+        let mut input = input_email("reinvio:test:1");
+        input.destinatario_id = cliente.id.clone();
+        input.recapito = "demo@example.invalid".into();
+
+        let bozza = state.comunicazione_crea_bozza(input).unwrap();
+        state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+
+        let mut adapter = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: false,
+                riferimento_esterno: "ext-1".into(),
+                copia_posta_inviata: false,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+        let inviata = state
+            .comunicazione_processa_con_adattatore(&bozza.id, &mut adapter)
+            .unwrap();
+        assert_eq!(inviata.stato, StatoComunicazione::InvioAzionato);
+
+        // Aggiorniamo l'email in anagrafica
+        state
+            .record_update(
+                "cliente",
+                &cliente.id,
+                Map::from_iter([("email".into(), json!("demo@example.invalid"))]),
+            )
+            .unwrap();
+
+        // Creiamo il reinvio
+        let reinviata = state.comunicazione_reinvia(&inviata.id).unwrap();
+        assert_eq!(reinviata.recapito, "demo@example.invalid");
+        assert_eq!(reinviata.reinvio_di, inviata.id);
     }
 }

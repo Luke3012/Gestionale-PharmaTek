@@ -88,6 +88,11 @@ import type {
   PuliziaResult,
   FinishOnboardingArgs,
   ExtractedClient,
+  PrescriptionsFolder,
+  PrescriptionFile,
+  ProductionPrescriptionScan,
+  PrescriptionSelectionInput,
+  ProductionAttachments,
 } from "./tauriTypes";
 export type {
   AvatarTipo,
@@ -196,6 +201,13 @@ export type {
   OnboardingMode,
   FinishOnboardingArgs,
   ExtractedClient,
+  PrescriptionsFolder,
+  PrescriptionFile,
+  PrescriptionPatient,
+  ProductionPrescriptionScan,
+  PrescriptionSelectionInput,
+  ProductionAttachments,
+  PrescriptionsProgress,
 } from "./tauriTypes";
 
 export const api = {
@@ -381,8 +393,45 @@ export const api = {
     invoke<RecordDto>("record_update", { entity, id, fields }),
   documentoCacheSalva: (input: DocumentoCacheSalvaInput) =>
     invoke<AllegatoComunicazioneInput>("documento_cache_salva", { input }),
-  documentiCacheRilascia: (allegati: AllegatoComunicazioneInput[]) =>
-    invoke<number>("documenti_cache_rilascia", { allegati }),
+  prescriptionsFolderGet: () =>
+    invoke<PrescriptionsFolder>("prescriptions_folder_get"),
+  prescriptionsFolderSet: (path: string) =>
+    invoke<PrescriptionsFolder>("prescriptions_folder_set", { path }),
+  prescriptionsScanLot: (lot: string, operationId: string, forceRefresh = false) =>
+    invoke<ProductionPrescriptionScan>("prescriptions_scan_lot", { lot, operationId, forceRefresh }),
+  prescriptionsInspectFiles: (paths: string[]) =>
+    invoke<PrescriptionFile[]>("prescriptions_inspect_files", { paths }),
+  prescriptionOpen: (path: string) => invoke<void>("prescription_open", { path }),
+  prescriptionsZipSave: (
+    lot: string,
+    selections: PrescriptionSelectionInput[],
+    output: string,
+    operationId: string,
+  ) => invoke<number>("prescriptions_zip_save", { lot, selections, output, operationId }),
+  productionAttachmentsPrepare: (
+    lot: string,
+    selections: PrescriptionSelectionInput[],
+    includeZip: boolean,
+    base: number,
+    operationId: string,
+  ) =>
+    invoke<ProductionAttachments>("production_attachments_prepare", {
+      lot,
+      selections,
+      includeZip,
+      base,
+      operationId,
+    }),
+  prescriptionsOperationCancel: (operationId: string) =>
+    invoke<boolean>("prescriptions_operation_cancel", { operationId }),
+  documentiCacheRilascia: (
+    allegati: AllegatoComunicazioneInput[],
+    eliminaSeNonUsati = false,
+  ) =>
+    invoke<number>("documenti_cache_rilascia", {
+      allegati,
+      eliminaSeNonUsati,
+    }),
   configurazioneDocumentiGet: () =>
     invoke<ConfigurazioneDocumenti>("configurazione_documenti_get"),
   configurazioneDocumentiSalva: (
@@ -465,12 +514,19 @@ export const api = {
     invoke<Preventivo>("preventivo_salva", { input }),
   preventivoElimina: (id: string, revision: string) =>
     invoke<void>("preventivo_elimina", { id, revision }),
+  preventivoMarcaInviatoManuale: (ordineId: string, revision = "") =>
+    invoke<Preventivo>("preventivo_marca_inviato_manuale", {
+      ordineId,
+      revision,
+    }),
   preventivoRipristina: (id: string) =>
     invoke<void>("preventivo_ripristina", { id }),
   preventivoPurge: (id: string) =>
     invoke<void>("preventivo_purge", { id }),
   documentoSalva: (path: string, datiBase64: string) =>
     invoke<void>("documento_salva", { path, datiBase64 }),
+  documentoPreventivoSalva: (path: string, datiBase64: string) =>
+    invoke<void>("documento_preventivo_salva", { path, datiBase64 }),
   schedaClienteGet: (ordineId: string) =>
     invoke<SchedaCliente>("scheda_cliente_get", { ordineId }),
   schedaClienteSalva: (input: SchedaClienteSalvaInput) =>
@@ -765,6 +821,8 @@ export const api = {
     invoke<void>("spedizione_destinatari_unisci", { spedizioneIds }),
   spedizioneDestinatariSepara: (spedizioneId: string) =>
     invoke<void>("spedizione_destinatari_separa", { spedizioneId }),
+  spedizioneSegnaAvvisata: (id: string) =>
+    invoke<void>("spedizione_segna_avvisata", { id }),
   spedizioneRiepilogo: (lotto: string) =>
     invoke<SpedizioneRiepilogo>("spedizione_riepilogo", { lotto }),
   rigaMancanteAggiungi: (args: {
@@ -844,14 +902,14 @@ export const api = {
   /** Pannelli operativi della dashboard già limitati lato backend. */
   dashboardPannelli: () => invoke<DashboardPanels>("dashboard_pannelli"),
   /** Suggerimenti FASE 14, derivati e già ordinati dal core. */
-  suggerimentiLista: () =>
-    invoke<SuggerimentiBundle>("suggerimenti_lista"),
+  suggerimentiLista: (preferenze: SuggerimentiPreferenzeInput) =>
+    invoke<SuggerimentiBundle>("suggerimenti_lista", { preferenze }),
   /** Invalida la cache locale e ricalcola subito tutte le azioni correnti. */
-  suggerimentiRigenera: () =>
-    invoke<SuggerimentiBundle>("suggerimenti_rigenera"),
+  suggerimentiRigenera: (preferenze: SuggerimentiPreferenzeInput) =>
+    invoke<SuggerimentiBundle>("suggerimenti_rigenera", { preferenze }),
   /** Ricalcolo manuale completo, senza applicare esclusioni o scrivere stato. */
-  suggerimentiRigeneraCompleta: () =>
-    invoke<SuggerimentiBundle>("suggerimenti_rigenera_completa"),
+  suggerimentiRigeneraCompleta: (anno = 0) =>
+    invoke<SuggerimentiBundle>("suggerimenti_rigenera_completa", { anno }),
   /** Suggerimenti maturi per campanella/pop-up secondo le preferenze locali. */
   suggerimentiNotificheLista: (
     preferenze: SuggerimentiPreferenzeInput,

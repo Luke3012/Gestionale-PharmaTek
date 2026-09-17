@@ -34,6 +34,7 @@ import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
 import { catturaOrigineCestino, volaNelCestino, type PuntoVoloCestino } from "../../ui/volaCestino";
 import { usePrefs } from "../../lib/prefs";
+import { dataNellAnno, dataNellAnnoEIntervallo } from "../../lib/annoLavoro";
 import { useDeepLink } from "../../shell/navigazione";
 import { Pagina } from "../../pages/Pagina";
 import { Tabella, type DataTableColumn, type DataTableSortStatus } from "../../ui/Tabella";
@@ -58,13 +59,10 @@ import { riattivaNotifichePerUtenti, scarta } from "../notifiche/notifiche";
 import { mappaLottiPerOrdine, opzioniLottiSpedizione } from "../spedizioni/filtriSpedizione";
 import { FiltroStatoSpedizione } from "../spedizioni/FiltroStatoSpedizione";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
-import { usePremiumAccess } from "../../premium/PremiumAccess";
-import { PremiumPaywallModal } from "../../premium/PremiumAction";
 import { stampaSchedaClienteDiretta } from "../preventivi/stampaDiretta";
 import { ordinaCopia } from "../../ui/ordinamento";
 import {
-  confrontaPagamentiAperti,
-  pagamentoApertoDaSaldare,
+  selezionaProssimoPagamentoDaSaldare,
 } from "./ordineScadenzario";
 import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
 import { MenuAzioniRiga } from "../../ui/MenuAzioniRiga";
@@ -208,9 +206,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   const [sort, setSort] = useState<DataTableSortStatus<OrdineDto>>({ columnAccessor: "data", direction: "desc" });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; record: OrdineDto } | null>(null);
   const origineMenuAzioniRef = useRef<PuntoVoloCestino | null>(null);
-  const [paywallScheda, setPaywallScheda] = useState(false);
   const { ordineFinestra, anno } = usePrefs();
-  const premium = usePremiumAccess();
   const colonne = useColonneGiornaliero();
   useCloseOnScroll(!!contextMenu, (v) => {
     if (!v) setContextMenu(null);
@@ -259,10 +255,6 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   }
 
   async function stampaSchedaCliente(o: Pick<OrdineDto, "id" | "numero">) {
-    if (!premium.enabled) {
-      setPaywallScheda(true);
-      return;
-    }
     try {
       await stampaSchedaClienteDiretta(o.id, o.numero);
     } catch (error) {
@@ -275,9 +267,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   ) {
     try {
       const pagamenti = await api.pagamentiOrdine(ordine.id);
-      const prossimo = pagamenti
-        .filter(pagamentoApertoDaSaldare)
-        .sort(confrontaPagamentiAperti)[0];
+      const prossimo = selezionaProssimoPagamentoDaSaldare(pagamenti);
       setSalda(
         prossimo
           ? { pagamento: prossimo, saldaSubito: true }
@@ -296,24 +286,16 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
     }
   }
 
-  useEffect(() => {
-    carica();
-    const iv = setInterval(carica, 8000);
-    return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useRicaricaSuEventi(EVENTI_RICARICA, carica);
+  useRicaricaSuEventi(EVENTI_RICARICA, carica, undefined, { caricamentoIniziale: true });
 
   // Conferma eliminazione con la via d'uscita "rifiuta invece": un ordine non andato a
   // buon fine spesso va contrassegnato Rifiutato, non cancellato. Eliminare = "annullare"
   // (Cestino, ripristinabile); l'ordine annullato sparisce da ogni vista.
   async function elimina(o: OrdineDto, origine?: PuntoVoloCestino) {
-    const haPreventivo = premium.enabled
-      ? await api
-          .preventivoGet(o.id)
-          .then((preventivo) => preventivo.esiste)
-          .catch(() => false)
-      : false;
+    const haPreventivo = await api
+      .preventivoGet(o.id)
+      .then((preventivo) => preventivo.esiste)
+      .catch(() => false);
     const scelta = await dialog.open<"annulla" | "rifiuta" | "elimina">({
       tipo: "warning",
       titolo: `Eliminare l'ordine ${o.numero}?`,
@@ -416,16 +398,9 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
 
   const filtrati = useMemo(() => {
     const q = cerca.trim().toLowerCase();
-    const periodoAttivo = !!(filtroDal || filtroAl);
     return ordiniConBlob.filter((o) => {
-      // Periodo: l'intervallo dal/al (impostato a mano o da deep-link) prevale sul
-      // filtro anno della sidebar.
-      if (periodoAttivo) {
-        if (filtroDal && o.data < filtroDal) return false;
-        if (filtroAl && o.data > filtroAl) return false;
-      } else if (anno !== 0 && Number(o.data.slice(0, 4)) !== anno) {
-        return false;
-      }
+      // L'intervallo locale restringe sempre l'anno globale, senza poterlo scavalcare.
+      if (!dataNellAnnoEIntervallo(o.data, anno, filtroDal, filtroAl)) return false;
       if (filtroStati.length > 0 && !filtroStati.includes(o.stato)) return false;
       // Linea: l'ordine compare se ha almeno una riga di una linea selezionata.
       if (filtroLinee.length > 0 && !o.linee.some((l) => filtroLinee.includes(l))) return false;
@@ -455,22 +430,26 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   }, [ordiniConBlob, cerca, filtroStati, filtroLinee, filtroSpedito, spedizioniSet, lottiPerOrdine, filtroCritici, filtroMarcatori, filtroMedici, filtroAgente, filtroRegione, filtroDal, filtroAl, anno]);
 
   // Opzioni regione/agente derivate dagli ordini caricati (niente fetch extra).
+  const ordiniAnno = useMemo(
+    () => ordini.filter((o) => dataNellAnno(o.data, anno)),
+    [anno, ordini],
+  );
   const regioniOpz = useMemo(() => {
     const set = new Set<string>();
-    ordini.forEach((o) => set.add(o.clienteRegione || "Altre zone"));
+    ordiniAnno.forEach((o) => set.add(o.clienteRegione || "Altre zone"));
     return [...set].sort((a, b) => a.localeCompare(b, "it"));
-  }, [ordini]);
+  }, [ordiniAnno]);
   const agentiOpz = useMemo(() => {
     const set = new Set<string>();
-    ordini.forEach((o) => o.agenteNome && set.add(o.agenteNome));
+    ordiniAnno.forEach((o) => o.agenteNome && set.add(o.agenteNome));
     return [...set].sort((a, b) => a.localeCompare(b, "it"));
-  }, [ordini]);
+  }, [ordiniAnno]);
 
   const mediciOpz = useMemo(() => {
     const set = new Set<string>();
-    ordini.forEach((o) => o.medicoNome && set.add(o.medicoNome));
+    ordiniAnno.forEach((o) => o.medicoNome && set.add(o.medicoNome));
     return [...set].sort((a, b) => a.localeCompare(b, "it"));
-  }, [ordini]);
+  }, [ordiniAnno]);
 
   const ordinati = useMemo(() => {
     const getter = GETTER_SORT[sort.columnAccessor as string];
@@ -548,7 +527,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
 
     return [...dati, azioni];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colonne.visibili, ordineFinestra, premium.enabled, rimborsiExtra]);
+  }, [colonne.visibili, ordineFinestra, rimborsiExtra]);
   // Numero di filtri attivi nel popover (la ricerca resta inline, non conta qui).
   const nFiltri =
     (filtroStati.length > 0 ? 1 : 0) +
@@ -835,13 +814,6 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
           setRimborsoExtra(null);
           carica();
         }}
-      />
-
-      <PremiumPaywallModal
-        opened={paywallScheda}
-        onClose={() => setPaywallScheda(false)}
-        title="Stampa scheda cliente"
-        message="La compilazione, l’anteprima e la stampa della scheda cliente richiedono un pagamento aggiuntivo."
       />
 
       {contextMenu && (

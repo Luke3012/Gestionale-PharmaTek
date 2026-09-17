@@ -2,6 +2,64 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.0 — 2026-09-17
+
+Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.
+
+**✨ Novità**
+
+- Finalizzata la sezione Preventivi, disponibile con pagamento aggiuntivo.
+- Finalizzato il modulo Comunicazioni e-mail/WhatsApp, con invii alla Spagna, solleciti e funzioni Smart per ordini, rimborsi e problematiche; richiede pagamento aggiuntivo.
+- Aggiunta la stampa automatica e precompilata delle schede cliente.
+- Aggiunta la bollettazione automatica dal file di spedizione Laboratorio, disponibile anch'essa con pagamento aggiuntivo.
+
+**🐞 Correzioni**
+
+- Risolti diversi problemi e migliorati backup e ripristino.
+
+**🔧 Altro**
+
+- Migliorata la logica di ricerca duplicazione clienti!
+- Implementata correttamente la logica della scelta annuale.
+
+## 0.7.6 — 2026-09-14
+
+Modulo messaggistica premium, Spotlight più reattivo e correzioni critiche a tabelle e avvio.
+
+**✨ Novità**
+
+- Finalizzata la funzionalità di messaggistica (sbloccabile solo con pagamento).
+
+**🐞 Correzioni**
+
+- Risolto un bug critico nella visualizzazione e saldo delle tabelle provvigioni.
+- Risolto il blocco all'avvio dopo un aggiornamento quando era presente il changelog da mostrare.
+
+**🔧 Altro**
+
+- Eliminato il lag dovuto al pre-caricamento degli elementi nella ricerca Spotlight.
+
+## 0.7.5 — 2026-09-12
+
+Saldo in contrassegno sincronizzato e velocizzato il caricamento iniziale dei dati.
+
+**✨ Novità**
+
+- Abilitate le funzioni per la gestione e il saldo in contrassegno sincronizzato tra postazioni.
+
+**🐞 Correzioni**
+
+- Velocizzato drasticamente il caricamento e l'allineamento dei dati alla prima inizializzazione/onboarding.
+
+## 0.7.4 — 2026-09-11
+
+Migliorata l'unione per indirizzo e la gestione degli avvisi spedizione.
+
+**🐞 Correzioni**
+
+- Unione per indirizzo più rigorosa con verifica esatta del numero civico.
+- Gli avvisi di spedizione ignorati non vengono più riproposti.
+
 ## 0.7.2 — 2026-08-10
 
 Risolti errori di messaggistica e migliorata la logica dei suggerimenti smart.

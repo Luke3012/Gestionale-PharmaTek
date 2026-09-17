@@ -60,8 +60,14 @@ import { pulisciStatoNotificheComunicazioniLocale } from "./features/notifiche/s
 import { nascondiInTraySeAttiva, èPannelloUtente } from "./lib/finestreTauri";
 import { PremiumAccessProvider } from "./premium/PremiumAccess";
 import { riepilogaProgressoComunicazioni } from "./features/comunicazioni/progressoComunicazioni";
+import { bloccaScorciatoiaStampa } from "./lib/scorciatoie";
 
 if (typeof window !== "undefined") {
+  // La stampa resta disponibile soltanto tramite le azioni esplicite dell'app.
+  // Il listener è installato nell'entrypoint condiviso da tutte le WebView,
+  // incluse le finestre secondarie Tauri.
+  window.addEventListener("keydown", bloccaScorciatoiaStampa, true);
+
   window.addEventListener("contextmenu", (e) => {
     e.preventDefault();
   });
@@ -340,6 +346,7 @@ function SchermoBloccoRemoto({
 
 function Root() {
   const {
+    anno,
     ridurreAnimazioni,
     zoomUI,
     suonoNotifica,
@@ -450,10 +457,11 @@ function Root() {
         sogliaSolleciti,
         onboardingTime,
         notifichePrimoPiano,
-        preferenzeSuggerimenti,
+        { ...preferenzeSuggerimenti, anno },
       )
       .catch(() => {});
   }, [
+    anno,
     balloonAttivo,
     bloccoRemoto,
     bootData,
@@ -914,6 +922,7 @@ function Root() {
     let attivo = true;
     let unlistenRevealFn: (() => void) | null = null;
     let unlistenDataWipedFn: (() => void) | null = null;
+    let unlistenSyncProgressFn: (() => void) | null = null;
     let unlistenSpotlightFn: (() => void) | null = null;
     let timerId: ReturnType<typeof setTimeout> | null = null;
     let focusSyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -955,6 +964,19 @@ function Root() {
 
     import("@tauri-apps/api/event").then(({ listen }) => {
       if (!attivo) return;
+      listen<{ current: number; total: number; phase: string }>("pt:sync-progress", (event) => {
+        if (!attivo) return;
+        if (event.payload.total > 0 && caricamentoRef.current) {
+          const pct = Math.min(100, Math.round((event.payload.current / event.payload.total) * 100));
+          setTestoCaricamento(
+            `Sincronizzo i dati: ${event.payload.current.toLocaleString()} / ${event.payload.total.toLocaleString()} (${pct}%)`
+          );
+        }
+      }).then((fn) => {
+        if (attivo) unlistenSyncProgressFn = fn;
+        else fn();
+      });
+
       listen<{ reason?: string }>("pt:data-wiped", async (event) => {
         if (!attivo) return;
         const reason = event.payload?.reason;
@@ -1382,6 +1404,7 @@ function Root() {
       attivo = false;
       if (unlistenRevealFn) unlistenRevealFn();
       if (unlistenDataWipedFn) unlistenDataWipedFn();
+      if (unlistenSyncProgressFn) unlistenSyncProgressFn();
       if (unlistenSpotlightFn) unlistenSpotlightFn();
       if (timerId) clearTimeout(timerId);
       if (focusSyncTimer) clearTimeout(focusSyncTimer);

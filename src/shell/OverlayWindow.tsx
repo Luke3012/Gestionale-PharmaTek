@@ -10,8 +10,6 @@
 // comunicazioni operative ✗ annulla l'intera azione, sugli altri avvisi chiude
 // soltanto il pop-up. I messaggi 6E si rispondono inline.
 import {
-  Suspense,
-  lazy,
   useCallback,
   useEffect,
   useRef,
@@ -58,13 +56,7 @@ import {
 import { aggiornaStatoNotificheComunicazioniLocale } from "../features/notifiche/statoComunicazioniLocale";
 import { vaiAllaPrincipale } from "./navigazione";
 import { deepLinkSuggerimento } from "../features/suggerimenti/collegamento";
-import { usePremiumAccess } from "../premium/PremiumAccess";
 
-const SuggerimentoDuplicatiWorker = lazy(() =>
-  import("../features/suggerimenti/SuggerimentoDuplicatiWorker").then(
-    (module) => ({ default: module.SuggerimentoDuplicatiWorker }),
-  ),
-);
 
 /** Payload inviato dal Rust (`Notif` serializzato in camelCase). */
 interface Toast {
@@ -363,7 +355,6 @@ function toastDaStatoCampagna(comunicazioni: Comunicazione[]): Toast | null {
 
 export function OverlayWindow() {
   const { zoomUI, balloonAttivo, backupAuto } = usePrefs();
-  const premium = usePremiumAccess();
   const ridotte = useAnimazioniRidotte();
   const zoomFactor = zoomUI || 1;
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -1011,6 +1002,9 @@ export function OverlayWindow() {
       if (!t.inCorso) rimuovi(t.id);
       return;
     }
+    if (t.id.startsWith("s14:spedizione:")) {
+      void api.suggerimentoNascondi(t.id).catch(() => {});
+    }
     void segnaLetta(t.id, identityRef.current ?? undefined, false).catch(() => {});
     naviga(t);
     rimuovi(t.id);
@@ -1054,11 +1048,6 @@ export function OverlayWindow() {
   return (
     // La finestra è ancorata in basso a destra: il contenitore allinea il mazzo in alto.
     <Box style={{ height: "100vh", display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
-      {premium.enabled && (
-        <Suspense fallback={null}>
-          <SuggerimentoDuplicatiWorker />
-        </Suspense>
-      )}
       <div
         ref={contenutoRef}
         // overflow VISIBILE: nessuna scrollbar e l'ombra delle card non viene mai tagliata
@@ -1093,6 +1082,9 @@ export function OverlayWindow() {
                     onCampagnaSospesa={mostraRiepilogoPausa}
                     onCampagnaAnnullamento={impostaAnnullamentoSilenzioso}
                     onIgnora={() => {
+                      if (active.id.startsWith("s14:spedizione:")) {
+                        void api.suggerimentoNascondi(active.id).catch(() => {});
+                      }
                       if (
                         active.erroreComunicazione &&
                         active.comunicazioneId
@@ -1269,6 +1261,9 @@ function CardNotifica({
       !t.inCorso ||
       !t.comunicazioneId
     ) {
+      if (t.id.startsWith("s14:spedizione:")) {
+        void api.suggerimentoNascondi(t.id).catch(() => {});
+      }
       if (t.erroreComunicazione) {
         onIgnora();
       } else {

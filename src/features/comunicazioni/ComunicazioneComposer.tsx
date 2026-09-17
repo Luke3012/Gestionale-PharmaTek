@@ -86,6 +86,7 @@ function variabiliTarget(target: ComunicazioneTarget): Record<string, string> {
 }
 
 function canaleIniziale(target: ComunicazioneTarget): SceltaCanale {
+  if (target.canaliConsentiti?.length === 1) return target.canaliConsentiti[0];
   if (emailComunicazioneValida(target.email)) return "email";
   return "whatsapp";
 }
@@ -224,7 +225,7 @@ export function ComunicazioneComposerHost({
   useRicaricaSuEventi(
     EVENTI_DESTINATARIO_COMPOSER,
     async () => {
-      if (!target || salvataggio) return;
+      if (!target || salvataggio || target.destinatarioEntita === "laboratorio_laboratorio") return;
       const record = await api.recordGet(
         target.destinatarioEntita,
         target.destinatarioId,
@@ -343,10 +344,32 @@ export function ComunicazioneComposerHost({
     !!corpo.trim() &&
     mancanti.length === 0;
 
+  const allegatiTarget = useMemo(
+    () => [...new Map(
+      Object.values(mostrato?.allegatiPerCanale ?? {})
+        .flat()
+        .map((allegato) => [allegato.riferimento, allegato]),
+    ).values()],
+    [mostrato?.allegatiPerCanale],
+  );
+
+  const rilasciaAllegatiTarget = async () => {
+    if (mostrato?.rilasciaAllegatiAllaChiusura && allegatiTarget.length) {
+      await api.documentiCacheRilascia(
+        allegatiTarget,
+        mostrato.eliminaAllegatiNonUsatiAllaChiusura,
+      );
+    }
+  };
+
   const chiudi = () => {
     if (salvataggio) return;
-    setTarget(null);
-    if (standalone) void chiudiFinestraCorrente();
+    void rilasciaAllegatiTarget()
+      .catch(() => {})
+      .finally(() => {
+        setTarget(null);
+        if (standalone) void chiudiFinestraCorrente();
+      });
   };
 
   const persisti = async (invia: boolean) => {
@@ -417,6 +440,9 @@ export function ComunicazioneComposerHost({
         toast.success(bozze.length === 1 ? "Bozza salvata." : "Bozze salvate.");
       }
       setTarget(null);
+      if (mostrato.rilasciaAllegatiAllaChiusura && allegatiTarget.length) {
+        await rilasciaAllegatiTarget().catch(() => {});
+      }
       if (standalone) void chiudiFinestraCorrente();
     } catch (e) {
       setErrore(String(e));
@@ -428,6 +454,7 @@ export function ComunicazioneComposerHost({
     }
   };
 
+  const canaliConsentiti = mostrato?.canaliConsentiti ?? ["email", "whatsapp"];
   const opzioniCanale = [
     {
       value: "email",
@@ -444,7 +471,11 @@ export function ComunicazioneComposerHost({
       label: <EtichettaCanale canale="entrambi" testo="Entrambi" />,
       disabled: !emailValida || !whatsappValido,
     },
-  ];
+  ].filter((opzione) =>
+    opzione.value === "entrambi"
+      ? canaliConsentiti.includes("email") && canaliConsentiti.includes("whatsapp")
+      : canaliConsentiti.includes(opzione.value as CanaleComunicazione),
+  );
 
   const editorMessaggio = (
     <Stack gap="md">
@@ -560,6 +591,22 @@ export function ComunicazioneComposerHost({
             : usaEmail
               ? "Alla conferma sarà generato e allegato il PDF."
               : "Alla conferma sarà inviato il PNG se il preventivo è su una pagina, oppure il PDF completo se è multipagina."}
+        </Alert>
+      )}
+
+      {allegatiTarget.length > 0 && (
+        <Alert
+          icon={<IconPaperclip size={18} />}
+          color="teal"
+          title={`${allegatiTarget.length} allegat${allegatiTarget.length === 1 ? "o" : "i"} pront${allegatiTarget.length === 1 ? "o" : "i"}`}
+        >
+          <Stack gap={2}>
+            {allegatiTarget.map((allegato) => (
+              <Text key={allegato.riferimento} size="xs">
+                {allegato.nome} · {(allegato.dimensione / 1024 / 1024).toLocaleString("it-IT", { maximumFractionDigits: 1 })} MB
+              </Text>
+            ))}
+          </Stack>
         </Alert>
       )}
 

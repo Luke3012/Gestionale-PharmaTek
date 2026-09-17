@@ -56,6 +56,8 @@ import { DEST_TUTTI, listaDestinatariMessaggi } from "../features/notifiche/mess
 import { chiaviTop } from "./frecency";
 import { testoRicercaPreventivo } from "../features/preventivi/ricercaPreventivi";
 import type { DeepLink } from "./navigazione";
+import { dataNellAnno, ordineDaSpedireNelContesto } from "../lib/annoLavoro";
+import { ordineOperativoDiProduzioneIndicizzato } from "../features/produzione/filtriProduzione";
 
 type BersaglioNavigazione = Omit<DeepLink, "azione"> & {
   t: "naviga";
@@ -131,6 +133,33 @@ export const DATI_VUOTI: DatiRicerca = {
   utenti: [],
 };
 
+/** Ordini ricercabili: storico dell'anno più le code operative realmente visibili. */
+export function selezionaOrdiniRicerca(
+  ordini: OrdineDto[],
+  daSpedire: OrdineDaSpedire[],
+  anno: number,
+): OrdineDto[] {
+  if (anno === 0) return ordini;
+  const spedibili = new Set(
+    daSpedire
+      .filter((ordine) => ordineDaSpedireNelContesto(ordine, anno))
+      .map((ordine) => ordine.ordineId),
+  );
+  return ordini.filter(
+    (ordine) =>
+      dataNellAnno(ordine.data, anno) ||
+      spedibili.has(ordine.id) ||
+      ordineOperativoDiProduzioneIndicizzato(ordine, anno),
+  );
+}
+
+export function preventivoNellAnnoRicerca(
+  preventivo: Pick<Preventivo, "ordineData">,
+  anno: number,
+): boolean {
+  return dataNellAnno(preventivo.ordineData, anno);
+}
+
 /** Carica i dati ricercabili. Resiliente: ciò che non risponde resta vuoto. 
  *  I dati storici (ordini, distinte, spedizioni) vengono filtrati per l'anno passato in input se diverso da 0.
 */
@@ -162,16 +191,16 @@ export async function caricaDatiRicerca(annoG: number = 0): Promise<DatiRicerca>
   let promemoriaFiltrati = promemoria;
 
   if (annoG !== 0) {
-    ordiniFiltrati = ordini.filter((o) => Number(o.data.slice(0, 4)) === annoG);
+    const ordiniAnno = ordini.filter((o) => dataNellAnno(o.data, annoG));
+    ordiniFiltrati = selezionaOrdiniRicerca(ordini, daSpedire, annoG);
     preventiviFiltrati = preventivi.filter(
-      (preventivo) =>
-        new Date(preventivo.creatoMs).getFullYear() === annoG,
+      (preventivo) => preventivoNellAnnoRicerca(preventivo, annoG),
     );
-    const ordiniAnno = new Set(ordiniFiltrati.map((o) => o.id));
+    const ordiniAnnoIds = new Set(ordiniAnno.map((o) => o.id));
     distinteFiltrate = distinte.filter((d) => Number(d.dataDistinta.slice(0, 4)) === annoG);
     spedizioniFiltrate = spedizioni.filter((s) => Number(s.data.slice(0, 4)) === annoG);
-    daSpedireFiltrati = daSpedire.filter((o) => Number(o.data.slice(0, 4)) === annoG);
-    pagamentiFiltrati = pagamenti.filter((p) => ordiniAnno.has(p.ordineId));
+    daSpedireFiltrati = daSpedire.filter((o) => ordineDaSpedireNelContesto(o, annoG));
+    pagamentiFiltrati = pagamenti.filter((p) => ordiniAnnoIds.has(p.ordineId));
     promemoriaFiltrati = promemoria.filter((p) => !p.scadenza || Number(p.scadenza.slice(0, 4)) === annoG);
   }
 

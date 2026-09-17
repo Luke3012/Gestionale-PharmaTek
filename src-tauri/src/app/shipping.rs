@@ -21,6 +21,7 @@ pub(super) struct SpedizioneCreateParams<'a> {
 fn pianifica_pagamenti_alla_consegna(
     projection: &crate::projection::Projection,
     params: &SpedizioneCreateParams<'_>,
+    spedizione_id: &str,
 ) -> Result<Vec<Mutation>, String> {
     let conto_transito = match params.mezzo {
         "contrassegno" => CONTO_CONTRASSEGNO,
@@ -67,24 +68,38 @@ fn pianifica_pagamenti_alla_consegna(
                     && !bool_field(&pagamento.data, "saldato")
                     && matches!(
                         str_field(&pagamento.data, "tipo").as_str(),
-                        "saldo" | "rata"
+                        "acconto" | "saldo" | "rata"
                     )
             })
             .collect();
         pagamenti.sort_by(|a, b| {
-            let data_a = str_field(&a.data, "scadenza");
-            let data_b = str_field(&b.data, "scadenza");
-            (if data_a.is_empty() {
-                "9999-12-31"
-            } else {
-                data_a.as_str()
-            })
-            .cmp(if data_b.is_empty() {
-                "9999-12-31"
-            } else {
-                data_b.as_str()
-            })
-            .then(a.created_hlc.cmp(&b.created_hlc))
+            let a_sid = str_field(&a.data, "spedizione_id");
+            let b_sid = str_field(&b.data, "spedizione_id");
+            let a_matches = a_sid == spedizione_id;
+            let b_matches = b_sid == spedizione_id;
+            let a_other = !a_sid.is_empty() && !a_matches;
+            let b_other = !b_sid.is_empty() && !b_matches;
+            let a_transit = str_field(&a.data, "conto_id") == conto_transito;
+            let b_transit = str_field(&b.data, "conto_id") == conto_transito;
+            b_matches
+                .cmp(&a_matches)
+                .then(a_other.cmp(&b_other))
+                .then(b_transit.cmp(&a_transit))
+                .then_with(|| {
+                    let data_a = str_field(&a.data, "scadenza");
+                    let data_b = str_field(&b.data, "scadenza");
+                    (if data_a.is_empty() {
+                        "9999-12-31"
+                    } else {
+                        data_a.as_str()
+                    })
+                    .cmp(if data_b.is_empty() {
+                        "9999-12-31"
+                    } else {
+                        data_b.as_str()
+                    })
+                    .then(a.created_hlc.cmp(&b.created_hlc))
+                })
         });
         let totale = pagamenti
             .iter()
@@ -124,8 +139,6 @@ fn pianifica_pagamenti_alla_consegna(
 
     let totale_aperto: i64 = piani.iter().map(|piano| piano.totale).sum();
     if totale_aperto <= 0 {
-        // Gli ordini storici possono non avere ancora uno scadenzario: il collo
-        // resta comunque creabile e non inventiamo pagamenti senza un piano base.
         return Ok(Vec::new());
     }
     let importo_da_allineare = importo_consegna.min(totale_aperto);
@@ -141,12 +154,14 @@ fn pianifica_pagamenti_alla_consegna(
         }
         let residuo = piano.totale - quota_consegna;
         let primo = &piano.pagamenti[0];
+        let importo_primo_originale = i64_field(&primo.data, "importo");
         for (field, value) in [
             ("conto_id", json!(conto_transito)),
             ("importo", json!(quota_consegna)),
             ("scadenza", json!(aggiungi_giorni_iso(params.data, 30))),
             ("scad_da_spedizione", json!(true)),
             ("scad_rel_giorni", json!(0)),
+            ("spedizione_id", json!(spedizione_id)),
         ] {
             mutations.push(Mutation::new(
                 "pagamento",
@@ -158,11 +173,22 @@ fn pianifica_pagamenti_alla_consegna(
             ));
         }
 
+        // Se la quota corrisponde esattamente alla rata individuata, le altre rate non vanno toccate
+        if quota_consegna == importo_primo_originale && residuo > 0 {
+            continue;
+        }
+
         let successive = &piano.pagamenti[1..];
         if residuo <= 0 {
-            mutations.extend(successive.iter().map(|pagamento| {
-                Mutation::new("pagamento", pagamento.id.clone(), EventBody::Purged)
-            }));
+            // Elimina solo rate non vincolate ad altre spedizioni
+            mutations.extend(
+                successive
+                    .iter()
+                    .filter(|p| str_field(&p.data, "spedizione_id").is_empty())
+                    .map(|pagamento| {
+                        Mutation::new("pagamento", pagamento.id.clone(), EventBody::Purged)
+                    }),
+            );
             continue;
         }
 
@@ -193,14 +219,23 @@ fn pianifica_pagamenti_alla_consegna(
             continue;
         }
 
+        // Ripartisce residuo solo sulle rate non vincolate ad altre spedizioni
+        let non_vincolate: Vec<_> = successive
+            .iter()
+            .filter(|p| str_field(&p.data, "spedizione_id").is_empty())
+            .collect();
+        if non_vincolate.is_empty() {
+            continue;
+        }
+
         let quote_successive = ripartisci_importo_proporzionale(
             residuo,
-            &successive
+            &non_vincolate
                 .iter()
                 .map(|pagamento| i64_field(&pagamento.data, "importo").max(0))
                 .collect::<Vec<_>>(),
         );
-        for (pagamento, importo) in successive.iter().zip(quote_successive) {
+        for (pagamento, importo) in non_vincolate.into_iter().zip(quote_successive) {
             if importo <= 0 {
                 mutations.push(Mutation::new(
                     "pagamento",
@@ -292,11 +327,11 @@ pub(super) fn prepara_spedizione_mutations(
             righe_immunoterapia.insert(row_number.riga_id.clone());
         }
     }
-    let carrai = corriere.is_some_and(|record| {
+    let corriere_a = corriere.is_some_and(|record| {
         profilo_corriere(
             &str_field(&record.data, "nome"),
             &str_field(&record.data, "profilo"),
-        ) == "carrai"
+        ) == "corriere_a"
     });
     let mut mutations = vec![Mutation::new("spedizione", id, EventBody::Created)];
     for (field, value) in [
@@ -306,13 +341,13 @@ pub(super) fn prepara_spedizione_mutations(
         ("numero", json!("")),
         (
             "colli",
-            json!(if carrai || righe_immunoterapia.is_empty() {
+            json!(if corriere_a || righe_immunoterapia.is_empty() {
                 1
             } else {
                 params.colli
             }),
         ),
-        ("peso", json!(if carrai { 1 } else { params.peso })),
+        ("peso", json!(if corriere_a { 1 } else { params.peso })),
         ("servizi", json!(params.servizi)),
         ("preavviso", json!(params.preavviso)),
         ("mezzo", json!(params.mezzo)),
@@ -351,7 +386,7 @@ pub(super) fn prepara_spedizione_mutations(
             ));
         }
     }
-    mutations.extend(pianifica_pagamenti_alla_consegna(projection, params)?);
+    mutations.extend(pianifica_pagamenti_alla_consegna(projection, params, id)?);
     Ok(mutations)
 }
 
@@ -775,6 +810,23 @@ impl AppState {
                                     .map(|riga| (riga.riga_id.as_str(), riga.numero.as_str())),
                             );
 
+                        let ultimo_avviso_fingerprint =
+                            str_field(&r.data, "ultimo_avviso_fingerprint");
+                        let avvisato = !comunicazione_fingerprint.is_empty()
+                            && ultimo_avviso_fingerprint == comunicazione_fingerprint;
+                        let ultimo_avviso_canale = {
+                            let c = str_field(&r.data, "ultimo_avviso_canale");
+                            if c.is_empty() {
+                                None
+                            } else {
+                                Some(c)
+                            }
+                        };
+                        let ultimo_avviso_ms = r
+                            .data
+                            .get("ultimo_avviso_ms")
+                            .and_then(serde_json::Value::as_u64);
+
                         Some(SpedizioneDto {
                             comunicazione_fingerprint,
                             lotto: str_field(&r.data, "lotto"),
@@ -782,12 +834,12 @@ impl AppState {
                             corriere_nome: corrieri.get(&corriere_id).cloned().unwrap_or_default(),
                             corriere_id,
                             numero: numero_join,
-                            colli: if corriere_profilo == "carrai" {
+                            colli: if corriere_profilo == "corriere_a" {
                                 1
                             } else {
                                 i64_field(&r.data, "colli")
                             },
-                            peso: if corriere_profilo == "carrai" {
+                            peso: if corriere_profilo == "corriere_a" {
                                 1
                             } else {
                                 i64_field(&r.data, "peso")
@@ -811,6 +863,9 @@ impl AppState {
                             corriere_profilo,
                             unito: !str_field(&r.data, "lotto_pre").is_empty(),
                             destinatari_uniti: destinatari_uniti.contains(&r.id),
+                            avvisato,
+                            ultimo_avviso_canale,
+                            ultimo_avviso_ms,
                             n_righe: righe.len(),
                             righe,
                             pagamenti,
@@ -1110,7 +1165,7 @@ impl AppState {
                 Ok(profilo_corriere(
                     &str_field(&corriere.data, "nome"),
                     &str_field(&corriere.data, "profilo"),
-                ) == "carrai")
+                ) == "corriere_a")
             })?;
             let id = Ulid::generate().to_string();
             let lotto = if lotto.is_empty() {
@@ -1796,6 +1851,22 @@ impl AppState {
                             .map(|riga| (riga.riga_id.as_str(), riga.numero.as_str())),
                     );
 
+                let ultimo_avviso_fingerprint = str_field(&r.data, "ultimo_avviso_fingerprint");
+                let avvisato = !comunicazione_fingerprint.is_empty()
+                    && ultimo_avviso_fingerprint == comunicazione_fingerprint;
+                let ultimo_avviso_canale = {
+                    let c = str_field(&r.data, "ultimo_avviso_canale");
+                    if c.is_empty() {
+                        None
+                    } else {
+                        Some(c)
+                    }
+                };
+                let ultimo_avviso_ms = r
+                    .data
+                    .get("ultimo_avviso_ms")
+                    .and_then(serde_json::Value::as_u64);
+
                 Some(SpedizioneDto {
                     comunicazione_fingerprint,
                     lotto: str_field(&r.data, "lotto"),
@@ -1803,12 +1874,12 @@ impl AppState {
                     corriere_nome: corrieri.get(&corriere_id).cloned().unwrap_or_default(),
                     corriere_id,
                     numero: numero_join,
-                    colli: if corriere_profilo == "carrai" {
+                    colli: if corriere_profilo == "corriere_a" {
                         1
                     } else {
                         i64_field(&r.data, "colli")
                     },
-                    peso: if corriere_profilo == "carrai" {
+                    peso: if corriere_profilo == "corriere_a" {
                         1
                     } else {
                         i64_field(&r.data, "peso")
@@ -1832,6 +1903,9 @@ impl AppState {
                     corriere_profilo,
                     unito: !str_field(&r.data, "lotto_pre").is_empty(),
                     destinatari_uniti,
+                    avvisato,
+                    ultimo_avviso_canale,
+                    ultimo_avviso_ms,
                     n_righe: righe.len(),
                     righe,
                     pagamenti,
@@ -1839,5 +1913,67 @@ impl AppState {
                 })
             })
             .ok_or_else(|| "spedizione non trovata dopo la creazione".to_string())
+    }
+
+    /// Contrassegna manualmente una spedizione come già avvisata (fuori gestionale).
+    pub fn spedizione_segna_avvisata(&self, id: &str) -> AppResult<()> {
+        let ts = now_ms();
+        self.with_engine(|engine| {
+            let (fp, gia_avvisata) = engine.with_projection(|p| -> AppResult<(String, bool)> {
+                let spedizione = p
+                    .get("spedizione", id)
+                    .map_err(es)?
+                    .ok_or_else(|| format!("spedizione {id} non trovata"))?;
+                let ordini: HashMap<String, crate::projection::Record> = p
+                    .list("ordine")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.id.clone(), r))
+                    .collect();
+                let ord_clienti: HashMap<String, String> = ordini
+                    .iter()
+                    .map(|(oid, o)| (oid.clone(), str_field(&o.data, "cliente_id")))
+                    .collect();
+                let righe: Vec<_> = p
+                    .list("riga_ordine")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| str_field(&r.data, "spedizione_id") == id)
+                    .collect();
+                let cliente_id = righe
+                    .iter()
+                    .find_map(|r| ord_clienti.get(&str_field(&r.data, "ordine_id")))
+                    .cloned()
+                    .unwrap_or_default();
+                let righe_info: Vec<(String, String)> = righe
+                    .iter()
+                    .map(|r| (r.id.clone(), str_field(&r.data, "numero")))
+                    .collect();
+                let fp = super::suggestions::fingerprint_spedizione_comunicazione(
+                    id,
+                    &str_field(&spedizione.data, "data"),
+                    &str_field(&spedizione.data, "corriere_id"),
+                    &cliente_id,
+                    righe_info
+                        .iter()
+                        .map(|(rid, num)| (rid.as_str(), num.as_str())),
+                );
+                let gia_avvisata = str_field(&spedizione.data, "ultimo_avviso_fingerprint") == fp;
+                Ok((fp, gia_avvisata))
+            })?;
+            if !gia_avvisata {
+                set_fields(
+                    engine,
+                    "spedizione",
+                    id,
+                    &[
+                        ("ultimo_avviso_ms", json!(ts)),
+                        ("ultimo_avviso_canale", json!("manuale")),
+                        ("ultimo_avviso_fingerprint", json!(fp)),
+                    ],
+                )?;
+            }
+            Ok(())
+        })
     }
 }

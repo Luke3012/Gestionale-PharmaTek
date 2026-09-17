@@ -1,6 +1,94 @@
 {
   "versioni": [
     {
+      "versione": "0.8.0",
+      "data": "2026-09-17",
+      "sintesi": "Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Finalizzata la sezione Preventivi, disponibile con pagamento aggiuntivo."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Finalizzato il modulo Comunicazioni e-mail/WhatsApp, con invii alla Spagna, solleciti e funzioni Smart per ordini, rimborsi e problematiche; richiede pagamento aggiuntivo."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Aggiunta la stampa automatica e precompilata delle schede cliente."
+        },
+        {
+          "categoria": "novita",
+          "testo": "Aggiunta la bollettazione automatica dal file di spedizione Laboratorio, disponibile anch'essa con pagamento aggiuntivo."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Risolti diversi problemi e migliorati backup e ripristino."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Migliorata la logica di ricerca duplicazione clienti!"
+        },
+        {
+          "categoria": "altro",
+          "testo": "Implementata correttamente la logica della scelta annuale."
+        }
+      ]
+    },
+    {
+      "versione": "0.7.6",
+      "data": "2026-09-14",
+      "sintesi": "Modulo messaggistica premium, Spotlight più reattivo e correzioni critiche a tabelle e avvio.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Finalizzata la funzionalità di messaggistica (sbloccabile solo con pagamento)."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Risolto un bug critico nella visualizzazione e saldo delle tabelle provvigioni."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Risolto il blocco all'avvio dopo un aggiornamento quando era presente il changelog da mostrare."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Eliminato il lag dovuto al pre-caricamento degli elementi nella ricerca Spotlight."
+        }
+      ]
+    },
+    {
+      "versione": "0.7.5",
+      "data": "2026-09-12",
+      "sintesi": "Saldo in contrassegno sincronizzato e velocizzato il caricamento iniziale dei dati.",
+      "voci": [
+        {
+          "categoria": "novita",
+          "testo": "Abilitate le funzioni per la gestione e il saldo in contrassegno sincronizzato tra postazioni."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Velocizzato drasticamente il caricamento e l'allineamento dei dati alla prima inizializzazione/onboarding."
+        }
+      ]
+    },
+    {
+      "versione": "0.7.4",
+      "data": "2026-09-11",
+      "sintesi": "Migliorata l'unione per indirizzo e la gestione degli avvisi spedizione.",
+      "voci": [
+        {
+          "categoria": "correzioni",
+          "testo": "Unione per indirizzo più rigorosa con verifica esatta del numero civico."
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Gli avvisi di spedizione ignorati non vengono più riproposti."
+        }
+      ]
+    },
+    {
       "versione": "0.7.2",
       "data": "2026-08-10",
       "sintesi": "Risolti errori di messaggistica e migliorata la logica dei suggerimenti smart.",

@@ -23,7 +23,6 @@ import { UnifiedBootScreen } from "../ui/Brand";
 import { vistaBloccanteAttiva } from "../lib/closeOnScroll";
 import { collegaDisiscrizioneAsincrona } from "../lib/disiscrizioneAsincrona";
 import { CHIAVE_ANNO_PROMPT_COMPLETATO, deveProporreCambioAnno } from "./cambioAnno";
-import { PremiumRoute } from "../premium/PremiumAccess";
 
 const rottaSenzaAnimazione = {
   initial: { opacity: 1, y: 0 },
@@ -373,7 +372,7 @@ function ShellLayout({
           }
         />
         <Route path="/giornaliero" element={<GiornalieroView identity={identity} />} />
-        <Route path="/preventivi" element={<PremiumRoute><PreventiviView identity={identity} /></PremiumRoute>} />
+        <Route path="/preventivi" element={<PreventiviView identity={identity} />} />
         <Route path="/produzione" element={<ProduzioneView identity={identity} />} />
         <Route path="/contabilita" element={<ContabilitaHub />} />
         <Route path="/evasione" element={<SpedizioniView identity={identity} />} />

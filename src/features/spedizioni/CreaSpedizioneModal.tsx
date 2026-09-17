@@ -50,6 +50,12 @@ import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
 import { normalizzaColliPesoCorriere } from "./profiliCorriere";
 import { ordineHaDatiVaccino } from "./datiVaccino";
 import { oggiIso as oggi } from "../../lib/date";
+import {
+  chiaveIndirizzoConfronto,
+  formattaIndirizzoSintetico,
+  raggruppaPerIndirizzoCompatibile,
+  unisciNoteSpedizione,
+} from "./confrontoIndirizzi";
 
 type Mezzo = "prepagato" | "contrassegno" | "assegno";
 export const OPZIONI_PAGAMENTO_CONSEGNA = [
@@ -73,20 +79,24 @@ interface PerCollo {
   importo: number | ""; // € (contrassegno/assegno), anche parziale
   importoAuto: boolean;
   preavviso: boolean; // preavviso telefonico per questo collo
-  note: string; // note di spedizione (auto dal cliente)
+  note: string; // note di spedizione (auto dal cliente o unite da più ordini)
   /** Conteggio derivato mantenuto insieme alle spunte: evita di ripercorrere tutte le
    * righe di tutti i colli a ogni carattere digitato in un campo. */
   incluse: number;
   righeCheck: Record<string, boolean>; // rigaId -> incluso
   numeri: Record<string, string>; // rigaId -> numero/lotto del vaccino (FASE 7)
+  /** ID del cliente primario scelto per l'intestazione se collo unito tra clienti diversi */
+  primarioClienteId?: string;
 }
 
-/** Un collo da creare = uno o più ordini (uniti se stesso cliente). */
+/** Un collo da creare = uno o più ordini (uniti se stesso cliente o stesso indirizzo). */
 interface Collo {
   key: string;
   clienteId: string;
+  clienteNome: string;
   ordini: OrdineDaSpedire[];
   unito: boolean;
+  unitoPer?: "cliente" | "indirizzo";
 }
 
 function chiaveCollo(collo: Collo): string {
@@ -105,7 +115,14 @@ function defaultPerCollo(ordini: OrdineDaSpedire[], bozze?: Record<string, Bozza
   // modifica a mano. Prima usava le righe totali dell'ordine → mostrava più colli del dovuto.
   const inclusi = righe.filter((r) => bozze?.[r.rigaId]?.incluso ?? true).length;
   const righeCheck = Object.fromEntries(righe.map((r) => [r.rigaId, bozze?.[r.rigaId]?.incluso ?? true]));
-  const cents = calcolaImportoSpedizione(ordini, righeCheck);
+  let cents = 0;
+  if (mezzo !== "prepagato") {
+    cents = ordini.reduce((tot, o) => {
+      if (o.codImporto && o.codImporto > 0) return tot + o.codImporto;
+      if (o.residuo && o.residuo > 0) return tot + o.residuo;
+      return tot + calcolaImportoSpedizione([o], righeCheck);
+    }, 0);
+  }
   return {
     colli: inclusi,
     colliAuto: true,
@@ -113,9 +130,10 @@ function defaultPerCollo(ordini: OrdineDaSpedire[], bozze?: Record<string, Bozza
     importo: cents > 0 ? cents / 100 : "",
     importoAuto: true,
     preavviso: true,
-    note: ordini.map((o) => o.noteSpedizione).find(Boolean) || "",
+    note: unisciNoteSpedizione(ordini.map((o) => o.noteSpedizione)),
     incluse: inclusi,
     righeCheck,
+    primarioClienteId: ordini[0]?.clienteId || "",
     numeri: Object.fromEntries(
       ordini.flatMap((ordine) =>
         ordine.righe.map((riga) => [
@@ -144,7 +162,7 @@ function profiloCorriere(corriere?: RecordDto): string {
   const profilo = String(corriere?.data.profilo || "");
   if (profilo) return profilo;
   const nome = String(corriere?.data.nome || "").toLowerCase();
-  return nome.includes("carrai") ? "carrai" : "gls";
+  return nome.includes("corriere_a") ? "corriere_a" : "gls";
 }
 
 export function colliDistintaAuto(profilo: string, prodottiInclusi: number): number {
@@ -245,12 +263,10 @@ function Form({
   const [salvando, setSalvando] = useState(false);
   const [openNoteKey, setOpenNoteKey] = useState<string | null>(null);
   useCloseOnScroll(openNoteKey !== null, (v) => { if (!v) setOpenNoteKey(null); });
-  // Clienti scelti per l'unione (più ordini → un collo).
-  const [unisci, setUnisci] = useState<Set<string>>(new Set());
   // Un lotto per questa sessione di creazione (raggruppa le Effettuate).
   const lotto = useRef(crypto.randomUUID()).current;
 
-  // Clienti con più ordini selezionati = candidati all'unione (proposta automatica).
+  // Clienti con più ordini selezionati = candidati all'unione per cliente (pre-attivati di default)
   const clientiDuplicati = useMemo(() => {
     const perCliente = new Map<string, OrdineDaSpedire[]>();
     for (const o of ordini) {
@@ -261,29 +277,133 @@ function Form({
     }
     return [...perCliente.entries()]
       .filter(([, arr]) => arr.length > 1)
-      .map(([clienteId, arr]) => ({ clienteId, nome: arr[0].clienteNome || "(cliente)", n: arr.length }));
+      .map(([clienteId, arr]) => ({
+        clienteId,
+        nome: arr[0].clienteNome || "(cliente)",
+        ordini: arr,
+        n: arr.length,
+      }));
   }, [ordini]);
 
-  // Colli da creare: un ordine per collo, salvo i clienti "uniti" (un collo per cliente).
+  // Indirizzi con più ordini e clienti distinti = candidati all'unione per indirizzo (disattivati di default)
+  const indirizziDuplicati = useMemo(() => {
+    const gruppi = raggruppaPerIndirizzoCompatibile(ordini, (o) => o);
+    return gruppi
+      .filter((arr) => {
+        if (arr.length <= 1) return false;
+        const clienti = new Set(arr.map((x) => x.clienteId || x.clienteNome));
+        return clienti.size > 1;
+      })
+      .map((arr) => {
+        const chiaveIndirizzo = chiaveIndirizzoConfronto(arr[0]);
+        const nomiClienti = Array.from(new Set(arr.map((x) => x.clienteNome || "(cliente)")));
+        return {
+          chiaveIndirizzo,
+          indirizzoFormattato: formattaIndirizzoSintetico(arr[0]),
+          nomiClienti,
+          ordini: arr,
+          n: arr.length,
+        };
+      });
+  }, [ordini]);
+
+  // Inizializzazione: Stesso cliente pre-attivato, stesso indirizzo (clienti diversi) disattivato
+  const [unisci, setUnisci] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    const perCliente = new Map<string, number>();
+    for (const o of ordini) {
+      if (!o.clienteId) continue;
+      perCliente.set(o.clienteId, (perCliente.get(o.clienteId) ?? 0) + 1);
+    }
+    for (const [cid, count] of perCliente.entries()) {
+      if (count > 1) initial.add(`cli:${cid}`);
+    }
+    return initial;
+  });
+
+  // Colli da creare: ordini aggregati per indirizzo (se attivo) o per cliente (se attivo), altrimenti singoli.
   const colli = useMemo<Collo[]>(() => {
+    const gruppiIndirizzo = raggruppaPerIndirizzoCompatibile(ordini, (o) => o);
+    const ordineToIndKey = new Map<string, string>();
+    const perIndirizzo = new Map<string, OrdineDaSpedire[]>();
+    for (const arr of gruppiIndirizzo) {
+      if (arr.length > 1) {
+        const key = chiaveIndirizzoConfronto(arr[0]);
+        if (key) {
+          perIndirizzo.set(key, arr);
+          for (const o of arr) {
+            ordineToIndKey.set(o.ordineId, key);
+          }
+        }
+      }
+    }
+
     const perCliente = new Map<string, OrdineDaSpedire[]>();
     for (const o of ordini) {
-      const a = perCliente.get(o.clienteId) ?? [];
-      a.push(o);
-      perCliente.set(o.clienteId, a);
+      if (o.clienteId) {
+        const cArr = perCliente.get(o.clienteId) ?? [];
+        cArr.push(o);
+        perCliente.set(o.clienteId, cArr);
+      }
     }
+
     const out: Collo[] = [];
     const visti = new Set<string>();
+
     for (const o of ordini) {
       if (visti.has(o.ordineId)) continue;
-      const stesso = perCliente.get(o.clienteId)!;
-      if (o.clienteId && stesso.length > 1 && unisci.has(o.clienteId)) {
-        out.push({ key: `cli:${o.clienteId}`, clienteId: o.clienteId, ordini: stesso, unito: true });
-        stesso.forEach((x) => visti.add(x.ordineId));
-      } else {
-        out.push({ key: `ord:${o.ordineId}`, clienteId: o.clienteId, ordini: [o], unito: false });
-        visti.add(o.ordineId);
+
+      const indKey = ordineToIndKey.get(o.ordineId);
+      const stessoIndirizzo = indKey ? perIndirizzo.get(indKey) : undefined;
+      const unisciInd = !!(
+        indKey &&
+        stessoIndirizzo &&
+        stessoIndirizzo.length > 1 &&
+        unisci.has(`ind:${indKey}`)
+      );
+
+      if (unisciInd && stessoIndirizzo) {
+        out.push({
+          key: `ind:${indKey}`,
+          clienteId: o.clienteId,
+          clienteNome: o.clienteNome || "(cliente)",
+          ordini: stessoIndirizzo,
+          unito: true,
+          unitoPer: "indirizzo",
+        });
+        stessoIndirizzo.forEach((x) => visti.add(x.ordineId));
+        continue;
       }
+
+      const stessoCliente = o.clienteId ? perCliente.get(o.clienteId) : undefined;
+      const unisciCli = !!(
+        o.clienteId &&
+        stessoCliente &&
+        stessoCliente.length > 1 &&
+        unisci.has(`cli:${o.clienteId}`)
+      );
+
+      if (unisciCli && stessoCliente) {
+        out.push({
+          key: `cli:${o.clienteId}`,
+          clienteId: o.clienteId,
+          clienteNome: o.clienteNome || "(cliente)",
+          ordini: stessoCliente,
+          unito: true,
+          unitoPer: "cliente",
+        });
+        stessoCliente.forEach((x) => visti.add(x.ordineId));
+        continue;
+      }
+
+      out.push({
+        key: `ord:${o.ordineId}`,
+        clienteId: o.clienteId,
+        clienteNome: o.clienteNome || "(cliente)",
+        ordini: [o],
+        unito: false,
+      });
+      visti.add(o.ordineId);
     }
     return out;
   }, [ordini, unisci]);
@@ -347,6 +467,19 @@ function Form({
         ? collo.ordini.flatMap((o) => o.righe).filter((r) => righeCheck[r.rigaId]).length
         : ps.incluse;
       const importoCents = collo ? calcolaImportoSpedizione(collo.ordini, righeCheck) : 0;
+      let nuovoImporto = ps.importo;
+      if (ps.importoAuto) {
+        if (ps.mezzo !== "prepagato" && collo) {
+          const codCents = collo.ordini.reduce((tot, o) => {
+            if (o.codImporto && o.codImporto > 0) return tot + o.codImporto;
+            if (o.residuo && o.residuo > 0) return tot + o.residuo;
+            return tot + calcolaImportoSpedizione([o], righeCheck);
+          }, 0);
+          nuovoImporto = codCents > 0 ? codCents / 100 : "";
+        } else {
+          nuovoImporto = importoCents > 0 ? importoCents / 100 : "";
+        }
+      }
       return {
         ...s,
         [key]: {
@@ -354,7 +487,7 @@ function Form({
           incluse: Number(inclusi) || 0,
           righeCheck,
           colli: ps.colliAuto ? colliDistintaAuto(profiloSelezionato, Number(inclusi) || 0) : ps.colli,
-          importo: ps.importoAuto ? (importoCents > 0 ? importoCents / 100 : "") : ps.importo,
+          importo: nuovoImporto,
         },
       };
     }), [colliPerChiave, profiloSelezionato]);
@@ -365,11 +498,11 @@ function Form({
       [key]: { ...s[key], numeri: { ...s[key].numeri, [rigaId]: v } },
     })), []);
 
-  const setUnione = (clienteId: string, v: boolean) =>
+  const setUnione = (chiave: string, v: boolean) =>
     setUnisci((prev) => {
       const n = new Set(prev);
-      if (v) n.add(clienteId);
-      else n.delete(clienteId);
+      if (v) n.add(chiave);
+      else n.delete(chiave);
       return n;
     });
 
@@ -400,7 +533,13 @@ function Form({
     const lavori = colli
       .map((c) => {
         const ps = stato[c.key];
-        const numeri = c.ordini
+        const primarioId = ps?.primarioClienteId || c.ordini[0]?.clienteId;
+        const ordiniOrdinati = [...c.ordini].sort((a, b) => {
+          if (a.clienteId === primarioId) return -1;
+          if (b.clienteId === primarioId) return 1;
+          return 0;
+        });
+        const numeri = ordiniOrdinati
           .flatMap((o) => o.righe)
           .filter((r) => ps?.righeCheck[r.rigaId])
           .map((r) => ({ rigaId: r.rigaId, numero: (ps?.numeri[r.rigaId] ?? "").trim() }));
@@ -420,7 +559,7 @@ function Form({
     setSalvando(true);
     try {
       const shipments = lavori.map(({ ps, numeri, haDatiVaccino }) => {
-        const colliN = !haDatiVaccino || profiloSelezionato === "carrai"
+        const colliN = !haDatiVaccino || profiloSelezionato === "corriere_a"
           ? 1
           : ps!.colliAuto
             ? colliDistintaAuto(profiloSelezionato, numeri.length)
@@ -544,25 +683,57 @@ function Form({
             onChange={(e) => setPreavvisoTutti(e.currentTarget.checked)}
           />
 
-      {clientiDuplicati.length > 0 && (
+      {(clientiDuplicati.length > 0 || indirizziDuplicati.length > 0) && (
         <Box
           p="sm"
-          style={{ border: "1px solid var(--mantine-color-default-border)", borderRadius: 8, background: "var(--mantine-color-default-hover)" }}
+          style={{
+            border: "1px solid var(--mantine-color-default-border)",
+            borderRadius: 8,
+            background: "var(--mantine-color-default-hover)",
+          }}
         >
           <Text size="sm" fw={600}>
-            Stesso cliente, più ordini
+            Suggerimenti di unione
           </Text>
           <Text size="xs" c="dimmed" mb={8}>
-            Puoi riunirli in un’unica spedizione, mantenendo tutte le righe e sommando il contrassegno.
+            Puoi riunire ordini dello stesso cliente o con lo stesso indirizzo in un’unica spedizione, mantenendo tutte le righe e sommando il contrassegno.
           </Text>
-          <Stack gap={6}>
+          <Stack gap={10}>
             {clientiDuplicati.map((d) => (
               <Switch
-                key={d.clienteId}
+                key={`cli:${d.clienteId}`}
                 size="sm"
-                label={`Unisci «${d.nome}» — ${d.n} ordini in una spedizione`}
-                checked={unisci.has(d.clienteId)}
-                onChange={(e) => setUnione(d.clienteId, e.currentTarget.checked)}
+                label={
+                  <Group gap={6} wrap="nowrap">
+                    <Badge size="xs" variant="light" color="teal" style={{ flexShrink: 0 }}>
+                      Stesso cliente
+                    </Badge>
+                    <Text size="sm" truncate>
+                      Unisci «{d.nome}» — {d.n} ordini in un’unica spedizione
+                    </Text>
+                  </Group>
+                }
+                checked={unisci.has(`cli:${d.clienteId}`)}
+                onChange={(e) => setUnione(`cli:${d.clienteId}`, e.currentTarget.checked)}
+              />
+            ))}
+            {indirizziDuplicati.map((d) => (
+              <Switch
+                key={`ind:${d.chiaveIndirizzo}`}
+                size="sm"
+                label={
+                  <Group gap={6} wrap="nowrap">
+                    <Badge size="xs" variant="light" color="orange" style={{ flexShrink: 0 }}>
+                      Stesso indirizzo
+                    </Badge>
+                    <Text size="sm" truncate>
+                      Unisci per «{d.indirizzoFormattato}» — {d.n} ordini in un’unica spedizione
+                    </Text>
+                  </Group>
+                }
+                description={`Clienti diversi: ${d.nomiClienti.join(", ")}`}
+                checked={unisci.has(`ind:${d.chiaveIndirizzo}`)}
+                onChange={(e) => setUnione(`ind:${d.chiaveIndirizzo}`, e.currentTarget.checked)}
               />
             ))}
           </Stack>
@@ -631,18 +802,25 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
   onApriOrdine?: (ordineId: string) => void;
 }) {
   const primo = collo.ordini[0];
-  const indirizzoMancante = !primo.indirizzo || !primo.cap || !primo.citta;
+  const clientiDistinti = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const o of collo.ordini) {
+      const id = o.clienteId || o.clienteNome || "sconosciuto";
+      if (!map.has(id)) {
+        map.set(id, o.clienteNome || "(cliente)");
+      }
+    }
+    return [...map.entries()].map(([id, nome]) => ({ value: id, label: nome }));
+  }, [collo.ordini]);
+
+  const primarioId = perCollo.primarioClienteId || primo.clienteId || "";
+  const ordinePrimario =
+    collo.ordini.find((o) => (o.clienteId || o.clienteNome) === primarioId) || primo;
+
+  const indirizzoMancante = !ordinePrimario.indirizzo || !ordinePrimario.cap || !ordinePrimario.citta;
   const residuoTot = collo.ordini.reduce((somma, ordine) => somma + ordine.residuo, 0);
   const haDatiVaccino = collo.ordini.some(ordineHaDatiVaccino);
-  // Indirizzo su una riga, via inclusa: «Via Roma 12 · 81034 Mondragone (CE)».
-  const indirizzo =
-    [
-      primo.indirizzo,
-      [primo.cap, primo.citta].filter(Boolean).join(" ") + (primo.prov ? ` (${primo.prov})` : ""),
-    ]
-      .map((parte) => parte.trim())
-      .filter(Boolean)
-      .join(" · ") || "Indirizzo mancante";
+  const indirizzo = formattaIndirizzoSintetico(ordinePrimario);
 
   const rigaCheck = (riga: OrdineDaSpedire["righe"][number]) => {
     const incluso = !!perCollo.righeCheck[riga.rigaId];
@@ -706,9 +884,28 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
               {primo.numero || "—"}
             </Badge>
           )}
-          <Text fw={600} size="sm" truncate>
-            {primo.clienteNome || "(cliente)"}
-          </Text>
+          {clientiDistinti.length > 1 ? (
+            <Group gap={4} wrap="nowrap" style={{ minWidth: 0 }}>
+              <Tooltip label="Scegli quale cliente usare come intestatario principale della spedizione" withinPortal zIndex={1500}>
+                <Badge size="xs" variant="outline" color="orange" style={{ flexShrink: 0 }}>
+                  Clienti diversi
+                </Badge>
+              </Tooltip>
+              <Select
+                size="xs"
+                w={190}
+                data={clientiDistinti}
+                value={primarioId}
+                onChange={(valore) => onPatch(collo.key, { primarioClienteId: valore || undefined })}
+                allowDeselect={false}
+                comboboxProps={{ withinPortal: true, zIndex: 1450 }}
+              />
+            </Group>
+          ) : (
+            <Text fw={600} size="sm" truncate>
+              {ordinePrimario.clienteNome || "(cliente)"}
+            </Text>
+          )}
         </Group>
         <Group gap={6} wrap="nowrap" align="center" style={{ flexShrink: 0 }}>
           {haDatiVaccino && (
@@ -719,8 +916,8 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
                 w={70}
                 min={1}
                 leftSection={<Text size="xs" c="dimmed">×</Text>}
-                value={profiloCorriere === "carrai" ? 1 : perCollo.colli}
-                disabled={profiloCorriere === "carrai"}
+                value={profiloCorriere === "corriere_a" ? 1 : perCollo.colli}
+                disabled={profiloCorriere === "corriere_a"}
                 onChange={(valore) =>
                   onPatch(collo.key, {
                     colli: valore === "" ? "" : Number(valore),
@@ -801,7 +998,7 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
           <IconMapPin size={13} style={{ flexShrink: 0 }} />
           <Text size="xs" truncate>
             {indirizzo}
-            {primo.telefono ? ` · ☎ ${primo.telefono}` : ""}
+            {ordinePrimario.telefono ? ` · ☎ ${ordinePrimario.telefono}` : ""}
           </Text>
         </Group>
         {onApriOrdine && (
@@ -812,7 +1009,7 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
             type="button"
             size="xs"
             style={{ flexShrink: 0 }}
-            onClick={() => onApriOrdine(primo.ordineId)}
+            onClick={() => onApriOrdine(ordinePrimario.ordineId)}
           >
             <Group gap={3} wrap="nowrap">
               <IconExternalLink size={12} />
@@ -834,9 +1031,26 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
           w={200}
           data={OPZIONI_PAGAMENTO_CONSEGNA}
           value={perCollo.mezzo}
-          onChange={(valore) =>
-            onPatch(collo.key, { mezzo: (valore as Mezzo) || "prepagato" })
-          }
+          onChange={(valore) => {
+            const nuovoMezzo = (valore as Mezzo) || "prepagato";
+            if (
+              nuovoMezzo !== "prepagato" &&
+              (perCollo.importo === "" || perCollo.importo === 0 || perCollo.importoAuto)
+            ) {
+              const codCents = collo.ordini.reduce((tot, o) => {
+                if (o.codImporto && o.codImporto > 0) return tot + o.codImporto;
+                if (o.residuo && o.residuo > 0) return tot + o.residuo;
+                return tot + calcolaImportoSpedizione([o], perCollo.righeCheck);
+              }, 0);
+              onPatch(collo.key, {
+                mezzo: nuovoMezzo,
+                importo: codCents > 0 ? codCents / 100 : "",
+                importoAuto: true,
+              });
+            } else {
+              onPatch(collo.key, { mezzo: nuovoMezzo });
+            }
+          }}
           allowDeselect={false}
           comboboxProps={{ withinPortal: true, zIndex: 1400 }}
         />
@@ -872,6 +1086,7 @@ const ColloSpedizioneCard = memo(function ColloSpedizioneCard({
               <Group gap={4} wrap="nowrap" mb={2}>
                 <Text size="xs" c="dimmed" fw={500} truncate>
                   Ordine {ordine.numero || "—"}
+                  {clientiDistinti.length > 1 && ordine.clienteNome ? ` · ${ordine.clienteNome}` : ""}
                 </Text>
                 {onApriOrdine && (
                   <Tooltip label="Apri ordine" withinPortal zIndex={1500}>

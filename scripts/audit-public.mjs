@@ -27,7 +27,6 @@ const exactForbidden = privateProfile && fs.existsSync(privateProfile)
   ? [...new Set(flatten(JSON.parse(fs.readFileSync(privateProfile, "utf8"))))]
   : [];
 const patterns = [
-  ["indirizzo e-mail letterale", /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i],
   ["IBAN italiano", /\bIT\s*\d{2}\s*[A-Z]\s*(?:\d\s*){10}(?:[A-Z0-9]\s*){12}\b/i],
   ["token updater", new RegExp(["VITE", "UPDATER", "TOKEN"].join("_"), "i")],
   ["repository privato", new RegExp(["Luke3012", "PharmaTek"].join("/"), "i")],
@@ -42,6 +41,10 @@ const patterns = [
   ].join("|"), "i")],
 ];
 
+const laboratorioDemoEmail = ["laboratorio", "example.invalid"].join("@");
+const allowedDemoEmails = new Set(["demo@example.invalid", laboratorioDemoEmail]);
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
 // Numeri fittizi usati nei test automatici. Ogni altro telefono italiano
 // letterale resta un rilievo, mentre i recapiti reali noti sono controllati
 // anche tramite operational-profile.local.json.
@@ -54,6 +57,12 @@ const allowedDemoPhones = new Set([
   "3302847548",
   "3331234567",
   "0811234567",
+  "3280000000",
+  "3280000001",
+  "3280000002",
+  "3381112233",
+  "3385554433",
+  "3399998877",
 ]);
 const italianPhone = /(?:\+39|0039)[\s.-]*\d{3}[\s.-]*\d{3,4}[\s.-]*\d{3,4}|\b3\d{2}[\s.-]+\d{3}[\s.-]+\d{3,4}\b/gi;
 
@@ -77,6 +86,12 @@ for (const file of walk(root)) {
   const text = buffer.toString("utf8");
   for (const [label, pattern] of patterns) {
     if (pattern.test(text)) findings.push(`${relative}: ${label}`);
+  }
+  for (const match of text.matchAll(emailPattern)) {
+    if (!allowedDemoEmails.has(match[0].toLowerCase())) {
+      findings.push(`${relative}: indirizzo e-mail letterale`);
+      break;
+    }
   }
   for (const match of text.matchAll(italianPhone)) {
     if (!allowedDemoPhones.has(normalizeItalianPhone(match[0]))) {

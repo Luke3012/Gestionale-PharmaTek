@@ -23,7 +23,7 @@ import { apriFinestraCentroComunicazioni } from "../../shell/apriPannelli";
 export interface ComunicazioneTarget {
   /** Deduplica la consegna locale + Tauri della stessa apertura. */
   richiestaId?: string;
-  destinatarioEntita: "cliente" | "medico";
+  destinatarioEntita: "cliente" | "medico" | "laboratorio_laboratorio";
   destinatarioId: string;
   destinatarioNome: string;
   email?: string;
@@ -41,6 +41,12 @@ export interface ComunicazioneTarget {
   allegatiPerCanale?: Partial<
     Record<CanaleComunicazione, AllegatoComunicazioneInput[]>
   >;
+  /** Limita il compositore ai canali ammessi dal flusso chiamante. */
+  canaliConsentiti?: CanaleComunicazione[];
+  /** Gli allegati preparati vanno rilasciati quando il compositore termina. */
+  rilasciaAllegatiAllaChiusura?: boolean;
+  /** Elimina subito dalla cache locale gli allegati rilasciati e non più referenziati. */
+  eliminaAllegatiNonUsatiAllaChiusura?: boolean;
   variabili?: Record<string, string>;
 }
 
@@ -133,11 +139,23 @@ export interface AperturaCentroComunicazioni {
   richiestaId?: string;
 }
 
-type RiferimentoPagamento = {
+export type RiferimentoPagamento = {
+  id?: string;
+  tipo?: string;
+  importo?: number;
+  scadenza?: string;
+  saldato?: boolean;
   contoId?: string;
   contoNome?: string;
   contoTipo?: string;
+  ordineId?: string;
+  ordineNumero?: string;
 };
+
+export interface OpzioniDatiPagamento {
+  tuttiPagamenti?: RiferimentoPagamento[];
+  includiRate?: boolean;
+}
 
 export interface RiepilogoSollecitoPagamento {
   pagamentiScaduti: PagamentoVista[];
@@ -160,6 +178,7 @@ export function riepilogoSollecitoPagamenti(
   selezionati: PagamentoVista[],
   tutti: PagamentoVista[],
   oggi = oggiIso(),
+  conti: RecordDto[] = [],
 ): RiepilogoSollecitoPagamento {
   const ordini = new Set(selezionati.map((item) => item.ordineId));
   const unici = new Map<string, PagamentoVista>();
@@ -199,7 +218,12 @@ export function riepilogoSollecitoPagamenti(
   const numeriOrdine = [
     ...new Set(pagamentiAperti.map((item) => item.ordineNumero).filter(Boolean)),
   ];
-  const mostraOrdine = numeriOrdine.length > 1;
+
+  const infosAperti = pagamentiAperti.map((item) =>
+    infoContoPagamento(item, conti),
+  );
+  const chiaviAperti = new Set(infosAperti.map((info) => info.chiave));
+  const contiMisti = chiaviAperti.size > 1;
 
   const posizioneRata = new Map<string, { indice: number; totale: number }>();
   for (const ordineId of ordini) {
@@ -231,8 +255,23 @@ export function riepilogoSollecitoPagamenti(
         ? "scaduta il"
         : "scaduto il"
       : "con scadenza";
-    const ordine = mostraOrdine ? `Ordine ${item.ordineNumero} · ` : "";
-    return `- ${ordine}${nome} ${statoData} ${dataPagamentoIt(item.scadenza)}: € ${centsToEurStr(item.importo)}`;
+    const importoStr = `€ ${centsToEurStr(item.importo)}`;
+
+    let extraMetodo = "";
+    if (contiMisti) {
+      const info = infoContoPagamento(item, conti);
+      if (info.chiave === "contrassegno") {
+        extraMetodo = " in contrassegno al corriere alla consegna";
+      } else if (info.chiave === "assegno") {
+        extraMetodo = " tramite assegno intestato a PharmaTek";
+      } else if (info.chiave.startsWith("iban:")) {
+        extraMetodo = " tramite bonifico bancario";
+      } else if (info.dettaglioSuRiga) {
+        extraMetodo = ` ${info.dettaglioSuRiga}`;
+      }
+    }
+
+    return `- ${nome} ${statoData} ${dataPagamentoIt(item.scadenza)}: ${importoStr}${extraMetodo}`;
   };
 
   const blocchi: string[] = [];
@@ -262,6 +301,92 @@ export function riepilogoSollecitoPagamenti(
   };
 }
 
+function infoContoPagamento(
+  pagamento: RiferimentoPagamento,
+  conti: RecordDto[],
+) {
+  const conto = conti.find((record) => record.id === pagamento.contoId);
+  const tipo = (
+    String(conto?.data.tipo ?? "") || pagamento.contoTipo || ""
+  ).toLowerCase();
+  const nome =
+    String(conto?.data.nome ?? "").trim() || pagamento.contoNome?.trim() || "";
+  const contoIban = String(conto?.data.iban ?? "").trim();
+
+  if (tipo === "contrassegno") {
+    return {
+      chiave: "contrassegno",
+      modalita: "contrassegno",
+      bloccoCoordinate: "Pagamento in contrassegno al corriere.",
+      dettaglioSuRiga: "in contrassegno al corriere alla consegna",
+      iban: "",
+    };
+  }
+  if (tipo === "assegno") {
+    return {
+      chiave: "assegno",
+      modalita: "assegno",
+      bloccoCoordinate:
+        "Pagamento tramite assegno intestato a PharmaTek",
+      dettaglioSuRiga:
+        "tramite assegno intestato a PharmaTek",
+      iban: "",
+    };
+  }
+  if (contoIban) {
+    const ibanNormalizzato = contoIban.replace(/\s+/g, "").toUpperCase();
+    const intestatario =
+      ibanNormalizzato.slice(5, 10) === "07601"
+        ? "G.M. PHARMATEK S.R.L.S."
+        : "PharmaTek";
+    return {
+      chiave: `iban:${ibanNormalizzato}`,
+      modalita: "bonifico bancario",
+      bloccoCoordinate: `Bonifico bancario\nIntestatario: ${intestatario}\nIBAN: ${contoIban}.`,
+      dettaglioSuRiga: `tramite bonifico bancario su IBAN: ${contoIban} (Intestatario: ${intestatario})`,
+      iban: contoIban,
+    };
+  }
+  if (nome) {
+    return {
+      chiave: `nome:${nome.toLowerCase()}`,
+      modalita: nome,
+      bloccoCoordinate: `Pagamento su ${nome} secondo gli accordi.`,
+      dettaglioSuRiga: `su conto ${nome}`,
+      iban: "",
+    };
+  }
+  return {
+    chiave: "fallback",
+    modalita: "come concordato",
+    bloccoCoordinate: "Pagamento secondo gli accordi.",
+    dettaglioSuRiga: "",
+    iban: "",
+  };
+}
+
+function bloccoCoordinateConRiferimento(
+  bloccoBase: string,
+  riferimenti: string[],
+): string {
+  if (!riferimenti.length) return bloccoBase;
+  const rifStr =
+    riferimenti.length === 1
+      ? riferimenti[0]
+      : `${riferimenti.slice(0, -1).join(", ")} e ${riferimenti[riferimenti.length - 1]}`;
+
+  if (bloccoBase.startsWith("Bonifico bancario")) {
+    return bloccoBase.replace(
+      /^Bonifico bancario\s*/,
+      `Bonifico bancario (per ${rifStr}):\n`,
+    );
+  }
+  if (bloccoBase.startsWith("Pagamento tramite assegno")) {
+    return `Pagamento tramite assegno (per ${rifStr}) intestato a PharmaTek`;
+  }
+  return `Per ${rifStr}:\n${bloccoBase}`;
+}
+
 /**
  * Compone le variabili di pagamento dai conti correnti: evita IBAN fissi nei
  * modelli e distingue banca, contrassegno e assegno anche nelle rate miste.
@@ -270,44 +395,171 @@ export function datiPagamentoComunicazione(
   pagamenti: RiferimentoPagamento[],
   conti: RecordDto[],
   fallback = "Pagamento secondo gli accordi.",
+  opzioni: OpzioniDatiPagamento = {},
 ) {
-  const righe = new Set<string>();
+  const tutti = opzioni.tuttiPagamenti ?? pagamenti;
+  const tutteLeRate = tutti
+    .filter((p) => p.tipo === "rata")
+    .sort((a, b) => {
+      if (a.scadenza && b.scadenza) {
+        return (
+          a.scadenza.localeCompare(b.scadenza) ||
+          (a.id || "").localeCompare(b.id || "")
+        );
+      }
+      return 0;
+    });
+
+  const posizioneRata = new Map<string | RiferimentoPagamento, number>();
+  tutteLeRate.forEach((r, idx) => {
+    if (r.id) posizioneRata.set(r.id, idx + 1);
+    posizioneRata.set(r, idx + 1);
+  });
+
+  const aperti = [...pagamenti]
+    .filter((p) => !p.saldato)
+    .sort((a, b) => {
+      const posA =
+        (a.id ? posizioneRata.get(a.id) : undefined) ??
+        posizioneRata.get(a) ??
+        999;
+      const posB =
+        (b.id ? posizioneRata.get(b.id) : undefined) ??
+        posizioneRata.get(b) ??
+        999;
+      return posA - posB;
+    });
+
+  if (aperti.length === 0) {
+    return {
+      istruzioni_pagamento: fallback,
+      modalita_pagamento: "come concordato",
+      iban: "",
+    };
+  }
+
   const modalita = new Set<string>();
   const iban = new Set<string>();
-  for (const pagamento of pagamenti) {
-    const conto = conti.find((record) => record.id === pagamento.contoId);
-    const nome =
-      pagamento.contoNome?.trim() || String(conto?.data.nome ?? "").trim();
-    const tipo = (
-      pagamento.contoTipo || String(conto?.data.tipo ?? "")
-    ).toLowerCase();
-    const contoIban = String(conto?.data.iban ?? "").trim();
-    if (tipo === "contrassegno") {
-      modalita.add("contrassegno");
-      righe.add("Pagamento in contrassegno al corriere.");
-    } else if (tipo === "assegno") {
-      modalita.add("assegno");
-      righe.add(
-        "Pagamento tramite assegno intestato a PharmaTek",
-      );
-    } else if (contoIban) {
-      const ibanNormalizzato = contoIban.replace(/\s+/g, "").toUpperCase();
-      const intestatario =
-        ibanNormalizzato.slice(5, 10) === "07601"
-          ? "G.M. PHARMATEK S.R.L.S."
-          : "PharmaTek";
-      modalita.add("bonifico bancario");
-      iban.add(contoIban);
-      righe.add(
-        `Bonifico bancario\nIntestatario: ${intestatario}\nIBAN: ${contoIban}.`,
-      );
-    } else if (nome) {
-      modalita.add(nome);
-      righe.add(`Pagamento su ${nome} secondo gli accordi.`);
-    }
+  for (const p of aperti) {
+    const info = infoContoPagamento(p, conti);
+    if (info.modalita) modalita.add(info.modalita);
+    if (info.iban) iban.add(info.iban);
   }
+
+  const totaleRatePreviste = tutteLeRate.length;
+  const haRate =
+    (opzioni.includiRate ?? true) &&
+    (totaleRatePreviste > 1 || aperti.length > 1) &&
+    aperti.some((p) => p.importo != null || p.tipo === "rata");
+
+  let istruzioni: string;
+
+  if (haRate) {
+    const infos = aperti.map((p) => infoContoPagamento(p, conti));
+    const chiavi = new Set(infos.map((info) => info.chiave));
+    const contoCondiviso = chiavi.size <= 1;
+
+    const righeRate = aperti.map((item, idx) => {
+      let nome = "Pagamento";
+      if (item.tipo === "rata") {
+        const num =
+          (item.id ? posizioneRata.get(item.id) : undefined) ??
+          posizioneRata.get(item) ??
+          (totaleRatePreviste > 1 ? undefined : idx + 1);
+        nome = num ? `Rata ${num}` : "Rata";
+      } else if (item.tipo === "acconto") {
+        nome = "Acconto";
+      } else if (item.tipo === "saldo") {
+        nome = "Saldo";
+      }
+
+      const importoStr =
+        item.importo != null ? `: € ${centsToEurStr(item.importo)}` : "";
+      const scadenzaStr = item.scadenza
+        ? ` entro il ${formattaDataIsoLocale(item.scadenza)}`
+        : "";
+
+      if (contoCondiviso) {
+        return `- ${nome}${importoStr}${scadenzaStr}`;
+      }
+      const info = infos[idx];
+      const extraMetodo = info.dettaglioSuRiga ? ` ${info.dettaglioSuRiga}` : "";
+      return `- ${nome}${importoStr}${scadenzaStr}${extraMetodo}`;
+    });
+
+    const intestazione = "Rate previste:";
+    if (contoCondiviso) {
+      const coordinate = infos[0]?.bloccoCoordinate || fallback;
+      istruzioni = `${intestazione}\n${righeRate.join("\n")}\n\n${coordinate}`;
+    } else {
+      istruzioni = `${intestazione}\n${righeRate.join("\n")}`;
+    }
+  } else if (opzioni.includiRate === false) {
+    const infos = aperti.map((p) => ({
+      pagamento: p,
+      info: infoContoPagamento(p, conti),
+    }));
+    const chiavi = new Set(infos.map((item) => item.info.chiave));
+    const contoCondiviso = chiavi.size <= 1;
+
+    if (contoCondiviso) {
+      const righe = new Set<string>();
+      for (const { info } of infos) {
+        righe.add(info.bloccoCoordinate);
+      }
+      istruzioni = [...righe].join("\n") || fallback;
+    } else {
+      const perChiave = new Map<
+        string,
+        { blocco: string; riferimenti: string[] }
+      >();
+      for (const { pagamento, info } of infos) {
+        if (info.chiave === "contrassegno") {
+          continue;
+        }
+        let etichetta = "Pagamento";
+        if (pagamento.tipo === "rata") {
+          const num =
+            (pagamento.id ? posizioneRata.get(pagamento.id) : undefined) ??
+            posizioneRata.get(pagamento);
+          etichetta = num ? `Rata ${num}` : "Rata";
+        } else if (pagamento.tipo === "acconto") {
+          etichetta = "Acconto";
+        } else if (pagamento.tipo === "saldo") {
+          etichetta = "Saldo";
+        }
+
+        const gruppo = perChiave.get(info.chiave) ?? {
+          blocco: info.bloccoCoordinate,
+          riferimenti: [],
+        };
+        if (!gruppo.riferimenti.includes(etichetta)) {
+          gruppo.riferimenti.push(etichetta);
+        }
+        perChiave.set(info.chiave, gruppo);
+      }
+
+      if (perChiave.size === 0) {
+        istruzioni = infos[0]?.info.bloccoCoordinate || fallback;
+      } else {
+        istruzioni = [...perChiave.values()]
+          .map(({ blocco, riferimenti }) =>
+            bloccoCoordinateConRiferimento(blocco, riferimenti),
+          )
+          .join("\n\n");
+      }
+    }
+  } else {
+    const righe = new Set<string>();
+    for (const p of aperti) {
+      const info = infoContoPagamento(p, conti);
+      righe.add(info.bloccoCoordinate);
+    }
+    istruzioni = [...righe].join("\n") || fallback;
+  }
+
   return {
-    istruzioni_pagamento: [...righe].join("\n") || fallback,
+    istruzioni_pagamento: istruzioni,
     modalita_pagamento: [...modalita].join(", ") || "come concordato",
     iban: [...iban].join(", "),
   };

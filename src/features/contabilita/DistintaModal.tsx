@@ -360,6 +360,7 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
             height={modalTableHeight(visibili.length, { min: 60, max: 620, viewportOffset: 430, maxVisibleRows: 10 })}
             onRowClick={({ record }) => toggle(record.id, !spuntati.has(record.id))}
             rowStyle={() => ({ cursor: "pointer" })}
+            disattivaChunking
             emptyState={
               caricamento ? (
                 <Box />

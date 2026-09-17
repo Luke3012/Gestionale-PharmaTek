@@ -292,6 +292,7 @@ function Corpo({
               onRowClick={({ record }) => toggleRiga(record.ordineId)}
               rowStyle={(o) => ({ cursor: "pointer", opacity: escluse.has(o.ordineId) ? 0.45 : 1 })}
               emptyState={<Box />}
+              disattivaChunking
             />
           )}
         </Stack>

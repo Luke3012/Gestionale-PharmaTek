@@ -48,23 +48,28 @@ Le "fette" usate durante lo sviluppo coprono i task storici lettera Aâ€“G:
   assorbimento di qualunque `*.ndjson` (incluse "conflicted copy").
 - **`snapshot.rs`**: dump/restore JSON dello stato in `snapshots/<device>-<seq>.json` (atomico,
   per-dispositivo). Lo snapshot include i **segnalibri di lettura** (offset per log), watermark
-  HLC per device e tombstone minime dei purged â†’ il bootstrap ripiega **solo la coda** dei log,
+  HLC per device e tombstone minime dei purged → il bootstrap ripiega **solo la coda** dei log,
   non tutta la storia. **Generato a ogni backup**; retention `prune` (ultimo 1 per dispositivo).
-  Dettagli in **`COMPATTAZIONE.md`**.
+  `SnapshotStore::latest()` raggruppa preliminarmente per dispositivo e carica solo lo snapshot
+  con sequenza massima per device prima della fusione. Dettagli in **`COMPATTAZIONE.md`**.
 - **`mod.rs`**: `Engine`. `emit` (durevole + applica subito), `ingest` (piega i nuovi eventi da
-  tutti i file), `watch` (file-watch `notify` con **`Weak<Engine>`**), `snapshot`, `wipe_projection`,
+  tutti i file a chunk da 1.000 via `apply_batch` e notifica il progresso con `progress_reporter`),
+  `watch` (file-watch `notify` con **`Weak<Engine>`**), `snapshot`, `wipe_projection`,
   `set_user`, `shutdown`.
 
-### `projection/mod.rs` â€” read model SQLite (in `%APPDATA%`, fuori da OneDrive)
-- **Schema GENERICO per entitÃ ** (non tabelle tipizzate): `records(entity,id,data JSON,deleted,
+### `projection/mod.rs` — read model SQLite (in `%APPDATA%`, fuori da OneDrive)
+- **Schema GENERICO per entità** (non tabelle tipizzate): `records(entity,id,data JSON,deleted,
   created_hlc,updated_hlc)`, `field_clocks(entity,id,field,hlc)`, `applied_events`, `watermarks`,
   `purged`, `log_offsets`.
 - **Fold** con **merge per-campo Last-Write-Wins** sull'HLC (confronto fra stringhe). Soft-delete/
   restore via clock `@del`. `created_hlc` = **minimo** HLC fra gli eventi del record (deterministico
   per la numerazione ordini). **Idempotenza** per `event.id` recente e no-op tramite clock/tombstone
   quando la cache `applied_events` viene potata.
+- **Rendimento elevato**: `PRAGMA synchronous = NORMAL;` (sicuro in WAL mode, zero blocchi disco I/O),
+  `apply_batch(&mut self, events: &[Event])` con raggruppamento in singola transazione e riutilizzo
+  degli statement SQL compilati (`prepare_cached`).
 - `PRAGMA busy_timeout=5000`. `wipe()` (svuota tutto, per il reset). `device_activity()` (ultima
-  attivitÃ  per device, derivata da `watermarks`).
+  attività per device, derivata da `watermarks`).
 
 ### `pricing/mod.rs` â€” motore prezzi
 - `risolvi(Contesto, &[RegolaPrezzo]) -> Risolto` con gerarchia **"piÃ¹ specifica vince"**:
@@ -1086,8 +1091,8 @@ vanno provati a mano.
 - Prima superficie approvata implementata in Impostazioni, nascosta integralmente senza premium:
   tre card e modale e-mail guidato, corpo scrollabile con footer fermo, preset avanzati
   modificabili e pulsante primario **Verifica e invia prova**.
-- Destinatario prova predefinito ``; Reply-To proposto
-  `` ma applicato soltanto attivando l'interruttore.
+- Destinatario prova predefinito `demo@example.invalid`; Reply-To proposto
+  `demo@example.invalid` ma applicato soltanto attivando l'interruttore.
 - Quattro modelli base condivisi e versionati, limitati agli eventi operativi presenti:
   preventivo, sollecito preventivo, sollecito pagamento e preavviso spedizione. Ogni modello ha
   un solo corpo per e-mail e WhatsApp; l'oggetto viene usato soltanto per l'e-mail. Si possono
@@ -1165,7 +1170,7 @@ vanno provati a mano.
   motivazione e confidenza e non vengono applicate silenziosamente.
 - Risoluzione prezzi condivisa in batch e possibilità di salvare un alias soltanto dopo una
   scelta esplicita.
-- Pagina Preventivi lazy e premium fra Giornaliero e Produzione, costruita con `Pagina`,
+- Pagina Preventivi lazy disponibile fra Giornaliero e Produzione, costruita con `Pagina`,
   `Tabella`, filtri e menu esistenti. Comprende ricerca, filtri per linea/invio, editor, anteprima,
   stampa, PDF, PNG, invio, sollecito e accesso alla scheda cliente.
 - Renderer A4 vettoriale unico in `rendererDocumenti.ts`: lo stesso albero produce anteprima SVG,
@@ -1173,8 +1178,8 @@ vanno provati a mano.
   silenziosi; il segno di spunta della scheda è vettoriale e non dipende da font Unicode.
 - Scheda cliente separata, precompilata da ordine, anagrafiche, pagamenti e comunicazioni.
   Integrata nei due menu del Giornaliero, nell'editor ordine e nel menu preventivo. Il nuovo ordine
-  mostra **Salva e stampa** solo premium; l'ordine esistente mantiene **Stampa** visibile e apre il
-  paywall se il premium non è attivo.
+  mostra **Salva e stampa** a tutti; apertura, modifica, salvataggio e stampa della scheda cliente
+  sono gratuite.
 - Configurazione condivisa di denominazione, recapiti, validità e condizioni predefinite in
   Impostazioni → E-mail e comunicazioni. Il payload è atomico, revisionato e protetto.
 - Integrazione completa col motore FASE 11: PDF MIME per e-mail, PNG per WhatsApp Windows,
@@ -1183,8 +1188,11 @@ vanno provati a mano.
 - Cache allegati esclusivamente locale con riferimenti `pt-cache://sha256.ext`, verifica di firma,
   hash e dimensione, rimozione dopo lo stato terminale e cleanup TTL. Nessun binario o percorso
   assoluto entra nel log, negli snapshot, nei backup o nella cartella OneDrive.
-- Gate premium applicato a navigazione, azioni e comandi Rust; `preventivo`, `scheda_cliente`,
-  `alias_preventivo` e `configurazione_documenti` sono inaccessibili tramite CRUD generico.
+- Gate premium applicato alle azioni di invio, sollecito e stampa/esportazione del preventivo;
+  `preventivo`, `scheda_cliente`, `alias_preventivo` e `configurazione_documenti` restano
+  inaccessibili tramite CRUD generico. Le letture e il salvataggio condiviso dei preventivi e della
+  scheda cliente sono gratuiti; salvataggio configurazione/alias e salvataggio file del preventivo
+  restano protetti anche nei comandi Rust.
 - Verifica completata con suite frontend e Rust, build di produzione, Clippy `-D warnings` e
   rendering visivo dei due PDF A4 single-page. Gli unici test esclusi richiedono deliberatamente
   un invio reale nell'app WhatsApp autorizzata.
@@ -1218,33 +1226,32 @@ vanno provati a mano.
 
 ---
 
-## FASE 14 — Suggerimenti intelligenti e azionabili (completata, 1 agosto 2026)
+## FASE 14 — Suggerimenti intelligenti e azionabili (completata, 1 agosto 2026; revisionata settembre 2026)
 
-- Nuovo motore derivato `app/suggestions.rs`: produce card raggruppate per rimborsi aperti,
-  distinte da accreditare, provvigioni maturate, lotti pronti, spedizioni da comunicare e
-  possibili duplicati clienti, senza creare una seconda coda operativa.
+- Nuovo motore derivato `app/suggestions.rs`: produce card raggruppate per rimborsi aperti (soglia default 3gg),
+  distinte da accreditare (soglia default 20gg), provvigioni maturate (soglia default 7gg, disattivata di default),
+  lotti pronti (soglia default 3gg), spedizioni da comunicare (soglia default 3gg, finestra 14gg) e
+  preventivi da inviare o sollecitare (soglia default 7gg, disattivata di default, ordini `Nuovo` senza marcatori),
+  senza creare una seconda coda operativa.
 - Ranking deterministico e identificativi firmati sulla fotografia minima delle sorgenti. Il
   completamento fa sparire la card; una modifica sostanziale ne genera una nuova.
 - Lo stato persistente delle fotografie ignorate è `suggerimento_stato`; «Ignora tutte» scrive
   più stati con un solo batch e converge fra PC. Categorie, notifiche e giorni di attesa vivono
   invece esclusivamente nelle preferenze locali del PC e vengono condivisi soltanto fra le sue
   finestre.
-- Riuso diretto di `contrassegni_dto`, `provvigioni_report`, `linee_ordini` e
-  `pianificaDedupClientiAuto`: nessuna replica delle regole contabili, produttive o di
-  deduplicazione.
+- Riuso diretto di `contrassegni_dto`, `provvigioni_report`, `linee_ordini` e `classificaSollecitiPreventivi`: nessuna replica delle regole contabili, produttive o commerciali.
 - `SuggerimentiPanel` nella Dashboard con massimo cinque card compatte, espansione misurata
-  senza scatti, virtualizzazione della coda, «Ignora tutte», impostazioni locali con soglie,
-  deep-link contestuali e animazioni compatibili con **Riduci animazioni**. Il matcher clienti
-  gira una sola volta nell'overlay Premium, in idle, ed è invalidato soltanto da cambiamenti
-  anagrafici.
-- L'intera FASE 14 è protetta dal gate Premium prima di UI, API, report e worker. Gli avvisi di
-  spedizione usano un fingerprint condiviso unico fra elenco, suggerimenti
+  senza scatti, virtualizzazione della coda, «Ignora tutte», pulsante «Controlla ora» (override per visualizzare azioni sotto soglia),
+  impostazioni locali con soglie configurabili (e pulsante «Ripristina predefiniti»), deep-link contestuali (incluso `solleciti_preventivi`) e animazioni compatibili con **Riduci animazioni**.
+- La soglia operativa dei preventivi resta unica in `preferenzeSuggerimenti.giorniAvviso.preventivo`, ma è esposta anche nelle Impostazioni generali tramite `giorniSollecitoPreventivi`: il provider aggiorna e persiste contemporaneamente entrambi i formati per compatibilità con la pagina Preventivi e con le installazioni senza funzioni premium.
+- Dopo il salvataggio riuscito del preventivo in PDF o PNG viene richiesta la conferma per marcare l'invio manuale (`preventivo_marca_inviato_manuale` con canale `"manuale"`). Stampa, Escape, annullamento del dialog o del selettore file non alterano lo stato.
+- L'intera FASE 14 è protetta dal gate Premium prima di UI, API e report. Gli avvisi di
+  spedizione e preventivo usano un fingerprint condiviso unico fra elenchi, suggerimenti
   e comunicazioni. Dopo un invio multiplo riuscito, tutte le spedizioni correlate ricevono il
   proprio marcatore; coda e cronologia continuano a essere locali al PC d'origine.
 - I suggerimenti maturi riusano campanella, finestra notifiche, stato letto/scartato, suono Rust
-  e overlay custom. La cache del motore viene invalidata soltanto dalle entità pertinenti; una
+  e overlay custom. La visualizzazione in Dashboard e le notifiche rispettano le soglie in giorni impostate. Una
   rivalidazione di 60 secondi impedisce pop-up immediati durante salvataggi ancora in corso.
-- Deep-link fino a filtri Contabilità/Produzione e all'ottimizzazione database esistente, senza
-  nuove pagine o modali parallele.
-- Test automatici su fingerprint, ranking, deduplicazione frontend e invio multiplo; verifica
+- Deep-link fino a filtri Contabilità/Produzione e al selettore solleciti Preventivi, senza nuove pagine o modali parallele.
+- Test automatici su fingerprint, ranking, deduplicazione frontend, classificazione preventivi e invio multiplo; verifica
   finale con suite complete, typecheck, build, formattazione e Clippy `-D warnings`.

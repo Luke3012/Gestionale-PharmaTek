@@ -158,6 +158,8 @@ struct RestoreHandled {
     latest_anchor: Option<String>,
 }
 
+pub type ProgressReporter = Arc<dyn Fn(usize, usize, &str) + Send + Sync>;
+
 /// Il motore di sincronizzazione. Va condiviso come `Arc<Engine>` (es. nello stato
 /// Tauri) perché il watcher tiene un riferimento al motore.
 pub struct Engine {
@@ -198,6 +200,7 @@ pub struct Engine {
     /// Quando `true` il motore è in chiusura: `ingest`/`emit` diventano no-op. Serve
     /// a fermare il file-watch durante un reset (niente ri-fold concorrente).
     closed: AtomicBool,
+    progress_reporter: Mutex<Option<ProgressReporter>>,
 }
 
 impl Engine {
@@ -212,9 +215,20 @@ impl Engine {
         device: impl Into<String>,
         user: impl Into<String>,
     ) -> Result<Self> {
-        Self::open_internal(data_dir, sqlite_path, device, user, None)
+        Self::open_internal(data_dir, sqlite_path, device, user, None, None)
     }
 
+    pub fn open_with_reporter(
+        data_dir: impl AsRef<Path>,
+        sqlite_path: impl AsRef<Path>,
+        device: impl Into<String>,
+        user: impl Into<String>,
+        reporter: Option<ProgressReporter>,
+    ) -> Result<Self> {
+        Self::open_internal(data_dir, sqlite_path, device, user, None, reporter)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn open_with_restore_anchor(
         data_dir: impl AsRef<Path>,
         sqlite_path: impl AsRef<Path>,
@@ -222,7 +236,32 @@ impl Engine {
         user: impl Into<String>,
         restore_anchor: PathBuf,
     ) -> Result<Self> {
-        Self::open_internal(data_dir, sqlite_path, device, user, Some(restore_anchor))
+        Self::open_internal(
+            data_dir,
+            sqlite_path,
+            device,
+            user,
+            Some(restore_anchor),
+            None,
+        )
+    }
+
+    pub(crate) fn open_with_restore_anchor_and_reporter(
+        data_dir: impl AsRef<Path>,
+        sqlite_path: impl AsRef<Path>,
+        device: impl Into<String>,
+        user: impl Into<String>,
+        restore_anchor: PathBuf,
+        reporter: Option<ProgressReporter>,
+    ) -> Result<Self> {
+        Self::open_internal(
+            data_dir,
+            sqlite_path,
+            device,
+            user,
+            Some(restore_anchor),
+            reporter,
+        )
     }
 
     fn open_internal(
@@ -231,6 +270,7 @@ impl Engine {
         device: impl Into<String>,
         user: impl Into<String>,
         restore_anchor: Option<PathBuf>,
+        progress_reporter: Option<ProgressReporter>,
     ) -> Result<Self> {
         let restore_ingest_authorized = restore_anchor.is_some();
         let device = device.into();
@@ -314,6 +354,7 @@ impl Engine {
             proj: Mutex::new(proj),
             mutation: Mutex::new(()),
             closed: AtomicBool::new(false),
+            progress_reporter: Mutex::new(progress_reporter),
         };
 
         // Un marker remoto può essere già presente all'apertura mentre OneDrive
@@ -376,6 +417,23 @@ impl Engine {
     /// Imposta l'autore degli eventi successivi (es. dopo l'onboarding).
     pub fn set_user(&self, user: impl Into<String>) {
         *self.user.lock().expect("user poisoned") = user.into();
+    }
+
+    /// Imposta un reporter per notificare l'avanzamento della sincronizzazione.
+    #[allow(dead_code)]
+    pub fn set_progress_reporter(&self, reporter: Option<ProgressReporter>) {
+        *self.progress_reporter.lock().expect("reporter poisoned") = reporter;
+    }
+
+    fn report_progress(&self, current: usize, total: usize, phase: &str) {
+        if let Some(reporter) = self
+            .progress_reporter
+            .lock()
+            .expect("reporter poisoned")
+            .as_ref()
+        {
+            reporter(current, total, phase);
+        }
     }
 
     /// Emette un nuovo evento locale: lo rende durevole nel log e lo applica subito
@@ -474,8 +532,12 @@ impl Engine {
         let _mutation = self.mutation.lock().expect("mutation poisoned");
         let generation = self.generation_barrier()?;
         let mut modified = std::collections::HashSet::new();
-        for path in self.log.ndjson_files()? {
-            // Motore in chiusura (reset in corso): non toccare più la proiezione.
+
+        let ndjson_files = self.log.ndjson_files()?;
+        let mut file_reads = Vec::with_capacity(ndjson_files.len());
+        let mut total_events = 0;
+
+        for path in ndjson_files {
             if self.closed.load(Ordering::Relaxed) {
                 return Ok(modified.into_iter().collect());
             }
@@ -487,20 +549,42 @@ impl Engine {
                 let proj = self.proj.lock().expect("proj poisoned");
                 proj.get_offset(&name)?
             };
-            // File rimpicciolito (quel dispositivo ha compattato il suo log): l'offset
-            // salvato non è più valido → rileggi da capo. Il file è ora piccolo e gli
-            // eventi già applicati vengono deduplicati via `applied`. Vedi COMPATTAZIONE.md.
             if let Ok(meta) = std::fs::metadata(&path) {
                 if from > meta.len() {
                     from = 0;
                 }
             }
             let rr = LogStore::read_from(&path, from)?;
-            let first_in_file = if from == 0 {
-                rr.events.first().cloned()
+            total_events += rr.events.len();
+            file_reads.push((path, name, rr));
+        }
+
+        if total_events > 0 {
+            self.report_progress(0, total_events, "Avvio sincronizzazione eventi...");
+        }
+
+        let mut processed_events = 0;
+        const BATCH_SIZE: usize = 1000;
+
+        for (path, name, rr) in file_reads {
+            if self.closed.load(Ordering::Relaxed) {
+                return Ok(modified.into_iter().collect());
+            }
+
+            let first_in_file = if rr.events.is_empty() {
+                None
             } else {
-                LogStore::read_first_event(&path)?
+                let from = {
+                    let proj = self.proj.lock().expect("proj poisoned");
+                    proj.get_offset(&name)?
+                };
+                if from == 0 {
+                    rr.events.first().cloned()
+                } else {
+                    LogStore::read_first_event(&path)?
+                }
             };
+
             let first_effective = match generation.as_ref() {
                 Some(barrier) => rr
                     .events
@@ -530,35 +614,62 @@ impl Engine {
                 self.check_gap(ev_first, generation.as_ref())?;
             }
 
-            for ev in &rr.events {
-                if generation
-                    .as_ref()
-                    .is_some_and(|barrier| barrier.skips(&ev.ts))
-                {
-                    continue;
-                }
-                // Allinea l'HLC locale alla storia osservata (anche per eventi già
-                // applicati: garantisce la monotonia dopo un bootstrap da snapshot).
-                self.clock.lock().expect("clock poisoned").bump_to(&ev.ts);
-                let mut proj = self.proj.lock().expect("proj poisoned");
-                if proj.is_device_retired(&ev.ts.device)? {
-                    continue;
-                }
-                // Controllo del flag DENTRO il lock: se un reset ha appena svuotato
-                // la proiezione (impostando `closed` prima di prendere il lock), non
-                // riscriviamo nulla.
+            let valid_events: Vec<&Event> = rr
+                .events
+                .iter()
+                .filter(|ev| {
+                    !generation
+                        .as_ref()
+                        .is_some_and(|barrier| barrier.skips(&ev.ts))
+                })
+                .collect();
+
+            for chunk in valid_events.chunks(BATCH_SIZE) {
                 if self.closed.load(Ordering::Relaxed) {
                     return Ok(modified.into_iter().collect());
                 }
-                if proj.apply(ev)? {
-                    modified.insert(ev.entity.clone());
+
+                // Allinea l'HLC locale alla storia osservata
+                {
+                    let mut clock = self.clock.lock().expect("clock poisoned");
+                    for ev in chunk {
+                        clock.bump_to(&ev.ts);
+                    }
+                }
+
+                let mut proj = self.proj.lock().expect("proj poisoned");
+                if self.closed.load(Ordering::Relaxed) {
+                    return Ok(modified.into_iter().collect());
+                }
+
+                let non_retired: Vec<Event> = chunk
+                    .iter()
+                    .filter(|ev| !proj.is_device_retired(&ev.ts.device).unwrap_or(false))
+                    .map(|ev| (*ev).clone())
+                    .collect();
+
+                if !non_retired.is_empty() {
+                    let changed = proj.apply_batch(&non_retired)?;
+                    modified.extend(changed);
+                }
+                drop(proj);
+
+                processed_events += chunk.len();
+                if total_events > 0 {
+                    self.report_progress(
+                        processed_events,
+                        total_events,
+                        "Sincronizzazione eventi...",
+                    );
                 }
             }
+
             let proj = self.proj.lock().expect("proj poisoned");
             if self.closed.load(Ordering::Relaxed) {
                 return Ok(modified.into_iter().collect());
             }
             proj.set_offset(&name, rr.consumed)?;
+
             if let Some(corruption) = rr.corruption {
                 return Err(SyncError::CorruptLog {
                     file: name,
@@ -567,6 +678,11 @@ impl Engine {
                 });
             }
         }
+
+        if total_events > 0 {
+            self.report_progress(total_events, total_events, "Sincronizzazione completata");
+        }
+
         Ok(modified.into_iter().collect())
     }
 
@@ -785,9 +901,14 @@ impl Engine {
         };
         if let Some(max_ts) = max_hlc {
             if ev_first.ts > max_ts {
+                // Se esiste un cutoff generazionale per questo device e il primo
+                // evento nel file è post-cutoff, il gap non può essere causato da
+                // una compattazione: il file contiene solo eventi della nuova
+                // generazione. Questo copre sia il primo ingest post-ottimizzazione
+                // (max_ts <= cutoff) sia i normali append successivi (max_ts > cutoff).
                 if generation
                     .and_then(|barrier| barrier.cutoff(event_device))
-                    .is_some_and(|cutoff| max_ts <= cutoff && ev_first.ts > cutoff)
+                    .is_some_and(|cutoff| ev_first.ts > cutoff)
                 {
                     return Ok(());
                 }
@@ -847,10 +968,29 @@ impl Engine {
             Some(path) => self.snapshots.load(path).ok(),
             None => self.snapshots.latest().ok().flatten(),
         };
-        snapshot
+        if snapshot
             .and_then(|snap| snap.watermarks.get(device).cloned())
             .map(|watermark| watermark.as_str() >= first_avail)
             .unwrap_or(false)
+        {
+            return true;
+        }
+        // Fallback: dopo l'ottimizzazione gli snapshot ordinari sono stati rimossi;
+        // l'anchor generazionale è l'unico checkpoint disponibile.
+        if let Ok(Some(barrier)) = self.generation_barrier() {
+            if let Some(data_dir) = self.data_dir() {
+                if let Ok(anchor_path) = barrier.anchor(&data_dir) {
+                    if let Ok(snap) = self.snapshots.load(&anchor_path) {
+                        return snap
+                            .watermarks
+                            .get(device)
+                            .map(|watermark| watermark.as_str() >= first_avail)
+                            .unwrap_or(false);
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn data_dir(&self) -> Option<PathBuf> {

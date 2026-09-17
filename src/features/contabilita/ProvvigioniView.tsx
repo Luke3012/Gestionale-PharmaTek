@@ -331,6 +331,7 @@ function AgentCard({
             storeColumnsKey="contabilita-provvigioni"
             verticalSpacing="xs"
             highlightOnHover
+            disattivaChunking
           />
         </Box>
     </Card>

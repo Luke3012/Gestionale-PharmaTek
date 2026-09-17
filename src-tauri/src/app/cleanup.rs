@@ -32,6 +32,16 @@ impl AppState {
     pub fn record_delete(&self, entity: &str, id: &str) -> AppResult<()> {
         crate::premium::ensure_generic_entity_access(self, entity)?;
         self.with_engine(|engine| {
+            let ordine_id_riallinea = if entity == "pagamento" {
+                engine.with_projection(|p| {
+                    p.get("pagamento", id)
+                        .ok()
+                        .flatten()
+                        .map(|r| str_field(&r.data, "ordine_id"))
+                })
+            } else {
+                None
+            };
             let entity_owned = entity.to_string();
             let id_owned = id.to_string();
             engine
@@ -126,6 +136,9 @@ impl AppState {
                     Ok(mutations)
                 })
                 .map_err(es)?;
+            if let Some(oid) = ordine_id_riallinea.filter(|s| !s.is_empty()) {
+                super::riallinea_contrassegno_spedizioni_ordine(engine, &oid)?;
+            }
             Ok(())
         })
     }
@@ -1227,7 +1240,7 @@ fn data_record(hlc: &crate::sync::hlc::Hlc) -> String {
     data_epoch_ms(hlc.wall)
 }
 
-fn data_epoch_ms(ms: u64) -> String {
+pub(super) fn data_epoch_ms(ms: u64) -> String {
     let (y, m, d, ..) = civil_from_unix(ms / 1000);
     format!("{y:04}-{m:02}-{d:02}")
 }

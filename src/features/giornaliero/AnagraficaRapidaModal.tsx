@@ -46,6 +46,8 @@ export function AnagraficaRapidaModal({
       title={<Text fw={700}>{editMode ? `Modifica ${entityLabel}` : `Nuovo ${entityLabel}`}</Text>}
       size="md"
       zIndex={1100}
+      closeOnEscape={!loading}
+      closeOnClickOutside={!loading}
       transitionProps={{ transition: "fade", duration: 150, onExited }}
     >
       <Box className="pt-modal-shell">

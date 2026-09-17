@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Center, Group, Stack, Text } from "@mantine/core";
 import { motion } from "framer-motion";
 import { api, inTauri, type Bootstrap, type Identity } from "./lib/tauri";
-import { LogoMark, Wordmark, SchermoBenvenuto, UnifiedBootScreen } from "./ui/Brand";
+import { LogoMark, Wordmark, SchermoBenvenuto } from "./ui/Brand";
 import { Onboarding } from "./onboarding/Onboarding";
 import { Shell } from "./shell/Shell";
 import { assicuraFinestraSpotlight } from "./shell/navigazione";
@@ -192,7 +192,25 @@ function App({
       ricostruzioneToastId = toast.loading(messaggioRiallineamentoDati(reason), {
         titolo: "Sincronizzazione",
       });
+      let unlistenProgress: (() => void) | undefined;
       try {
+        try {
+          const { listen } = await import("@tauri-apps/api/event");
+          unlistenProgress = await listen<{ current: number; total: number; phase: string }>(
+            "pt:sync-progress",
+            (ev) => {
+              if (ricostruzioneToastId && ev.payload.total > 0) {
+                const pct = Math.min(100, Math.round((ev.payload.current / ev.payload.total) * 100));
+                toast.update(ricostruzioneToastId, {
+                  tipo: "loading",
+                  messaggio: `Sincronizzazione dati: ${ev.payload.current.toLocaleString()} / ${ev.payload.total.toLocaleString()} (${pct}%)`,
+                  durata: 0,
+                });
+              }
+            }
+          );
+        } catch {}
+
         do {
           ricostruzioneRichiesta = false;
           const { invoke } = await import("@tauri-apps/api/core");
@@ -210,6 +228,10 @@ function App({
           applicaBootstrap(nextBoot);
           await segnalaRicostruzione();
         } while (attivo && ricostruzioneRichiesta);
+        if (unlistenProgress) {
+          unlistenProgress();
+          unlistenProgress = undefined;
+        }
         if (ricostruzioneToastId) {
           toast.update(ricostruzioneToastId, {
             tipo: "success",
@@ -246,6 +268,7 @@ function App({
           ricostruzioneToastId = null;
         }
       } finally {
+        if (unlistenProgress) unlistenProgress();
         ricostruzioneInCorso = false;
         terminaRiallineamentoDati();
       }
@@ -438,6 +461,11 @@ function App({
           localStorage.setItem("pt.lastIdentity", JSON.stringify(identity));
           localStorage.setItem("pt.onboardingTime", Date.now().toString());
           void preloadDashboardDopoOnboarding();
+          if (inTauri) {
+            void import("@tauri-apps/api/event").then(({ emit }) => {
+              void emit("pt:indicizza-spotlight").catch(() => {});
+            });
+          }
           setStato({ fase: "benvenuto", identity });
         }}
       />
@@ -473,6 +501,7 @@ function App({
         skipChangelog={appenaConfigurato}
         forceDashboardIntro={appenaConfigurato}
         saltaIntroDashboard={avvioNascosto}
+        avvioNascosto={avvioNascosto}
         onIdentityChange={(newIdentity) => setStato({ fase: "pronto", identity: newIdentity })}
       />
     </FadePrimoIngressoDashboard>
@@ -491,18 +520,19 @@ function AvvioConNovita({
   skipChangelog = false,
   forceDashboardIntro = false,
   saltaIntroDashboard = false,
+  avvioNascosto = false,
 }: {
   identity: Identity;
   onIdentityChange: (identity: Identity) => void;
   skipChangelog?: boolean;
   forceDashboardIntro?: boolean;
   saltaIntroDashboard?: boolean;
+  avvioNascosto?: boolean;
 }) {
-  // Fuori da Tauri o alla prima configurazione non c'è da controllare nulla: entra direttamente.
-  const [fase, setFase] = useState<"controllo" | "novita" | "pronto">(
-    skipChangelog || !inTauri ? "pronto" : "controllo"
-  );
   const [novita, setNovita] = useState<VersioneChangelog[] | null>(null);
+  const [appenaChiusoChangelog, setAppenaChiusoChangelog] = useState(false);
+  const [chiaveShell, setChiaveShell] = useState(0);
+
   useEffect(() => {
     if (!inTauri) return;
     let attivo = true;
@@ -517,43 +547,40 @@ function AvvioConNovita({
         const entries = novitaDaMostrare(versione);
         if (entries) {
           setNovita(entries);
-          setFase("novita");
         } else {
           segnaVista(versione); // allinea il "visto" anche quando non c'è nulla da mostrare
-          setFase("pronto");
         }
       })
-      .catch(() => attivo && setFase("pronto"));
+      .catch(() => {});
     return () => {
       attivo = false;
     };
   }, [skipChangelog]);
 
-  // Microsalto del controllo versione: mostra la schermata di caricamento unificata
-  if (fase === "controllo") {
-    return <UnifiedBootScreen identity={identity} testoSottotitolo="Preparo la tua dashboard…" />;
-  }
-
-  if (fase === "novita" && novita) {
-    return (
-      <NovitaPanel
-        entries={novita}
-        onChiudi={() => {
-          segnaVista(novita[0].versione);
-          setFase("pronto");
-        }}
-      />
-    );
-  }
+  const introAttiva = forceDashboardIntro || appenaChiusoChangelog;
 
   return (
-    <Shell
-      identity={identity}
-      onIdentityChange={onIdentityChange}
-      forceDashboardIntro={forceDashboardIntro}
-      testoDashboardLoader={forceDashboardIntro ? null : undefined}
-      saltaIntroDashboard={saltaIntroDashboard}
-    />
+    <>
+      <Shell
+        key={chiaveShell}
+        identity={identity}
+        onIdentityChange={onIdentityChange}
+        forceDashboardIntro={introAttiva}
+        testoDashboardLoader={introAttiva ? null : undefined}
+        saltaIntroDashboard={saltaIntroDashboard && !appenaChiusoChangelog}
+      />
+      {!avvioNascosto && novita && novita.length > 0 && (
+        <NovitaPanel
+          entries={novita}
+          onChiudi={() => {
+            segnaVista(novita[0].versione);
+            setNovita(null);
+            setAppenaChiusoChangelog(true);
+            setChiaveShell((k) => k + 1);
+          }}
+        />
+      )}
+    </>
   );
 }
 

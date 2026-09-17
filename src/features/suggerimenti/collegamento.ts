@@ -12,7 +12,9 @@ export function deepLinkSuggerimento(
   };
   if (
     collegamento.azione === "nuova_distinta" ||
-    collegamento.azione === "ottimizza_database"
+    collegamento.azione === "ottimizza_database" ||
+    collegamento.azione === "solleciti_preventivi" ||
+    collegamento.azione === "solleciti_preventivi_tutti"
   ) {
     link.azione = collegamento.azione;
   }

@@ -113,5 +113,17 @@ describe("accesso premium", () => {
         "Richiede un pagamento aggiuntivo.",
       ),
     ).toContain("comunicazioni");
+    expect(
+      titoloContestualePaywall(
+        "Solleciti preventivi",
+        "Raggiungi i clienti distratti con un messaggio di sollecito dedicato per non farti sfuggire nessun ordine. Disponibile con Premium.",
+      ),
+    ).toBe("Non perdere i preventivi dimenticati");
+    expect(
+      titoloContestualePaywall(
+        "Invia preventivo",
+        "Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium.",
+      ),
+    ).toBe("Preventivi pronti da condividere");
   });
 });

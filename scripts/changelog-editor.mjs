@@ -79,6 +79,22 @@ const server = createServer(async (req, res) => {
   }
 });
 
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    const url = `http://localhost:${PORT}`;
+    console.log(`\n  L'editor changelog è già attivo su ${url}`);
+    console.log("  Apro il browser sull'istanza già in esecuzione...\n");
+    const cmd =
+      process.platform === "win32" ? `start "" "${url}"` : process.platform === "darwin" ? `open "${url}"` : `xdg-open "${url}"`;
+    exec(cmd, () => {
+      process.exit(0);
+    });
+    return;
+  }
+  console.error("\n[ERRORE Server Changelog]", err);
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
   console.log(`\n  Editor changelog avviato su ${url}`);

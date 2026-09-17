@@ -17,11 +17,11 @@ import {
   Badge,
   Box,
   Button,
-  Checkbox,
   Collapse,
   Divider,
   Group,
   Modal,
+  Select,
   Stack,
   Table,
   Text,
@@ -29,6 +29,11 @@ import {
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
+import {
+  chiaveIndirizzoConfronto,
+  formattaIndirizzoSintetico,
+  raggruppaPerIndirizzoCompatibile,
+} from "./confrontoIndirizzi";
 import { useIntersection } from "@mantine/hooks";
 import {
   IconArrowMerge,
@@ -98,12 +103,7 @@ function normalizzaDestinatario(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function chiaveDestinatario(s: Spedizione): string {
-  if (s.clienteId) return `cliente:${s.clienteId}`;
-  return [s.clienteNome, s.indirizzo, s.cap, s.citta, s.prov, s.regione]
-    .map(normalizzaDestinatario)
-    .join("|");
-}
+
 
 function chiaveCorriere(s: Spedizione): string {
   return (
@@ -156,6 +156,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
   const [agenteAperto, setAgenteAperto] = useState<string | null>(null);
   const [aggiungiAperto, setAggiungiAperto] = useState(false);
   const [destinatariAperto, setDestinatariAperto] = useState(false);
+  const [targetPrimario, setTargetPrimario] = useState<Record<string, string>>({});
   const vivo = useRef(true);
   const mostraCorriereSuColli = useMemo(() => {
     const corrieri = new Set(spedizioni.map(chiaveCorriere).filter(Boolean));
@@ -175,25 +176,89 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
   }, [spedizioni]);
 
   const gruppiUnibili = useMemo(() => {
-    const map = new Map<string, Spedizione[]>();
+    const out: {
+      key: string;
+      tipo: "cliente" | "indirizzo";
+      spedizioni: Spedizione[];
+      nome: string;
+      indirizzo: string;
+      corriere: string;
+      colli: number;
+      haDatiVaccino: boolean;
+      contrassegno: number;
+      clientiDistinti: { id: string; nome: string }[];
+    }[] = [];
+
+    // Raggruppa prima per corriere (non si possono unire spedizioni di corrieri diversi)
+    const perCorriere = new Map<string, Spedizione[]>();
     for (const s of spedizioni) {
-      const destinatarioKey = chiaveDestinatario(s);
-      if (!destinatarioKey.replace(/[|]/g, "")) continue;
-      const key = `${destinatarioKey}|corriere:${chiaveCorriere(s)}`;
-      (map.get(key) ?? map.set(key, []).get(key)!).push(s);
+      const cKey = chiaveCorriere(s);
+      const arr = perCorriere.get(cKey) ?? [];
+      arr.push(s);
+      perCorriere.set(cKey, arr);
     }
-    return [...map.values()]
-      .filter((arr) => arr.length > 1)
-      .map((arr) => ({
-        key: arr.map((s) => s.id).join(":"),
-        spedizioni: arr,
-        nome: arr[0].clienteNome || "(destinatario)",
-        indirizzo: indirizzoDestinatario(arr[0]),
-        corriere: nomeCorriere(arr[0]),
-        colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
-        haDatiVaccino: arr.some(spedizioneHaDatiVaccino),
-        contrassegno: arr.reduce((n, s) => n + s.contrassegno, 0),
-      }));
+
+    for (const spedList of perCorriere.values()) {
+      // 1. Candidati per stesso cliente
+      const perCliente = new Map<string, Spedizione[]>();
+      for (const s of spedList) {
+        const cKey = s.clienteId || normalizzaDestinatario(s.clienteNome);
+        if (!cKey) continue;
+        const arr = perCliente.get(cKey) ?? [];
+        arr.push(s);
+        perCliente.set(cKey, arr);
+      }
+      for (const [cKey, arr] of perCliente.entries()) {
+        if (arr.length > 1) {
+          out.push({
+            key: `cli:${cKey}|${arr.map((s) => s.id).join(":")}`,
+            tipo: "cliente",
+            spedizioni: arr,
+            nome: arr[0].clienteNome || "(destinatario)",
+            indirizzo: formattaIndirizzoSintetico(arr[0]),
+            corriere: nomeCorriere(arr[0]),
+            colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
+            haDatiVaccino: arr.some(spedizioneHaDatiVaccino),
+            contrassegno: arr.reduce((n, s) => n + s.contrassegno, 0),
+            clientiDistinti: [{ id: arr[0].id, nome: arr[0].clienteNome || "(destinatario)" }],
+          });
+        }
+      }
+
+      // 2. Candidati per stesso indirizzo (con clienti diversi)
+      const gruppiIndirizzo = raggruppaPerIndirizzoCompatibile(spedList, (s) => s);
+      for (const arr of gruppiIndirizzo) {
+        if (arr.length > 1) {
+          const clienti = new Set(arr.map((s) => s.clienteId || s.clienteNome));
+          if (clienti.size > 1) {
+            const vistiCli = new Set<string>();
+            const clientiDistinti: { id: string; nome: string }[] = [];
+            for (const s of arr) {
+              const ck = s.clienteId || s.clienteNome;
+              if (!vistiCli.has(ck)) {
+                vistiCli.add(ck);
+                clientiDistinti.push({ id: s.id, nome: s.clienteNome || "(destinatario)" });
+              }
+            }
+            const indKey = chiaveIndirizzoConfronto(arr[0]);
+            out.push({
+              key: `ind:${indKey}|${arr.map((s) => s.id).join(":")}`,
+              tipo: "indirizzo",
+              spedizioni: arr,
+              nome: arr[0].clienteNome || "(destinatario)",
+              indirizzo: formattaIndirizzoSintetico(arr[0]),
+              corriere: nomeCorriere(arr[0]),
+              colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
+              haDatiVaccino: arr.some(spedizioneHaDatiVaccino),
+              contrassegno: arr.reduce((n, s) => n + s.contrassegno, 0),
+              clientiDistinti,
+            });
+          }
+        }
+      }
+    }
+
+    return out;
   }, [spedizioni]);
 
   const destinatariSeparabili = useMemo(
@@ -525,63 +590,89 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                         wrap="nowrap"
                         gap="sm"
                       >
-                        <Group
-                          gap="sm"
-                          align="flex-start"
-                          wrap="nowrap"
-                          style={{ minWidth: 0 }}
-                        >
-                          <Checkbox
-                            checked
-                            readOnly
-                            mt={3}
-                            aria-label="Destinatari selezionati per l'unione"
-                          />
-                          <Box style={{ minWidth: 0 }}>
-                            <Group gap={6} wrap="wrap">
-                              <Text fw={700} size="sm">
-                                {g.nome}
-                              </Text>
-                              <Badge size="sm" variant="light" color="accent">
-                                {g.spedizioni.length}{" "}
-                                {g.haDatiVaccino
-                                  ? "colli"
-                                  : g.spedizioni.length === 1
-                                    ? "spedizione"
-                                    : "spedizioni"}
-                              </Badge>
-                              <Badge
-                                size="sm"
-                                variant="light"
-                                color="indigo"
-                                leftSection={<IconTruckDelivery size={10} />}
-                              >
-                                {g.corriere}
-                              </Badge>
-                              {g.haDatiVaccino && (
-                                <Badge size="sm" variant="light" color="gray">
-                                  {g.colli} {g.colli === 1 ? "collo" : "colli"}{" "}
-                                  totali
-                                </Badge>
-                              )}
-                            </Group>
-                            <Text size="xs" c="dimmed" truncate>
-                              {g.indirizzo || "Destinatario senza indirizzo"}
+                        <Box style={{ minWidth: 0, flex: 1 }}>
+                          <Group gap={6} wrap="wrap">
+                            <Badge
+                              size="xs"
+                              variant="light"
+                              color={g.tipo === "cliente" ? "teal" : "orange"}
+                            >
+                              {g.tipo === "cliente"
+                                ? "Stesso cliente"
+                                : "Stesso indirizzo"}
+                            </Badge>
+                            <Text fw={700} size="sm">
+                              {g.nome}
                             </Text>
-                            {g.contrassegno > 0 && (
-                              <Text size="xs" c="dimmed">
-                                Alla consegna: {eur(g.contrassegno)}
-                              </Text>
+                            <Badge size="sm" variant="light" color="accent">
+                              {g.spedizioni.length}{" "}
+                              {g.haDatiVaccino
+                                ? "colli"
+                                : g.spedizioni.length === 1
+                                  ? "spedizione"
+                                  : "spedizioni"}
+                            </Badge>
+                            <Badge
+                              size="sm"
+                              variant="light"
+                              color="indigo"
+                              leftSection={<IconTruckDelivery size={10} />}
+                            >
+                              {g.corriere}
+                            </Badge>
+                            {g.haDatiVaccino && (
+                              <Badge size="sm" variant="light" color="gray">
+                                {g.colli} {g.colli === 1 ? "collo" : "colli"}{" "}
+                                totali
+                              </Badge>
                             )}
-                          </Box>
-                        </Group>
+                          </Group>
+                          <Text size="xs" c="dimmed" truncate mt={2}>
+                            {g.indirizzo || "Destinatario senza indirizzo"}
+                          </Text>
+                          {g.clientiDistinti.length > 1 && (
+                            <Group gap={6} align="center" mt={6}>
+                              <Text size="xs" fw={500}>
+                                Intestatario:
+                              </Text>
+                              <Select
+                                size="xs"
+                                w={190}
+                                data={g.clientiDistinti.map((c) => ({
+                                  value: c.id,
+                                  label: c.nome,
+                                }))}
+                                value={targetPrimario[g.key] || g.spedizioni[0].id}
+                                onChange={(v) =>
+                                  v &&
+                                  setTargetPrimario((prev) => ({
+                                    ...prev,
+                                    [g.key]: v,
+                                  }))
+                                }
+                                allowDeselect={false}
+                                comboboxProps={{ withinPortal: true, zIndex: 1450 }}
+                              />
+                            </Group>
+                          )}
+                          {g.contrassegno > 0 && (
+                            <Text size="xs" c="dimmed" mt={2}>
+                              Alla consegna: {eur(g.contrassegno)}
+                            </Text>
+                          )}
+                        </Box>
                         <Button
                           size="compact-sm"
                           color="accent"
                           leftSection={<IconArrowMerge size={14} />}
-                          onClick={() =>
-                            unisciDestinatari(g.spedizioni.map((s) => s.id))
-                          }
+                          onClick={() => {
+                            const primario = targetPrimario[g.key] || g.spedizioni[0].id;
+                            const ids = [
+                              primario,
+                              ...g.spedizioni.filter((s) => s.id !== primario).map((s) => s.id),
+                            ];
+                            unisciDestinatari(ids);
+                          }}
                         >
                           Unisci
                         </Button>
@@ -750,6 +841,7 @@ const ColloRiga = memo(function ColloRiga({
             pagamenti,
             conti,
             "Nessun pagamento richiesto alla consegna.",
+            { tuttiPagamenti: s.pagamenti, includiRate: true },
           ),
         },
       });
@@ -818,20 +910,12 @@ const ColloRiga = memo(function ColloRiga({
         </UnstyledButton>
         <Group gap={2} wrap="nowrap">
           {s.clienteId && canRunPremiumAction(premium) && (
-            <Tooltip label="Avvisa" withArrow openDelay={350}>
-              <Box>
+            <Tooltip label="Avvisa" withinPortal>
+              <Box style={{ display: "inline-flex" }}>
                 <PremiumAction
                   ariaLabel="Avvisa"
                   iconOnly
-                  leftSection={<IconMessage size={15} />}
-                  style={{
-                    background: "transparent",
-                    borderColor: "transparent",
-                    height: 26,
-                    minHeight: 26,
-                    padding: 0,
-                    width: 26,
-                  }}
+                  leftSection={<IconMessage size={16} />}
                   onAction={comunica}
                 >
                   Avvisa

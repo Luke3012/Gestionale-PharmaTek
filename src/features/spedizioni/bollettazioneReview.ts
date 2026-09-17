@@ -11,6 +11,16 @@ export interface BollettazioneResolution {
   conflictChoices: Record<string, "current" | "file">;
 }
 
+const BOLLETTAZIONE_OPERATIONAL_FIELDS = new Set([
+  "numero",
+  "prodotto_id",
+  "prodotto_nome",
+]);
+
+export function bollettazioneConflictIsOperational(field: string): boolean {
+  return BOLLETTAZIONE_OPERATIONAL_FIELDS.has(field);
+}
+
 export function initialBollettazioneResolution(
   row: BollettazioneRow,
 ): BollettazioneResolution {
@@ -27,8 +37,13 @@ export function bollettazioneAcceptedFields(
 ): Record<string, unknown> {
   const match = resolution.match;
   if (!match) return {};
-  const fields = { ...match.proposedFields };
+  const fields = Object.fromEntries(
+    Object.entries(match.proposedFields).filter(([field]) =>
+      bollettazioneConflictIsOperational(field),
+    ),
+  );
   for (const conflict of match.conflicts) {
+    if (!bollettazioneConflictIsOperational(conflict.field)) continue;
     fields[conflict.field] =
       resolution.conflictChoices[conflict.field] === "file"
         ? conflict.proposed

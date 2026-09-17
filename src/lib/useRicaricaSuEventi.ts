@@ -7,7 +7,12 @@ type Listen = <T>(event: EventName, handler: (event: Event<T>) => void) => Promi
 
 export interface PianificatoreRicarica {
   pianifica: () => void;
+  eseguiSubito: () => void;
   annulla: () => void;
+}
+
+interface OpzioniRicaricaSuEventi {
+  caricamentoIniziale?: boolean;
 }
 
 /** Crea un refresh immediato o debounced, con cancellazione esplicita allo smontaggio. */
@@ -52,6 +57,12 @@ export function creaPianificatoreRicarica(ricarica: Ricarica, ritardoMs?: number
         void esegui();
       }, ritardoMs);
     },
+    eseguiSubito: () => {
+      if (annullata) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      void esegui();
+    },
     annulla: () => {
       annullata = true;
       richiestaDuranteEsecuzione = false;
@@ -71,7 +82,15 @@ export async function registraRicaricaSuEventi(
   // tutte le viste che usano questo hook devono quindi invalidarsi, anche se non è
   // disponibile l'elenco puntuale delle entità ricostruite.
   const tuttiGliEventi = [...new Set([...eventi, "pt:proiezione-ricostruita"] as EventName[])];
-  const disiscrizioni = await Promise.all(tuttiGliEventi.map((evento) => listen(evento, ricarica)));
+  const disiscrizioni: UnlistenFn[] = [];
+  try {
+    for (const evento of tuttiGliEventi) {
+      disiscrizioni.push(await listen(evento, ricarica));
+    }
+  } catch (error) {
+    disiscrizioni.forEach((disiscrivi) => disiscrivi());
+    throw error;
+  }
   let chiusa = false;
   return () => {
     if (chiusa) return;
@@ -88,30 +107,44 @@ export async function registraRicaricaSuEventi(
 export function useRicaricaSuEventi(
   eventi: readonly EventName[],
   ricarica: Ricarica,
-  ritardoMs?: number
+  ritardoMs?: number,
+  opzioni?: OpzioniRicaricaSuEventi
 ): void {
   const ricaricaRef = useRef(ricarica);
   ricaricaRef.current = ricarica;
 
   useEffect(() => {
-    if (!inTauri) return;
-
     let attivo = true;
     let disiscrivi: UnlistenFn | undefined;
     const pianificatore = creaPianificatoreRicarica(() => ricaricaRef.current(), ritardoMs);
 
+    if (!inTauri) {
+      if (opzioni?.caricamentoIniziale) pianificatore.eseguiSubito();
+      return () => {
+        attivo = false;
+        pianificatore.annulla();
+      };
+    }
+
     void import("@tauri-apps/api/event")
       .then(({ listen }) => registraRicaricaSuEventi(eventi, pianificatore.pianifica, listen))
       .then((cleanup) => {
-        if (attivo) disiscrivi = cleanup;
-        else cleanup();
+        if (!attivo) {
+          cleanup();
+          return;
+        }
+        disiscrivi = cleanup;
+        if (opzioni?.caricamentoIniziale) pianificatore.eseguiSubito();
       })
-      .catch((error) => console.error("Sottoscrizione eventi Tauri non riuscita", error));
+      .catch((error) => {
+        console.error("Sottoscrizione eventi Tauri non riuscita", error);
+        if (attivo && opzioni?.caricamentoIniziale) pianificatore.eseguiSubito();
+      });
 
     return () => {
       attivo = false;
       pianificatore.annulla();
       disiscrivi?.();
     };
-  }, [eventi, ritardoMs]);
+  }, [eventi, ritardoMs, opzioni?.caricamentoIniziale]);
 }

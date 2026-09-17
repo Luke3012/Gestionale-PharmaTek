@@ -634,7 +634,7 @@ export function RegistroView({
         transition: ridotte || durataSwitchTabelleMs === 0 ? "none" : `opacity ${dur.tab}s ease-out`,
       }}
     >
-      <Group justify="space-between" wrap="wrap" align="center">
+      <Group justify="space-between" wrap="wrap" align="flex-end">
         <Group gap="xs" wrap="nowrap" align="flex-end" style={{ flex: 1, minWidth: 0 }}>
           <DebouncedInput
             placeholder={`Cerca tra i ${registro.etichetta.toLowerCase()}…`}
@@ -655,7 +655,7 @@ export function RegistroView({
             />
           )}
         </Group>
-        <Group gap="xs" wrap="wrap" align="center">
+        <Group gap="xs" wrap="wrap" align="center" style={{ minHeight: 36 }}>
           {azioneExtra}
           {registro.entity === "cliente" && (
             <Switch
@@ -688,10 +688,18 @@ export function RegistroView({
         opened={aperto}
         registro={registro}
         record={modifica}
-        onClose={() => setAperto(false)}
-        onSaved={() => {
+        onClose={() => {
           setAperto(false);
+          setModifica(null);
+        }}
+        onSaved={(rec, modalita) => {
           void caricaRecords();
+          if (modalita === "unificato") {
+            setModifica(rec);
+          } else {
+            setModifica(null);
+            setAperto(false);
+          }
         }}
         onInvalidated={() => void caricaRecords()}
         campiDisabilitati={campiDisabilitati}

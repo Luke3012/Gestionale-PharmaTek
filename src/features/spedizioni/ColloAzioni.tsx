@@ -37,7 +37,6 @@ import {
   rigaHaDatiVaccino,
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
-import { ripartisciImportoProporzionale } from "../contabilita/riallineaSaldo";
 import { EuroInput } from "../../ui/EuroInput";
 import { èContoTransito } from "../contabilita/contoPreferito";
 import { useAggiornaLayoutPopover } from "../../ui/usePopoverVerticalLayout";
@@ -434,7 +433,7 @@ export function DatiSpedizionePopover({
                 label="Colli"
                 value={form.colli}
                 onChange={(v) => setF("colli", v === "" ? "" : Number(v))}
-                disabled={spedizione.corriereProfilo === "carrai"}
+                disabled={spedizione.corriereProfilo === "corriere_a"}
                 min={1}
                 w={86}
               />
@@ -443,7 +442,7 @@ export function DatiSpedizionePopover({
               label="Peso"
               value={form.peso}
               onChange={(v) => setF("peso", v === "" ? "" : Number(v))}
-              disabled={spedizione.corriereProfilo === "carrai"}
+              disabled={spedizione.corriereProfilo === "corriere_a"}
               min={1}
               w={86}
             />
@@ -620,7 +619,7 @@ export function ContrassegnoSpedizionePopover({
       if (ordineId) {
         const allPagamenti = await api.pagamentiOrdine(ordineId);
         const unpaid = allPagamenti.filter(
-          (p) => !p.saldato && (p.tipo === "saldo" || p.tipo === "rata")
+          (p) => !p.saldato && (p.tipo === "saldo" || p.tipo === "rata" || p.tipo === "acconto")
         );
 
         const allConti = await api.recordsList("conto");
@@ -630,85 +629,104 @@ export function ContrassegnoSpedizionePopover({
           allConti.find((c) => !èContoTransito(c.data.tipo));
         const defaultBankContoId = defaultBankConto?.id || "";
 
-        if (unpaid.length > 0) {
-          if (mezzoSelezionato === "") {
-            // Cambia tutti i pagamenti attesi di transito a defaultBankContoId e data = spedizione + 7gg
-            for (const p of unpaid) {
-              if (èContoTransito(p.contoTipo)) {
-                const newScad = aggiungiGiorni(spedizioneData, 7);
-                await api.recordUpdate("pagamento", p.id, {
-                  conto_id: defaultBankContoId,
-                  scadenza: newScad,
-                  scad_da_spedizione: true,
-                  scad_rel_giorni: p.scadRelGiorni,
-                });
-              }
-            }
-          } else {
-            // Imposta primo pagamento a conto contrassegno/assegno, importo = targetCOD, scadenza = spedizione + 30gg
-            const transitConto = allConti.find((c) => c.data.tipo === mezzoSelezionato);
-            const transitContoId = transitConto?.id || "";
-            const totalUnpaid = unpaid.reduce((acc, p) => acc + p.importo, 0);
+        // Trova il pagamento associato a questa spedizione:
+        // 1. Per spedizioneId esplicito
+        // 2. Altrimenti il primo pagamento a transito non legato a un'altra spedizione
+        // 3. Fallback sul primo pagamento libero o sul primo non saldato
+        let targetPagamento = unpaid.find((p) => p.spedizioneId === spedizioneId);
+        if (!targetPagamento) {
+          targetPagamento = unpaid.find(
+            (p) => èContoTransito(p.contoTipo) && (!p.spedizioneId || p.spedizioneId === spedizioneId)
+          ) || unpaid.find((p) => !p.spedizioneId) || unpaid[0];
+        }
 
-            const p1 = unpaid[0];
-            await api.recordUpdate("pagamento", p1.id, {
+        if (mezzoSelezionato === "") {
+          // Disattivato contrassegno per questa spedizione:
+          if (targetPagamento && èContoTransito(targetPagamento.contoTipo)) {
+            const newScad = aggiungiGiorni(spedizioneData, 7);
+            await api.recordUpdate("pagamento", targetPagamento.id, {
+              conto_id: defaultBankContoId,
+              scadenza: newScad,
+              scad_da_spedizione: true,
+              scad_rel_giorni: targetPagamento.scadRelGiorni,
+              spedizione_id: "",
+            });
+          }
+        } else {
+          // Imposta pagamento a conto contrassegno/assegno, importo = targetCOD, scadenza = spedizione + 30gg
+          const transitConto = allConti.find((c) => c.data.tipo === mezzoSelezionato);
+          const transitContoId = transitConto?.id || "";
+
+          if (targetPagamento) {
+            const oldImporto = targetPagamento.importo;
+            const diff = targetCOD - oldImporto;
+
+            await api.recordUpdate("pagamento", targetPagamento.id, {
               conto_id: transitContoId,
               importo: targetCOD,
               scadenza: aggiungiGiorni(spedizioneData, 30),
               scad_da_spedizione: true,
               scad_rel_giorni: 0,
+              spedizione_id: spedizioneId,
             });
 
-            if (targetCOD < totalUnpaid) {
-              const remainder = totalUnpaid - targetCOD;
-              const newScad = aggiungiGiorni(spedizioneData, 7);
-
-              if (unpaid.length >= 2) {
-                const successive = unpaid.slice(1);
-                const quote = ripartisciImportoProporzionale(
-                  remainder,
-                  successive.map((pagamento) => pagamento.importo),
-                );
-                for (let i = 0; i < successive.length; i++) {
-                  const pagamento = successive[i];
-                  const importo = quote[i];
-                  if (importo <= 0) {
-                    await api.pagamentoElimina(pagamento.id);
-                    continue;
+            // Se l'importo è cambiato, assorbi la differenza dalle rate LIBERE (non legate ad altre spedizioni)
+            if (diff !== 0) {
+              const liberi = unpaid.filter(
+                (p) => p.id !== targetPagamento!.id && !p.spedizioneId
+              );
+              if (diff > 0) {
+                // Il contrassegno è aumentato: riduci le rate libere
+                let daRidurre = diff;
+                for (const p of liberi) {
+                  if (daRidurre <= 0) break;
+                  if (p.importo <= daRidurre) {
+                    daRidurre -= p.importo;
+                    await api.pagamentoElimina(p.id);
+                  } else {
+                    await api.recordUpdate("pagamento", p.id, {
+                      importo: p.importo - daRidurre,
+                    });
+                    daRidurre = 0;
                   }
-                  const transito = èContoTransito(pagamento.contoTipo);
-                  await api.recordUpdate("pagamento", pagamento.id, {
-                    importo,
-                    ...(transito ? { conto_id: defaultBankContoId } : {}),
-                    ...(pagamento.scadDaSpedizione
-                      ? {
-                          scadenza: aggiungiGiorni(
-                            spedizioneData,
-                            7 + Math.max(0, pagamento.scadRelGiorni || 0),
-                          ),
-                        }
-                      : {}),
-                  });
                 }
               } else {
-                const pag = await api.pagamentoRegistra({
-                  ordineId,
-                  tipo: "rata",
-                  importo: remainder,
-                  saldato: false,
-                  scadenza: newScad,
-                  contoId: defaultBankContoId,
-                });
-                await api.recordUpdate("pagamento", pag.id, {
-                  scad_da_spedizione: true,
-                  scad_rel_giorni: 0,
-                });
-              }
-            } else {
-              for (let i = 1; i < unpaid.length; i++) {
-                await api.pagamentoElimina(unpaid[i].id);
+                // Il contrassegno è diminuito: aumenta la prima rata libera o crea una nuova rata ordinaria
+                const daAggiungere = -diff;
+                if (liberi.length > 0) {
+                  await api.recordUpdate("pagamento", liberi[0].id, {
+                    importo: liberi[0].importo + daAggiungere,
+                  });
+                } else {
+                  const pag = await api.pagamentoRegistra({
+                    ordineId,
+                    tipo: "rata",
+                    importo: daAggiungere,
+                    saldato: false,
+                    scadenza: aggiungiGiorni(spedizioneData, 7),
+                    contoId: defaultBankContoId,
+                  });
+                  await api.recordUpdate("pagamento", pag.id, {
+                    scad_da_spedizione: true,
+                    scad_rel_giorni: 0,
+                  });
+                }
               }
             }
+          } else {
+            const pag = await api.pagamentoRegistra({
+              ordineId,
+              tipo: "rata",
+              importo: targetCOD,
+              saldato: false,
+              scadenza: aggiungiGiorni(spedizioneData, 30),
+              contoId: transitContoId,
+            });
+            await api.recordUpdate("pagamento", pag.id, {
+              scad_da_spedizione: true,
+              scad_rel_giorni: 0,
+              spedizione_id: spedizioneId,
+            });
           }
         }
       }

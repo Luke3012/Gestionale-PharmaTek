@@ -285,14 +285,16 @@ pub fn run() {
             let state = AppState::init_with_app_handle(app_dir, app.handle().clone())
                 .map_err(|e| Box::<dyn std::error::Error>::from(format!("init stato app: {e}")))?;
 
-            if let Err(e) = state.comunicazioni_recupera_invii_interrotti() {
-                eprintln!("Errore recupero comunicazioni interrotte: {e}");
-            }
-            if let Err(e) = state.comunicazioni_trattieni_coda_all_avvio() {
-                // Il gate resta chiuso: in caso di errore è preferibile non
-                // avviare alcun effetto esterno anziché riprendere una vecchia
-                // coda senza una scelta esplicita dell'utente.
-                eprintln!("Errore protezione coda comunicazioni all'avvio: {e}");
+            if crate::premium::is_enabled(&state.app_dir) {
+                if let Err(e) = state.comunicazioni_recupera_invii_interrotti() {
+                    eprintln!("Errore recupero comunicazioni interrotte: {e}");
+                }
+                if let Err(e) = state.comunicazioni_trattieni_coda_all_avvio() {
+                    // Il gate resta chiuso: in caso di errore è preferibile non
+                    // avviare alcun effetto esterno anziché riprendere una vecchia
+                    // coda senza una scelta esplicita dell'utente.
+                    eprintln!("Errore protezione coda comunicazioni all'avvio: {e}");
+                }
             }
             app.manage(state);
 
@@ -528,6 +530,7 @@ pub fn run() {
             commands::preventivo_get,
             commands::preventivo_salva,
             commands::preventivo_elimina,
+            commands::preventivo_marca_inviato_manuale,
             commands::preventivo_ripristina,
             commands::preventivo_purge,
             commands::scheda_cliente_get,
@@ -552,6 +555,14 @@ pub fn run() {
             commands::produzione_lotto_righe_separa,
             commands::laboratorio_export,
             commands::diagnostica_export,
+            commands::prescriptions_folder_get,
+            commands::prescriptions_folder_set,
+            commands::prescriptions_scan_lot,
+            commands::prescriptions_inspect_files,
+            commands::prescription_open,
+            commands::prescriptions_zip_save,
+            commands::production_attachments_prepare,
+            commands::prescriptions_operation_cancel,
             commands::cestino,
             commands::record_purge,
             commands::cestino_svuota,
@@ -574,6 +585,7 @@ pub fn run() {
             commands::provvigioni_export,
             commands::griglia_export,
             commands::documento_salva,
+            commands::documento_preventivo_salva,
             commands::ordini_auto_chiudi,
             commands::pagamenti_ordine,
             commands::pagamenti_vista,
@@ -602,6 +614,7 @@ pub fn run() {
             commands::lotto_separa,
             commands::spedizione_destinatari_unisci,
             commands::spedizione_destinatari_separa,
+            commands::spedizione_segna_avvisata,
             commands::spedizione_riepilogo,
             commands::riga_mancante_aggiungi,
             commands::rimborsi_lista,

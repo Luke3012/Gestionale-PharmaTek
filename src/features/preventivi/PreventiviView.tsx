@@ -68,10 +68,12 @@ import { DebouncedInput } from "../../ui/DebouncedInput";
 import { ContextMenuPuntuale, puntoDaEventoContextMenu } from "../../ui/ContextMenuTarget";
 import { FiltroIntervalloDate } from "../../ui/FiltroIntervalloDate";
 import { usePrefs } from "../../lib/prefs";
+import { useDeepLink } from "../../shell/navigazione";
 import {
   classificaSollecitiPreventivi,
   type GruppoSollecitiPreventivi,
 } from "./sollecitiPreventivi";
+import { confermaInvioManualeDopoEsportazione } from "./invioManualePreventivo";
 import { ColonneMenu } from "../giornaliero/ColonneMenu";
 import {
   STORE_LARGHEZZE_PREVENTIVI,
@@ -109,6 +111,8 @@ import {
   destinatarioPreventivo,
   variabiliPreventivo,
 } from "./invioRapidoPreventivo";
+import { usePremiumAccess } from "../../premium/PremiumAccess";
+import { PremiumAction, PremiumPaywallModal } from "../../premium/PremiumAction";
 
 const EVENTI_RICARICA = [
   "preventivo:salvato",
@@ -212,7 +216,9 @@ function targetComunicazionePreventivo(
 }
 
 export function PreventiviView({ identity }: { identity: Identity }) {
-  const { giorniSollecitoPreventivi, ordineFinestra } = usePrefs();
+  const { link: deepLink, consuma } = useDeepLink("/preventivi");
+  const { anno, giorniSollecitoPreventivi, ordineFinestra } = usePrefs();
+  const sogliaGiorniSollecito = giorniSollecitoPreventivi;
   const colonne = useColonnePreventivi();
   const [preventivi, setPreventivi] = useState<Preventivo[]>([]);
   const [disponibili, setDisponibili] = useState<Preventivo[]>([]);
@@ -235,6 +241,8 @@ export function PreventiviView({ identity }: { identity: Identity }) {
   const [selettoreOpened, setSelettoreOpened] = useState(false);
   const [selettoreSollecitiOpened, setSelettoreSollecitiOpened] =
     useState(false);
+  const [includiSollecitiSottoSoglia, setIncludiSollecitiSottoSoglia] =
+    useState(false);
   const [anteprima, setAnteprima] = useState<DocumentoA4 | null>(null);
   const [preventivoAnteprima, setPreventivoAnteprima] =
     useState<Preventivo | null>(null);
@@ -247,10 +255,29 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     y: number;
     record: Preventivo;
   } | null>(null);
+  const [paywall, setPaywall] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const origineMenuAzioniRef = useRef<PuntoVoloCestino | null>(null);
+  const premium = usePremiumAccess();
   useCloseOnScroll(!!contextMenu, (opened) => {
     if (!opened) setContextMenu(null);
   });
+
+  function eseguiAzionePremium(
+    title: string,
+    message: string,
+    azione: () => void | Promise<void>,
+    chiudi: () => void = () => {},
+  ) {
+    chiudi();
+    if (!premium.loaded || !premium.enabled) {
+      setPaywall({ title, message });
+      return;
+    }
+    void azione();
+  }
 
   const carica = useCallback(async (silente = false) => {
     if (!silente) setCaricamento(true);
@@ -285,13 +312,45 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     void caricaRiferimenti();
   });
 
+  useEffect(() => {
+    if (
+      deepLink?.azione === "solleciti_preventivi" ||
+      deepLink?.azione === "solleciti_preventivi_tutti"
+    ) {
+      setIncludiSollecitiSottoSoglia(
+        deepLink.azione === "solleciti_preventivi_tutti",
+      );
+      setSelettoreSollecitiOpened(true);
+      consuma();
+    }
+  }, [deepLink, consuma]);
+
   const preventiviConBlob = useMemo(
     () =>
-      preventivi.map((preventivo) => ({
-        ...preventivo,
-        _searchBlob: testoRicercaPreventivo(preventivo),
-      })),
-    [preventivi],
+      preventivi
+        .filter(
+          (preventivo) =>
+            anno === 0 || Number(preventivo.ordineData.slice(0, 4)) === anno,
+        )
+        .map((preventivo) => ({
+          ...preventivo,
+          _searchBlob: testoRicercaPreventivo(preventivo),
+        })),
+    [preventivi, anno],
+  );
+
+  const preventiviAnno = useMemo(
+    () => preventiviConBlob.map(({ _searchBlob: _ignorato, ...preventivo }) => preventivo),
+    [preventiviConBlob],
+  );
+
+  const disponibiliAnno = useMemo(
+    () =>
+      disponibili.filter(
+        (preventivo) =>
+          anno === 0 || Number(preventivo.ordineData.slice(0, 4)) === anno,
+      ),
+    [disponibili, anno],
   );
 
   const filtrati = useMemo(() => {
@@ -339,17 +398,17 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
   const agentiOpzioni = useMemo(
     () =>
-      valoriUnici(preventivi.map((preventivo) => preventivo.agenteNome)).sort(
+      valoriUnici(preventiviAnno.map((preventivo) => preventivo.agenteNome)).sort(
         (a, b) => a.localeCompare(b, "it"),
       ),
-    [preventivi],
+    [preventiviAnno],
   );
   const prodottiOpzioni = useMemo(
     () =>
-      valoriUnici(preventivi.flatMap(prodottiPreventivo)).sort((a, b) =>
+      valoriUnici(preventiviAnno.flatMap(prodottiPreventivo)).sort((a, b) =>
         a.localeCompare(b, "it"),
       ),
-    [preventivi],
+    [preventiviAnno],
   );
 
   const ordinati = useMemo(() => {
@@ -394,8 +453,15 @@ export function PreventiviView({ identity }: { identity: Identity }) {
   }, [filtrati, sort]);
 
   const classificazioneSolleciti = useMemo(
-    () => classificaSollecitiPreventivi(preventivi, giorniSollecitoPreventivi),
-    [giorniSollecitoPreventivi, preventivi],
+    () => classificaSollecitiPreventivi(preventiviAnno, sogliaGiorniSollecito),
+    [preventiviAnno, sogliaGiorniSollecito],
+  );
+  const classificazioneSollecitiModale = useMemo(
+    () =>
+      includiSollecitiSottoSoglia
+        ? classificaSollecitiPreventivi(preventiviAnno, 0)
+        : classificazioneSolleciti,
+    [classificazioneSolleciti, includiSollecitiSottoSoglia, preventiviAnno],
   );
 
   function mostraAnteprima(
@@ -408,6 +474,17 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     setAnteprima(
       documento ??
         creaDocumentoPreventivo(preventivo, configDocumenti ?? undefined),
+    );
+  }
+
+  async function marcaDopoEsportazione(preventivo: Preventivo) {
+    const aggiornato = await confermaInvioManualeDopoEsportazione(preventivo);
+    if (!aggiornato) return;
+    setPreventivi((correnti) =>
+      correnti.map((item) => (item.id === aggiornato.id ? aggiornato : item)),
+    );
+    setPreventivoAnteprima((corrente) =>
+      corrente?.id === aggiornato.id ? aggiornato : corrente,
     );
   }
 
@@ -444,7 +521,14 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     }
     try {
       const blob = await documentoPngBlob(documento);
-      await salvaBlobConPercorso(blob, documento.nomeFile.replace(/\.pdf$/i, ".png"));
+      const salvato = await salvaBlobConPercorso(
+        blob,
+        documento.nomeFile.replace(/\.pdf$/i, ".png"),
+        { richiedePremium: true },
+      );
+      if (salvato) {
+        await marcaDopoEsportazione(preventivo);
+      }
     } catch (error) {
       toast.error(`Generazione immagine non riuscita: ${error}`);
     }
@@ -481,7 +565,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
   async function continuaNuovoDaOrdine(ordineId: string) {
     setSelettoreOpened(false);
-    const ordine = disponibili.find((item) => item.ordineId === ordineId);
+    const ordine = disponibiliAnno.find((item) => item.ordineId === ordineId);
     if (
       ordineFinestra === "sempre" &&
       (await apriFinestraPreventivo(ordineId, ordine?.ordineNumero, identity))
@@ -574,11 +658,17 @@ export function PreventiviView({ identity }: { identity: Identity }) {
           leftSection={<IconFileInvoice size={15} />}
           onClick={() => {
             chiudi();
-            try {
-              stampaPreventivoDiretta(preventivo, configDocumenti);
-            } catch (error) {
-              toast.warning(String(error));
-            }
+            eseguiAzionePremium(
+              "Stampa preventivo",
+              "La stampa del preventivo richiede Premium.",
+              async () => {
+                try {
+                  stampaPreventivoDiretta(preventivo, configDocumenti);
+                } catch (error) {
+                  toast.warning(String(error));
+                }
+              },
+            );
           }}
         >
           Stampa preventivo
@@ -586,18 +676,28 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         <Menu.Item
           leftSection={<IconDownload size={15} />}
           onClick={() => {
-            const documento = creaDocumentoPreventivo(
-              preventivo,
-              configDocumenti ?? undefined,
+            eseguiAzionePremium(
+              "Salva PDF preventivo",
+              "Il salvataggio del preventivo in PDF richiede Premium.",
+              async () => {
+                const documento = creaDocumentoPreventivo(
+                  preventivo,
+                  configDocumenti ?? undefined,
+                );
+                if (documento.overflow.length) {
+                  mostraAnteprima(preventivo, documento);
+                } else {
+                  const salvato = await salvaBlobConPercorso(
+                    documentoPdfBlob(documento),
+                    documento.nomeFile,
+                    { richiedePremium: true },
+                  );
+                  if (salvato) {
+                    await marcaDopoEsportazione(preventivo);
+                  }
+                }
+              },
             );
-            if (documento.overflow.length) {
-              mostraAnteprima(preventivo, documento);
-            } else {
-              void salvaBlobConPercorso(
-                documentoPdfBlob(documento),
-                documento.nomeFile,
-              );
-            }
             chiudi();
           }}
         >
@@ -606,8 +706,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         <Menu.Item
           leftSection={<IconPhoto size={15} />}
           onClick={() => {
-            void salvaImmagine(preventivo);
-            chiudi();
+            eseguiAzionePremium(
+              "Salva immagine preventivo",
+              "Il salvataggio del preventivo come immagine richiede Premium.",
+              () => salvaImmagine(preventivo),
+              chiudi,
+            );
           }}
         >
           Salva immagine
@@ -616,8 +720,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
         <Menu.Item
           leftSection={<IconMail size={15} />}
           onClick={() => {
-            void inviaRapido(preventivo);
-            chiudi();
+            eseguiAzionePremium(
+              "Invia preventivo",
+              "Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium.",
+              () => inviaRapido(preventivo),
+              chiudi,
+            );
           }}
         >
           Invia
@@ -629,8 +737,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
             preventivo.ordineStato !== "Nuovo"
           }
           onClick={() => {
-            void sollecita(preventivo);
-            chiudi();
+            eseguiAzionePremium(
+              "Sollecita preventivo",
+              "Raggiungi i clienti distratti con un messaggio di sollecito dedicato per non farti sfuggire nessun ordine. Disponibile con Premium.",
+              () => sollecita(preventivo),
+              chiudi,
+            );
           }}
         >
           Sollecita
@@ -955,13 +1067,16 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                 : "Nessun preventivo da inviare o sollecitare"
             }
           >
-            <Button
-              aria-label={
+            <PremiumAction
+              buttonVariant="default"
+              ariaLabel={
                 classificazioneSolleciti.totale
                   ? `Solleciti, ${classificazioneSolleciti.totale} da gestire`
                   : "Solleciti"
               }
-              variant="default"
+              title="Solleciti preventivi"
+              message="Raggiungi i clienti distratti con un messaggio di sollecito dedicato per non farti sfuggire nessun ordine. Disponibile con Premium."
+              lockedPresentation="modal"
               disabled={classificazioneSolleciti.totale === 0}
               leftSection={
                 <Indicator
@@ -978,10 +1093,13 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                   <IconBell size={17} />
                 </Indicator>
               }
-              onClick={() => setSelettoreSollecitiOpened(true)}
+              onAction={() => {
+                setIncludiSollecitiSottoSoglia(false);
+                setSelettoreSollecitiOpened(true);
+              }}
             >
               Solleciti
-            </Button>
+            </PremiumAction>
           </Tooltip>
           <Button
             color="accent"
@@ -1192,18 +1310,22 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
       <NuovoPreventivoModal
         opened={selettoreOpened}
-        disponibili={disponibili}
+        disponibili={disponibiliAnno}
         onClose={() => setSelettoreOpened(false)}
         onOrdinePreparato={(ordineId) => void continuaNuovoDaOrdine(ordineId)}
         onBozzaPreparata={(bozza) => void continuaNuovoDaZero(bozza)}
       />
       <SelettoreSollecitiPreventiviModal
         opened={selettoreSollecitiOpened}
-        daInviare={classificazioneSolleciti.daInviare}
-        daSollecitare={classificazioneSolleciti.daSollecitare}
-        onClose={() => setSelettoreSollecitiOpened(false)}
+        daInviare={classificazioneSollecitiModale.daInviare}
+        daSollecitare={classificazioneSollecitiModale.daSollecitare}
+        onClose={() => {
+          setSelettoreSollecitiOpened(false);
+          setIncludiSollecitiSottoSoglia(false);
+        }}
         onConferma={(gruppo, selezionati) => {
           setSelettoreSollecitiOpened(false);
+          setIncludiSollecitiSottoSoglia(false);
           window.setTimeout(
             () => void apriCampagnaSolleciti(gruppo, selezionati),
             190,
@@ -1231,6 +1353,12 @@ export function PreventiviView({ identity }: { identity: Identity }) {
       <DocumentoPreviewModal
         opened={!!anteprima}
         documento={anteprima}
+        azioniPremium
+        onFileEsportato={async () => {
+          if (preventivoAnteprima) {
+            await marcaDopoEsportazione(preventivoAnteprima);
+          }
+        }}
         onClose={() => {
           setAnteprima(null);
           setPreventivoAnteprima(null);
@@ -1255,21 +1383,30 @@ export function PreventiviView({ identity }: { identity: Identity }) {
                   Modifica preventivo
                 </Button>
               )}
-              <Button
-                variant="default"
+              <PremiumAction
+                buttonVariant="default"
                 leftSection={<IconSend size={16} />}
+                title="Invia preventivo"
+                message="Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium."
+                lockedPresentation="modal"
                 loading={invioRapidoId === preventivoAnteprima.id}
                 disabled={
                   !!anteprima?.overflow.length ||
                   (!!invioRapidoId && invioRapidoId !== preventivoAnteprima.id)
                 }
-                onClick={() => void inviaRapido(preventivoAnteprima)}
+                onAction={() => void inviaRapido(preventivoAnteprima)}
               >
                 Invia preventivo
-              </Button>
+              </PremiumAction>
             </Group>
           ) : null
         }
+      />
+      <PremiumPaywallModal
+        opened={!!paywall}
+        onClose={() => setPaywall(null)}
+        title={paywall?.title}
+        message={paywall?.message}
       />
       {contextMenu && (
         <ContextMenuPuntuale

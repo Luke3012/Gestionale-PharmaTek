@@ -6,7 +6,7 @@ export const TIPI_SUGGERIMENTO: readonly TipoSuggerimento[] = [
   "provvigione",
   "produzione",
   "spedizione",
-  "duplicati",
+  "preventivo",
 ];
 
 export interface PreferenzeSuggerimenti {
@@ -19,15 +19,15 @@ export interface PreferenzeSuggerimenti {
 }
 
 export const PREFERENZE_SUGGERIMENTI_DEFAULT: PreferenzeSuggerimenti = {
-  tipiAbilitati: [...TIPI_SUGGERIMENTO],
+  tipiAbilitati: ["rimborso", "distinta", "produzione", "spedizione"],
   notificheAttive: true,
   giorniAvviso: {
-    rimborso: 1,
-    distinta: 2,
+    rimborso: 3,
+    distinta: 20,
     provvigione: 7,
-    produzione: 1,
-    spedizione: 0,
-    duplicati: 7,
+    produzione: 3,
+    spedizione: 3,
+    preventivo: 7,
   },
 };
 

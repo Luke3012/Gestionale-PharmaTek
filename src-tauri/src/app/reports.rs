@@ -41,20 +41,31 @@ impl AppState {
                     })
                     .collect();
 
-                let totali = totali_ordini(p);
+                let righe_ordine = p.list("riga_ordine").unwrap_or_default();
+                let totali = totali_ordini_da_righe(&righe_ordine);
                 let numeri = numeri_ordini(p);
                 let transito = conti_transito(p);
                 let pagamenti = pagamenti_per_ordine(p, &transito);
-                let righe_count = righe_count_ordini(p);
-                let linee = linee_ordini(p);
+                let righe_count = righe_count_ordini_da_righe(&righe_ordine);
+                let linee = linee_ordini_da_righe(p, &righe_ordine);
                 let mut numeri_lotto: HashMap<String, Vec<String>> = HashMap::new();
-                for riga in p.list("riga_ordine").unwrap_or_default() {
+                let mut stato_righe_produzione: HashMap<String, (bool, bool)> = HashMap::new();
+                for riga in &righe_ordine {
+                    let ordine_id = str_field(&riga.data, "ordine_id");
+                    let stato_produzione = str_field(&riga.data, "stato_produzione");
+                    let lotto_produzione = str_field(&riga.data, "lotto_produzione");
+                    let stato = stato_righe_produzione
+                        .entry(ordine_id.clone())
+                        .or_insert((false, false));
+                    stato.0 |= stato_produzione.is_empty() && lotto_produzione.is_empty();
+                    stato.1 |= matches!(stato_produzione.as_str(), "in_produzione" | "arrivato_it")
+                        || !lotto_produzione.is_empty();
                     let numero = str_field(&riga.data, "numero");
                     if numero.is_empty() {
                         continue;
                     }
                     numeri_lotto
-                        .entry(str_field(&riga.data, "ordine_id"))
+                        .entry(ordine_id)
                         .or_default()
                         .push(numero);
                 }
@@ -78,6 +89,7 @@ impl AppState {
                     let totale = *totali.get(&r.id).unwrap_or(&0);
                     let acconto = i64_field(&r.data, "acconto");
                     let omaggio = bool_field(&r.data, "omaggio");
+                    let stato_ordine = str_field(&r.data, "stato");
                     let agg = pagamenti.get(&r.id);
                     let incassato = agg.map(|a| a.incassato).unwrap_or(0);
                     let stato_pagamento = stato_pagamento_effettivo(
@@ -89,6 +101,27 @@ impl AppState {
                     let (cliente_nome, cliente_citta, cliente_regione, cliente_telefono) =
                         clienti.get(&cliente_id).cloned().unwrap_or_default();
 
+                    let linee_ordine = {
+                        let cat = str_field(&r.data, "categoria");
+                        if cat.is_empty() {
+                            linee.get(&r.id).cloned().unwrap_or_default()
+                        } else {
+                            vec![cat]
+                        }
+                    };
+                    let (ha_righe_da_produrre, ha_righe_in_lavorazione) =
+                        stato_righe_produzione.get(&r.id).copied().unwrap_or_default();
+                    let ha_righe = righe_count.get(&r.id).copied().unwrap_or(0) > 0;
+                    let linea_produzione = linee_ordine
+                        .iter()
+                        .any(|linea| matches!(linea.as_str(), "Immunoterapia" | "Diagnostica"));
+                    let produzione_operativa = stato_ordine != "Rifiutato"
+                        && linea_produzione
+                        && ((!["Spedito", "Chiuso", "Rifiutato"]
+                            .contains(&stato_ordine.as_str())
+                            && (!ha_righe || ha_righe_da_produrre))
+                            || ha_righe_in_lavorazione);
+
                     out.push(OrdineDto {
                         numero,
                         provvisorio: bool_field(&r.data, "provvisorio"),
@@ -99,7 +132,7 @@ impl AppState {
                         cliente_citta,
                         cliente_regione,
                         cliente_telefono,
-                        stato: str_field(&r.data, "stato"),
+                        stato: stato_ordine,
                         stato_pagamento,
                         sollecito: bool_field(&r.data, "sollecito"),
                         marcatore: str_field(&r.data, "marcatore"),
@@ -114,14 +147,7 @@ impl AppState {
                         // Linea dell'ordine: dal campo `categoria` (FASE 4D, scelto col
                         // pulsante); per gli ordini vecchi senza campo si deduce dalle
                         // categorie dei prodotti delle righe.
-                        linee: {
-                            let cat = str_field(&r.data, "categoria");
-                            if cat.is_empty() {
-                                linee.get(&r.id).cloned().unwrap_or_default()
-                            } else {
-                                vec![cat]
-                            }
-                        },
+                        linee: linee_ordine,
                         numeri_lotto: numeri_lotto.get(&r.id).cloned().unwrap_or_default(),
                         acconto_incassato: agg.map(|a| a.acconto_incassato).unwrap_or(false),
                         data_acconto: agg.map(|a| a.data_acconto.clone()).unwrap_or_default(),
@@ -131,6 +157,7 @@ impl AppState {
                         lotto_produzione: str_field(&r.data, "lotto_produzione"),
                         lotto_produzione_unito: !str_field(&r.data, "lotto_produzione_pre")
                             .is_empty(),
+                        produzione_operativa,
                         medico_id,
                         agente_id,
                         cliente_id,
@@ -169,6 +196,11 @@ impl AppState {
                 let pagamenti = pagamenti_per_ordine(p, &transito);
 
                 let (scorpora_iva, detrai_spedizione) = config_provvigioni_globali(p);
+                let quota_spedizione = if detrai_spedizione {
+                    quota_spedizione_agenti(p)
+                } else {
+                    0
+                };
 
                 let filtro_ag = agente_id.as_deref().filter(|s| !s.is_empty());
                 let dal = dal.filter(|s| !s.is_empty());
@@ -213,13 +245,12 @@ impl AppState {
                         ),
                         None => ("percentuale", 0.0, "spedizione"),
                     };
-                    let base = calcola_base_provvigione(
-                        p,
-                        &o.id,
+                    let base = calcola_base_provvigione_con_quota(
                         totale_ordine,
                         tipo,
                         scorpora_iva,
                         detrai_spedizione,
+                        quota_spedizione,
                     );
                     let provvigione = calcola_provvigione(base, tipo, valore);
                     let maturato = provvigione_maturata(&stato, soglia);
@@ -363,6 +394,11 @@ impl AppState {
                 };
 
                 let (scorpora_iva, detrai_spedizione) = config_provvigioni_globali(p);
+                let quota_spedizione = if detrai_spedizione {
+                    quota_spedizione_agenti(p)
+                } else {
+                    0
+                };
 
                 let mut per_stato: HashMap<String, (i64, i64)> = HashMap::new();
                 let mut per_regione: HashMap<String, (i64, i64)> = HashMap::new();
@@ -403,13 +439,12 @@ impl AppState {
                             ),
                             None => ("percentuale", 0.0, "spedizione"),
                         };
-                        let base = calcola_base_provvigione(
-                            p,
-                            &o.id,
+                        let base = calcola_base_provvigione_con_quota(
                             totale,
                             tipo,
                             scorpora_iva,
                             detrai_spedizione,
+                            quota_spedizione,
                         );
                         let provv = calcola_provvigione(base, tipo, valore);
                         k.provv_potenziale += provv;

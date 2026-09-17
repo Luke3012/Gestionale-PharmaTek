@@ -322,6 +322,17 @@ pub fn snapshot_choices(zip_path: &Path) -> R<Vec<SnapshotInfoDto>> {
             continue;
         };
         let device_nome = snapshot_device_name(&snap, &device_id);
+        let retired_devices: std::collections::HashSet<&str> = snap
+            .records
+            .iter()
+            .filter(|r| r.entity == "device_retired")
+            .map(|r| r.id.as_str())
+            .collect();
+        let active_watermarks = snap
+            .watermarks
+            .keys()
+            .filter(|dev| !retired_devices.contains(dev.as_str()))
+            .count();
         out.push(SnapshotInfoDto {
             path_in_zip,
             device_id,
@@ -331,7 +342,7 @@ pub fn snapshot_choices(zip_path: &Path) -> R<Vec<SnapshotInfoDto>> {
             bytes,
             records: snap.records.len(),
             purged: snap.purged.len(),
-            watermarks: snap.watermarks.len(),
+            watermarks: active_watermarks,
             recommended: false,
             safe: true,
         });
@@ -349,6 +360,16 @@ pub fn snapshot_choices(zip_path: &Path) -> R<Vec<SnapshotInfoDto>> {
 }
 
 fn snapshot_device_name(snap: &SnapshotData, device_id: &str) -> String {
+    if device_id.starts_with("generation-anchor") {
+        return "Base post-ottimizzazione".to_string();
+    }
+    if device_id.starts_with("restore-anchor") {
+        return "Base di ripristino".to_string();
+    }
+    if let Some(rest) = device_id.strip_prefix("pre-ottimizzazione-") {
+        let dev_name = snapshot_device_name(snap, rest);
+        return format!("Pre-ottimizzazione ({dev_name})");
+    }
     snap.records
         .iter()
         .find(|r| r.entity == "device" && r.id == device_id)

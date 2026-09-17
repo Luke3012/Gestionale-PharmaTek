@@ -8,7 +8,6 @@ import { LogoMark, Wordmark } from "../ui/Brand";
 import { usePrefs } from "../lib/prefs";
 import { MENU } from "./nav";
 import { AnnoModal } from "./AnnoModal";
-import { usePremiumAccess } from "../premium/PremiumAccess";
 
 const animazioneEspansione = () => ({
   initial: { opacity: 0, width: 0 }, animate: { opacity: 1, width: "auto" },
@@ -19,7 +18,6 @@ export function Sidebar({ compatto }: { compatto: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { anno } = usePrefs();
-  const premium = usePremiumAccess();
   const [annoOpen, setAnnoOpen] = useState(false);
 
   const attivo = (path: string) =>
@@ -61,7 +59,7 @@ export function Sidebar({ compatto }: { compatto: boolean }) {
       </Group>
 
       <Stack gap={4} px={8} mt="xs" style={{ flex: 1 }}>
-        {MENU.filter((voce) => voce.path !== "/preventivi" || premium.enabled).map((v) => {
+        {MENU.map((v) => {
           const on = attivo(v.path);
           const btn = (
             <UnstyledButton

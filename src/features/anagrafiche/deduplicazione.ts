@@ -1,5 +1,22 @@
 import type { Campi, ExtractedClient, RecordDto } from "../../lib/tauri";
 import { dividiNomeCognomeIntelligente } from "./nomeCognome";
+import {
+  type DatiIndirizzoConfronto,
+  sonoIndirizziCompatibili,
+  indirizzoStrutturatoCompatibile,
+  normalizzaIndirizzo,
+  pulisciCap,
+  testoConfronto,
+} from "./indirizzoUtils";
+
+export {
+  type DatiIndirizzoConfronto,
+  sonoIndirizziCompatibili,
+  indirizzoStrutturatoCompatibile,
+  normalizzaIndirizzo,
+  pulisciCap,
+  testoConfronto,
+};
 
 export interface IndiceBatchEstratti {
   perCf: Map<string, Set<number>>;
@@ -40,15 +57,6 @@ export function pulisciTelefono(t: string): string {
   return s;
 }
 
-function testoConfronto(s: string): string {
-  return s
-    .trim()
-    .toUpperCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ");
-}
-
 function pulisciEmail(s: string): string {
   return s.trim().toLowerCase();
 }
@@ -59,24 +67,6 @@ function contieneOContenuto(a: string, b: string): boolean {
 
 function cfValido(s: string): boolean {
   return s.trim().toUpperCase().length === 16;
-}
-
-function normalizzaIndirizzo(s: string): string {
-  return testoConfronto(s)
-    .replace(/[.,;:]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function baseIndirizzo(s: string): string {
-  return normalizzaIndirizzo(s)
-    .replace(/\bN\b/g, " ")
-    .replace(/\bNRO\b/g, " ")
-    .replace(/\bNUMERO\b/g, " ")
-    .replace(/\bCIVICO\b/g, " ")
-    .replace(/\b\d+[A-Z]?(?:\/[A-Z0-9]+)?\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function stessoLuogo(a: ExtractedClient, b: ExtractedClient): boolean {
@@ -94,18 +84,10 @@ function stessoLuogo(a: ExtractedClient, b: ExtractedClient): boolean {
 }
 
 function indirizzoCompatibile(a: string, b: string): boolean {
-  const A = normalizzaIndirizzo(a);
-  const B = normalizzaIndirizzo(b);
-  if (!A || !B) return true;
-  if (contieneOContenuto(A, B)) return true;
-
-  const baseA = baseIndirizzo(a);
-  const baseB = baseIndirizzo(b);
-  if (!baseA || !baseB) return true;
-  return contieneOContenuto(baseA, baseB);
+  return indirizzoStrutturatoCompatibile(a, b);
 }
 
-function scegliPiuCompleto(a: string, b: string): string {
+export function scegliPiuCompleto(a: string, b: string): string {
   const A = a.trim();
   const B = b.trim();
   if (!A) return B;
@@ -144,7 +126,7 @@ function distanzaUno(a: string, b: string): boolean {
   return diff === 1;
 }
 
-function telefonoCompatibile(a: string, b: string): boolean {
+export function telefonoCompatibile(a: string, b: string): boolean {
   const A = pulisciTelefono(a);
   const B = pulisciTelefono(b);
   if (!A || !B) return false;
@@ -153,48 +135,13 @@ function telefonoCompatibile(a: string, b: string): boolean {
   return distanzaUno(A, B);
 }
 
-function distanzaToken(a: string, b: string): number {
-  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
-  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-      );
-    }
-  }
-  return dp[a.length][b.length];
-}
-
-function tokenIndirizzoCompatibili(a: string, b: string): boolean {
-  if (a === b) return true;
-  if (a.length >= 6 && b.length >= 6 && distanzaToken(a, b) <= 1) return true;
-  return false;
-}
-
-function indirizzoForteCompatibile(a: string, b: string): boolean {
-  const baseA = baseIndirizzo(a)
-    .replace(/\b(VIALE|VIA|VICOLO|PIAZZA|PZA|CORSO)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const baseB = baseIndirizzo(b)
-    .replace(/\b(VIALE|VIA|VICOLO|PIAZZA|PZA|CORSO)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!baseA || !baseB) return false;
-  if (contieneOContenuto(baseA, baseB)) return true;
-
-  const tokA = baseA.split(" ").filter((t) => t.length > 1);
-  const tokB = baseB.split(" ").filter((t) => t.length > 1);
-  if (!tokA.length || !tokB.length) return false;
-  const comuni = tokA.filter((aTok) => tokB.some((bTok) => tokenIndirizzoCompatibili(aTok, bTok))).length;
-  return comuni / Math.max(tokA.length, tokB.length) >= 0.6;
-}
-
 function luogoCompatibileRecord(a: RecordDto, b: RecordDto): boolean {
   return stessoLuogo(estrattoDaRecord(a), estrattoDaRecord(b));
+}
+
+/** Costruisce i dati per il confronto strutturato da un ExtractedClient. */
+function datiIndirizzoDaEstratto(e: ExtractedClient): DatiIndirizzoConfronto {
+  return { indirizzo: e.indirizzo, cap: e.cap, citta: e.citta, prov: e.prov };
 }
 
 function stessoClienteAuto(a: RecordDto, b: RecordDto): string | null {
@@ -213,12 +160,13 @@ function stessoClienteAuto(a: RecordDto, b: RecordDto): string | null {
   const emailB = pulisciEmail(B.email);
   if (emailA && emailA === emailB) return "email";
 
+  // Confronto strutturato completo (include civico rigoroso, odonomastico, cap, città)
+  const indirizzoOk = sonoIndirizziCompatibili(datiIndirizzoDaEstratto(A), datiIndirizzoDaEstratto(B));
   const stessoLuogoOk = luogoCompatibileRecord(a, b);
-  const indirizzoOk = indirizzoForteCompatibile(A.indirizzo, B.indirizzo);
   const telefonoOk = telefonoCompatibile(A.telefono, B.telefono);
   const cfParziale = cfValido(cfA) !== cfValido(cfB);
 
-  if (indirizzoOk && stessoLuogoOk) return telefonoOk ? "telefono+indirizzo" : "indirizzo";
+  if (indirizzoOk) return telefonoOk ? "telefono+indirizzo" : "indirizzo";
   if (telefonoOk && (stessoLuogoOk || indirizzoOk)) return "telefono";
   if (cfParziale && (indirizzoOk || telefonoOk)) return "cf-parziale";
   return null;
@@ -295,7 +243,7 @@ function patchMergeClienti(canonico: RecordDto, duplicati: RecordDto[]): Campi {
     if (!cfValido(current("cf")) && cfValido(candidato.cf)) {
       setIfChanged("cf", candidato.cf);
     }
-    if (indirizzoForteCompatibile(current("indirizzo"), candidato.indirizzo)) {
+    if (indirizzoStrutturatoCompatibile(current("indirizzo"), candidato.indirizzo)) {
       setIfChanged("indirizzo", scegliPiuCompleto(current("indirizzo"), candidato.indirizzo));
     }
     if (current("telefono") && candidato.telefono && pulisciTelefono(candidato.telefono).length > pulisciTelefono(current("telefono")).length) {
@@ -325,15 +273,6 @@ export function normalizzaNome(n: string): string {
     .join(" ");
 }
 
-/** Normalizza il CAP a 5 cifre gestendo anche float (es. 96100.0) */
-export function pulisciCap(c: string): string {
-  let s = c.trim().split(".")[0];
-  s = s.replace(/\D/g, "");
-  if (s.length > 0) {
-    return s.padStart(5, "0").slice(-5);
-  }
-  return "";
-}
 
 /** Determina se una riga estratta dagli Excel deve essere scartata preventivamente */
 export function rigaDaScartare(c: { nome: string; telefono: string; indirizzo: string; email: string }): boolean {

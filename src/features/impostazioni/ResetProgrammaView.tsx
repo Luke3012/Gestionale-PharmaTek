@@ -35,7 +35,7 @@ import {
 } from "../../lib/tauri";
 import { attivaRipristinoBloccante, disattivaRipristinoBloccante } from "../../lib/riallineamentoDati";
 import { Avatar, svuotaCacheAvatar } from "../../ui/Avatar";
-import { dialog } from "../../ui/dialog/store";
+import { dialog, dialogStore } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
 import { RITIRO_AUTO_RELOAD_MS, secondiRimanentiRitiro } from "./ritiroCountdown";
 import { preparaDedupClientiAuto } from "../anagrafiche/dedupClientiAuto";
@@ -151,7 +151,9 @@ export function ResetProgrammaView({
   const bloccoRitiroAttivoRef = useRef(false);
   const riavvioRitiroInCorsoRef = useRef(false);
   const coordinamentoRef = useRef<RestoreCoordination | null>(null);
-  const focusTrapRef = useFocusTrap(aperto);
+  const [dialogAperto, setDialogAperto] = useState(false);
+  useEffect(() => dialogStore.subscribe((d) => setDialogAperto(Boolean(d))), []);
+  const focusTrapRef = useFocusTrap(aperto && !dialogAperto);
 
   const occupato =
     passo === "lavoro"
@@ -259,7 +261,7 @@ export function ResetProgrammaView({
     const onKey = (event: KeyboardEvent) => {
       // Shell usa un Escape sintetico per chiudere menu e popover durante lo
       // scroll. Una view bloccante deve reagire soltanto al tasto Esc reale.
-      if (event.key !== "Escape" || !event.isTrusted || occupato) return;
+      if (event.key !== "Escape" || !event.isTrusted || occupato || dialogAperto) return;
       event.preventDefault();
       event.stopPropagation();
       setDirezione(-1);
@@ -277,7 +279,7 @@ export function ResetProgrammaView({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [aperto, occupato, onClose, passo]);
+  }, [aperto, dialogAperto, occupato, onClose, passo]);
 
   useEffect(() => {
     if (!aperto || passo !== "ottimizza_attesa" || !coordinamento) return;

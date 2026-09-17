@@ -88,7 +88,7 @@ export const CONFIGURAZIONE_DOCUMENTO_DEFAULT: ConfigurazioneDocumento = {
   indirizzo: "",
   localita: "",
   telefono: "",
-  email: "",
+  email: "demo@example.invalid",
   sito: "example.invalid",
 };
 
@@ -109,7 +109,7 @@ const SCHEDA_NERO = "#111111";
 const SCHEDA_GIALLO = "#f4c542";
 const TELEFONO_AZIENDA = "";
 const WHATSAPP_AZIENDA = "";
-const IBAN_AZIENDA = "IBAN-DEMO-NON-VALIDO";
+const IBAN_AZIENDA = "IT00 X000 00DE MO";
 
 function testo(
   nodes: DocumentoNode[],
@@ -543,7 +543,6 @@ export function creaDocumentoPreventivo(
     ]
       .filter(Boolean)
       .join(", "),
-    ...identificativiFiscali(spedizione),
     [spedizione.telefono, spedizione.email]
       .filter(Boolean)
       .join(" · "),
@@ -794,10 +793,43 @@ export function creaDocumentoPreventivo(
     contoTipo: string;
     contoIban?: string;
     scadDaSpedizione: boolean;
+    scadRelGiorni?: number;
   };
-  const pagamenti: PagamentoDocumento[] =
+  const confrontaPagamentiDocumento = (
+    a: PagamentoDocumento,
+    b: PagamentoDocumento,
+  ): number => {
+    const prioritaA = a.tipo === "acconto" ? 0 : 1;
+    const prioritaB = b.tipo === "acconto" ? 0 : 1;
+    if (prioritaA !== prioritaB) return prioritaA - prioritaB;
+
+    if (a.scadDaSpedizione && b.scadDaSpedizione) {
+      const relA = a.scadRelGiorni ?? 0;
+      const relB = b.scadRelGiorni ?? 0;
+      if (relA !== relB) return relA - relB;
+    }
+
+    const dataChiave = (p: PagamentoDocumento) => {
+      if (p.scadDaSpedizione) {
+        return `spedizione:${String(p.scadRelGiorni ?? 0).padStart(5, "0")}`;
+      }
+      return p.scadenza || p.data || "9999-12-31";
+    };
+
+    const comp = dataChiave(a).localeCompare(dataChiave(b));
+    if (comp !== 0) return comp;
+
+    const tipoPriorita = (tipo: string) => {
+      if (tipo === "saldo") return 0;
+      if (tipo === "rata") return 1;
+      return 2;
+    };
+    return tipoPriorita(a.tipo) - tipoPriorita(b.tipo);
+  };
+
+  const pagamenti: PagamentoDocumento[] = (
     preventivo.pagamenti?.length
-      ? preventivo.pagamenti
+      ? [...preventivo.pagamenti]
       : [
           ...(preventivo.acconto > 0
             ? [{
@@ -810,6 +842,7 @@ export function creaDocumentoPreventivo(
                 contoTipo: "banca",
                 contoIban: IBAN_AZIENDA,
                 scadDaSpedizione: false,
+                scadRelGiorni: 0,
               }]
             : []),
           {
@@ -822,8 +855,12 @@ export function creaDocumentoPreventivo(
             contoTipo: "banca",
             contoIban: IBAN_AZIENDA,
             scadDaSpedizione: true,
+            scadRelGiorni: 0,
           },
-        ].filter((pagamento) => pagamento.importo > 0);
+        ]
+  )
+    .filter((pagamento) => pagamento.importo > 0)
+    .sort(confrontaPagamentiDocumento);
   let numeroRata = 0;
   const etichettaPagamento = (tipo: string) => {
     if (tipo === "acconto") return "Acconto";
@@ -873,12 +910,13 @@ export function creaDocumentoPreventivo(
         nuovaPagina();
         intestazioneRiepilogo();
       }
+      const rel = pagamento.scadRelGiorni ?? 0;
       const dataPagamento = pagamento.saldato
         ? pagamento.data
           ? `Incassato il ${dataIt(pagamento.data)}`
           : "Incassato"
         : pagamento.scadDaSpedizione && !pagamento.scadenza
-          ? "All'affidamento al corriere"
+          ? (rel > 0 ? `Consegna + ${rel} gg` : "All'affidamento al corriere")
           : pagamento.tipo === "acconto" && !pagamento.scadenza
             ? "Alla conferma dell'ordine"
           : pagamento.scadenza
@@ -1898,7 +1936,11 @@ export function scaricaBlob(blob: Blob, nome: string) {
 
 /** Salva sempre passando dal selettore di percorso. Il fallback browser usa il
  * file picker nativo quando disponibile e non cambia il comportamento desktop. */
-export async function salvaBlobConPercorso(blob: Blob, nome: string): Promise<boolean> {
+export async function salvaBlobConPercorso(
+  blob: Blob,
+  nome: string,
+  opzioni: { richiedePremium?: boolean } = {},
+): Promise<boolean> {
   const estensione = nome.split(".").pop()?.toLowerCase() || "";
   const mime = blob.type || (estensione === "png" ? "image/png" : "application/pdf");
   if (inTauri) {
@@ -1914,7 +1956,11 @@ export async function salvaBlobConPercorso(blob: Blob, nome: string): Promise<bo
       reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
       reader.readAsDataURL(blob);
     });
-    await api.documentoSalva(path, datiBase64);
+    if (opzioni.richiedePremium) {
+      await api.documentoPreventivoSalva(path, datiBase64);
+    } else {
+      await api.documentoSalva(path, datiBase64);
+    }
     return true;
   }
   const picker = (
@@ -1943,6 +1989,8 @@ export async function salvaBlobConPercorso(blob: Blob, nome: string): Promise<bo
   return true;
 }
 
+let ultimaPuliziaStampa: (() => void) | null = null;
+
 export function stampaDocumento(
   documento: DocumentoA4,
   onRilasciato?: () => void,
@@ -1950,6 +1998,19 @@ export function stampaDocumento(
   if (documento.overflow.length > 0) {
     throw new Error("Riduci i contenuti indicati prima di stampare.");
   }
+  if (typeof window === "undefined" || !window.document) {
+    return () => {};
+  }
+
+  // Se c'era una sessione di stampa precedente ancora in corso/attesa, rilasciala prima di avviare la nuova
+  if (ultimaPuliziaStampa) {
+    try {
+      ultimaPuliziaStampa();
+    } catch {
+      // Ignora errori di pulizia precedente
+    }
+  }
+
   const blob = documentoPdfBlob(documento);
   const url = URL.createObjectURL(blob);
   const iframe = document.createElement("iframe");
@@ -1959,26 +2020,46 @@ export function stampaDocumento(
   iframe.style.opacity = "0";
   iframe.style.pointerEvents = "none";
   iframe.src = url;
-  let timeout: number | null = null;
   let rilasciato = false;
+  let timeoutChiusura: number | null = null;
+  let rimuoviAscoltatori = () => {};
+
   const rilascia = () => {
     if (rilasciato) return;
     rilasciato = true;
-    if (timeout !== null) window.clearTimeout(timeout);
+    if (timeoutChiusura !== null) {
+      window.clearTimeout(timeoutChiusura);
+      timeoutChiusura = null;
+    }
+    if (ultimaPuliziaStampa === rilascia) {
+      ultimaPuliziaStampa = null;
+    }
+    rimuoviAscoltatori();
     iframe.remove();
     URL.revokeObjectURL(url);
     onRilasciato?.();
   };
+
+  ultimaPuliziaStampa = rilascia;
   document.body.appendChild(iframe);
-  // `afterprint` libera normalmente subito dopo la chiusura del dialogo.
-  // Il limite copre anche WebView che non emettono né `load` né `afterprint`.
-  timeout = window.setTimeout(rilascia, 15_000);
+
   iframe.addEventListener("error", rilascia, { once: true });
   iframe.addEventListener(
     "load",
     () => {
       const finestraStampa = iframe.contentWindow;
-      finestraStampa?.addEventListener("afterprint", rilascia, { once: true });
+      const onAfterPrint = () => {
+        // Breve delay per consentire allo spooler/driver di completare l'invio
+        timeoutChiusura = window.setTimeout(rilascia, 1000);
+      };
+
+      finestraStampa?.addEventListener("afterprint", onAfterPrint, { once: true });
+      window.addEventListener("afterprint", onAfterPrint, { once: true });
+      rimuoviAscoltatori = () => {
+        finestraStampa?.removeEventListener("afterprint", onAfterPrint);
+        window.removeEventListener("afterprint", onAfterPrint);
+      };
+
       finestraStampa?.focus();
       finestraStampa?.print();
     },

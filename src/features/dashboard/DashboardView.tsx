@@ -127,9 +127,23 @@ function GraficoLazy({ pronto, h, children }: { pronto: boolean; h: number; chil
 }
 
 /** Risolve il periodo selezionato (preset o custom) in `[dal, al]` per il backend. */
-function risolvi(periodo: PeriodoSel, dalC: string, alC: string): { dal: string | null; al: string | null } {
-  if (periodo === "personalizzato") return { dal: dalC || null, al: alC || null };
-  return intervalloPeriodo(periodo);
+function risolvi(
+  periodo: PeriodoSel,
+  dalC: string,
+  alC: string,
+  anno = 0,
+): { dal: string | null; al: string | null } {
+  const limiteDal = anno === 0 ? null : `${anno}-01-01`;
+  const limiteAl = anno === 0 ? null : `${anno}-12-31`;
+  if (periodo === "personalizzato") {
+    const dal = dalC || limiteDal;
+    const al = alC || limiteAl;
+    return {
+      dal: limiteDal && dal && dal < limiteDal ? limiteDal : dal || null,
+      al: limiteAl && al && al > limiteAl ? limiteAl : al || null,
+    };
+  }
+  return intervalloPeriodo(periodo, new Date(), anno);
 }
 
 /** Etichetta dell'asse mese (`YYYY-MM`) → estremi del mese per il deep-link. */
@@ -198,7 +212,7 @@ export function DashboardView({
   testoIntro?: string | null;
   saltaIntro?: boolean;
 }) {
-  const { dashboardPeriodo, ordineFinestra } = usePrefs();
+  const { anno, dashboardPeriodo, ordineFinestra } = usePrefs();
   const premium = usePremiumAccess();
   const [periodo, setPeriodo] = useState<PeriodoSel>(dashboardPeriodo);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
@@ -206,6 +220,15 @@ export function DashboardView({
   const [alC, setAlC] = useState("");
   const [donut, setDonut] = useState<"stato" | "saldare">("stato");
   const [classifica, setClassifica] = useState<"agenti" | "regioni">("agenti");
+
+  useEffect(() => {
+    if (premium.enabled) return;
+    // Evita che una fotografia manuale Premium rimanga in memoria e ricompaia
+    // dopo una disattivazione/riattivazione senza essere stata ricalcolata.
+    void import("../suggerimenti/suggerimenti").then((modulo) =>
+      modulo.invalidaControlloManualeSuggerimenti(),
+    );
+  }, [premium.enabled]);
 
   const ridotte = useAnimazioniRidotte();
   const primaVoltaRef = useRef(!saltaIntro && !ridotte && (forceIntro || primaVoltaDash));
@@ -233,7 +256,7 @@ export function DashboardView({
 
   useRicaricaSuEventi(EVENTI_RICARICA, () => setNonce((n) => n + 1), 180);
 
-  const { dal, al } = risolvi(periodo, dalC, alC);
+  const { dal, al } = risolvi(periodo, dalC, alC, anno);
   const stats = useStatsPeriodo(dal, al, nonce);
   const panels = useDashboardPanels(nonce);
 
@@ -273,7 +296,7 @@ export function DashboardView({
   };
   const periodoLink = { dal: dal ?? undefined, al: al ?? undefined };
 
-  const descr = periodo === "personalizzato" ? "periodo scelto" : descrizionePeriodo(periodo);
+  const descr = periodo === "personalizzato" ? "periodo scelto" : descrizionePeriodo(periodo, anno);
 
   const overlayIntroVisibile = mostraIntroVisiva && primaVoltaRef.current && !skipIntroRef.current && !splashGone;
 
@@ -689,6 +712,7 @@ function PeriodoControl({
   setDalC: (v: string) => void;
   setAlC: (v: string) => void;
 }) {
+  const { anno } = usePrefs();
   const [open, setOpen] = useState(false);
   useCloseOnScroll(open, setOpen);
   const presets: PeriodoDash[] = ["giorno", "settimana", "mese", "anno", "tutto"];
@@ -696,7 +720,7 @@ function PeriodoControl({
   // L'intervallo mostrato riflette SEMPRE la selezione corrente: cliccando un preset i
   // campi Dal/Al si aggiornano col suo intervallo risolto; in «personalizzato» sono i
   // valori dell'utente.
-  const r = risolvi(periodo, dalC, alC);
+  const r = risolvi(periodo, dalC, alC, anno);
 
   const scegliPreset = (p: PeriodoDash) => {
     setPeriodo(p);

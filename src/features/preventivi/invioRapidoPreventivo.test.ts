@@ -28,7 +28,7 @@ function preventivo(overrides: Partial<Preventivo> = {}): Preventivo {
     medicoNome: "Dott. Bianchi",
     agenteNome: "Agente",
     linee: ["Immunoterapia"],
-    email: "",
+    email: "demo@example.invalid",
     telefono: "3331234567",
     creatoMs: Date.UTC(2026, 6, 30),
     totale: 12_300,

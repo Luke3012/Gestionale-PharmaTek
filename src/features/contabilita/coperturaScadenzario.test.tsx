@@ -252,5 +252,26 @@ describe("copertura dello scadenzario", () => {
       tipoDopo: "acconto",
       importoDopo: 4_500,
     })).toBeNull();
+    // Se un acconto saldato viene convertito a saldo (es. contrassegno), l'ordine non ha più acconto
+    expect(accontoPrevistoDopoModifica({
+      tipoPrima: "acconto",
+      saldatoPrima: true,
+      tipoDopo: "saldo",
+      importoDopo: 4_500,
+    })).toBe(0);
+    // Se un saldo viene convertito in acconto
+    expect(accontoPrevistoDopoModifica({
+      tipoPrima: "saldo",
+      saldatoPrima: false,
+      tipoDopo: "acconto",
+      importoDopo: 3_000,
+    })).toBe(3_000);
+    // Se nessuno dei due è acconto
+    expect(accontoPrevistoDopoModifica({
+      tipoPrima: "saldo",
+      saldatoPrima: false,
+      tipoDopo: "rata",
+      importoDopo: 3_000,
+    })).toBeNull();
   });
 });

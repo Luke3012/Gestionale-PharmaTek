@@ -44,13 +44,14 @@ Preparazione e spedizione
 Incassi, distinte, provvigioni e rimborsi
 ```
 
-Il menu principale espone otto pagine sui PC premium e sette sugli altri:
+Il menu principale espone le stesse pagine a tutti gli utenti; alcune azioni interne restano
+protette da Premium:
 
 | Pagina | Scopo sintetico |
 |---|---|
 | Dashboard | Riepilogo operativo e attività urgenti |
 | Giornaliero | Inserimento, ricerca e gestione degli ordini |
-| Preventivi | Preparazione, stampa, invio e sollecito dei preventivi; solo premium |
+| Preventivi | Preparazione e gestione dei preventivi; invio, sollecito, stampa e salvataggio su file richiedono Premium |
 | Produzione | Preparazione e avanzamento delle righe da produrre |
 | Spedizioni | Composizione dei colli e storico delle spedizioni |
 | Contabilità | Incassi, distinte, provvigioni e rimborsi |
@@ -519,16 +520,19 @@ In un ordine nuovo l'acconto può essere:
 
 Acconto concordato e denaro realmente incassato sono concetti distinti. Il primo rappresenta una previsione; il secondo concorre all'incassato.
 
-#### Pagamento completo alla consegna
+#### Pagamento completo alla consegna e gestione acconti
 
 L'opzione di pagamento completo in contrassegno/COD:
 
 - azzera la necessità di un acconto;
 - destina l'intero importo al flusso di incasso alla consegna;
 - usa il conto di transito/contrassegno configurato;
-- produce una scadenza collegata alla spedizione.
+- produce una scadenza collegata alla spedizione (+30 giorni).
 
 Disattivando l'opzione, lo scadenzario viene ricostruito secondo acconto e saldo ordinari.
+
+**Auto-conversione acconto in saldo per contrassegno:**
+L'acconto non può essere riscosso in contrassegno alla consegna. Se in Nuovo/Modifica Ordine o nei Preventivi viene assegnato un conto di contrassegno o assegno a una voce acconto, la riga viene automaticamente convertita in `saldo` con scadenza legata alla consegna (`+30 giorni`), e il campo *Acconto previsto* nella testata dell'ordine o preventivo viene azzerato.
 
 #### Materializzazione al primo salvataggio
 
@@ -583,10 +587,10 @@ La finestra non deve essere chiusa forzatamente mentre il pulsante indica un sal
 
 Prima di chiudere un ordine con modifiche non salvate, PharmaTek avverte che verranno perse anche le modifiche locali allo scadenzario. La conferma riguarda quindi non soltanto i campi dell'ordine, ma anche pagamenti o rate preparati nell'editor e non ancora materializzati.
 
-Su un nuovo ordine, i PC premium mostrano anche **Salva e stampa**: l'ordine viene salvato con lo
+Su un nuovo ordine, **Salva e stampa** è disponibile per tutti: l'ordine viene salvato con lo
 stesso flusso e, soltanto dopo il successo, si apre la scheda cliente precompilata. Sugli ordini
-esistenti **Salva** e **Stampa** restano separati. Senza premium il comando Stampa è visibile ma
-apre l'informativa premium senza caricare dati riservati.
+esistenti **Salva** e **Stampa** restano separati; apertura, modifica, salvataggio e stampa della
+scheda cliente sono disponibili per tutti.
 
 ## 15. Modale sostituzione
 
@@ -618,7 +622,7 @@ Il rifiuto richiede una motivazione. Dopo la conferma:
 duplicare cliente, prodotti, prezzi o pagamenti.
 
 **Come si apre:** dalla voce **Preventivi**, collocata fra Giornaliero e Produzione. La voce è
-presente soltanto sui PC premium.
+disponibile su tutti i PC.
 
 La tabella permette di cercare numero ordine o preventivo, cliente, medico e paziente; i filtri
 restringono le linee e l'indicazione dell'invio. Ogni riga mostra:
@@ -660,7 +664,8 @@ salvataggio viene fermato e va ricaricato: non rimangono aggiornamenti parziali.
 
 ### 16 bis.3 Anteprima, PDF, immagine e stampa
 
-**Anteprima**, **Stampa preventivo**, **Salva PDF** e **Salva immagine** usano la stessa pagina A4.
+**Anteprima** usa la stessa pagina A4 di **Stampa preventivo**, **Salva PDF** e **Salva immagine**.
+L'anteprima è gratuita; stampa e salvataggio su file del preventivo richiedono Premium.
 Il totale è IVA inclusa; imponibile e IVA al 10% sono scorporati senza aumentarlo. Se righe o note
 non entrano in una pagina, l'anteprima indica quali contenuti ridurre e blocca stampa e invio,
 evitando tagli invisibili.
@@ -711,8 +716,8 @@ Il corpo del modale è scorrevole e il footer mantiene disponibili **Salva**, **
 **Stampa**. Il risultato è un A4 vettoriale che replica la struttura del modulo cartaceo: righe
 per i dati generali, tabelle affiancate per importi e saldo, note e caselle operative. Quando un
 dato manca, la riga o cella corrispondente resta bianca e scrivibile a penna, senza trattini o
-segnaposto. Tutte le caselle selezionate restano leggibili anche in stampa. Senza premium gli
-accessi dagli ordini esistenti restano visibili ma aprono l'informativa premium.
+segnaposto. Tutte le caselle selezionate restano leggibili anche in stampa. Queste azioni della
+scheda cliente restano disponibili anche senza Premium.
 
 ---
 
@@ -772,6 +777,13 @@ Gli elementi dello stesso destinatario possono essere trattati insieme. La modal
 ### 18.3 Creazione spedizione
 
 La modale riepiloga destinatario, corriere, colli, righe incluse, contrassegno e note. La conferma marca le righe incluse come spedite e crea il record di spedizione.
+
+- **Calcolo contrassegno proposto**: se l'ordine ha uno scadenzario con più voci (es. 225 € su banca e 225 € a contrassegno per un totale di 450 €), il campo contrassegno propone automaticamente l'importo della specifica rata aperta destinata al contrassegno (225 €), anziché l'intero totale dell'ordine. Nelle spedizioni parziali (deselezionando prodotti), l'importo della rata individuata viene mantenuto.
+- **Associazione e preservazione rate**: alla conferma, la rata a contrassegno viene marcata con l'ID della spedizione (`spedizione_id`). Le altre rate ordinarie aperte restano intatte nello scadenzario.
+- **Sincronizzazione bidirezionale e scadenze indipendenti**:
+  - Se un ordine ha più colli e più rate di contrassegno, la modifica dell'importo di una rata nell'ordine aggiorna unicamente il collo collegato.
+  - La modifica dell'importo nel popover *Modifica contrassegno* del collo aggiorna la sola rata associata a quella spedizione; l'eventuale differenza viene assorbita dalle rate residue libere senza eliminare né alterare le rate legate ad altre spedizioni.
+  - **Scadenze contrassegno per spedizione**: quando vengono effettuate spedizioni scaglionate in date diverse (es. Collo 1 il 01/06 e Collo 2 il 20/06), ciascuna rata a contrassegno calcola la propria scadenza (+30 giorni) a partire dalla data della **propria specifica spedizione** (01/07 per la prima rata e 20/07 per la seconda), preservando la data della prima rata senza sovrascriverla.
 
 ### 18.4 Aggiungi collo
 
@@ -2395,15 +2407,20 @@ Il riepilogo serve a capire su quali conti deve arrivare il denaro collegato all
 ### 59.13 Bollettazione da Excel
 
 Il parser accetta i tracciati recenti con `FechaPedido` e quello storico con `Fecha Envío`.
-`Referencia` resta testuale, compresi gli zeri iniziali. BELTAVAC, BELTAORAL e VEB vengono
-ricondotti ai prodotti Immunoterapia già presenti; formulazione, posologia e allergeni sono
-proposti sui campi esistenti. Il sistema non crea clienti, ordini o prodotti.
+`Referencia` resta testuale. I riferimenti numerici correggibili vengono normalizzati in modo
+conservativo e l'originale viene mostrato con un avviso. BELTAVAC, BELTAORAL e VEB vengono
+ricondotti ai prodotti Immunoterapia già presenti; `PRO2` cerca i prodotti PRO corrispondenti,
+con fallback standard da verificare. Formulazione, posologia e allergeni sono proposti sui campi
+esistenti; gli allergeni mancanti non bloccano l'associazione. Il sistema non crea clienti, ordini
+o prodotti.
 
 Il matching usa paziente/cliente come segnale principale e medico, prodotto e dettagli come
 conferme. L'assegnazione è globale e uno-a-uno: una riga ordine non può essere proposta
-automaticamente a due righe del file. I risultati incerti richiedono sempre una decisione
-dell'operatore e la conferma verifica nuovamente revisioni, stato, corriere, lotti e unicità dei
-riferimenti.
+automaticamente a due righe del file. Quando più righe sono equivalenti e il gruppo candidato ha
+la stessa cardinalità nello stesso ordine, il sistema può assegnarle automaticamente perché lo
+scambio dei lotti non cambia ordine o prodotto. Gruppi con alternative su ordini diversi o con
+cardinalità diversa restano da controllare. La conferma verifica nuovamente revisioni, stato,
+corriere, lotti e unicità dei riferimenti.
 
 ## 60. Distinte: riferimento completo
 

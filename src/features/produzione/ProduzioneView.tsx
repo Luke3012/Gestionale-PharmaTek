@@ -39,11 +39,13 @@ import {
   IconFileExport,
   IconFlask2,
   IconHammer,
+  IconMail,
   IconPackageImport,
   IconPackages,
   IconPencil,
   IconSearch,
   IconTestPipe,
+  IconZip,
 } from "@tabler/icons-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useIntersection } from "@mantine/hooks";
@@ -72,6 +74,7 @@ import {
   campiProduzione,
   diagnosticaIncompleta,
   nomeProdotto,
+  pazienteEffettivoProduzione,
   rigaProduzioneCompleta,
   suggerimentiProduzione,
   type Suggerimenti,
@@ -81,15 +84,27 @@ import { CompilaProduzioneModal, type CompilaTarget } from "./CompilaProduzioneM
 import { InProduzioneFlourish } from "./InProduzioneFlourish";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
-import { estremiPeriodoIso, formattaDataFileItaliana, formattaDataSeparataItaliana as dataIt, oggiIso as oggi } from "../../lib/date";
+import { formattaDataFileItaliana, formattaDataSeparataItaliana as dataIt, oggiIso as oggi } from "../../lib/date";
 import {
   DataConsegnaPrevistaModal,
   type DataConsegnaTarget,
   type RigaDataConsegnaPrevista,
 } from "./DataConsegnaPrevistaModal";
 import type { GruppoLotto } from "./tipiProduzione";
+import { PrescrizioniProduzioneModal, type PrescrizioniIntento } from "./PrescrizioniProduzioneModal";
+import { PremiumAction } from "../../premium/PremiumAction";
+import { dataEntroAnnoDiLavoro } from "../../lib/annoLavoro";
+import {
+  lottoProduzioneRiga as lottoRiga,
+  ordineDaProdurre,
+  ordineDiProduzione,
+  ordineInLavorazione,
+  estremiPeriodoProduzione,
+  rigaDaProdurre as daProdurreRiga,
+  rigaInLavorazione as inLavorazioneRiga,
+  statoProduzioneRiga as statoProdRiga,
+} from "./filtriProduzione";
 
-const LINEA = "Immunoterapia";
 const DURATA_APERTURA_LOTTO_MS = 140;
 const EASING_APERTURA_LOTTO = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 const EVENTI_RICARICA = [
@@ -196,11 +211,6 @@ function isDiagnostica(o: OrdineDto): boolean {
 // --- Stato di produzione PER RIGA (FASE 7) ---
 // Lo stato vive sulla riga; quello dell'ordine è derivato. `lotto_produzione` resta un
 // indicatore legacy valido: evita che righe già agganciate a un lotto ricompaiano in coda.
-const statoProdRiga = (r: RecordDto): string => (r.data.stato_produzione as string) || "";
-const lottoRiga = (r: RecordDto): string => (r.data.lotto_produzione as string) || "";
-const daProdurreRiga = (r: RecordDto): boolean => statoProdRiga(r) === "" && lottoRiga(r) === "";
-const inLavorazioneRiga = (r: RecordDto): boolean =>
-  statoProdRiga(r) === "in_produzione" || statoProdRiga(r) === "arrivato_it" || lottoRiga(r) !== "";
 const daArrivareRiga = (r: RecordDto): boolean =>
   statoProdRiga(r) === "in_produzione" || (statoProdRiga(r) === "" && lottoRiga(r) !== "");
 const arrivataRiga = (r: RecordDto): boolean => statoProdRiga(r) === "arrivato_it";
@@ -518,6 +528,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   const [lottoInviato, setLottoInviato] = useState<string | null>(null);
   const [inProduzione, setInProduzione] = useState(false);
   const [esportaLotto, setEsportaLotto] = useState<GruppoLotto | null>(null);
+  const [prescrizioni, setPrescrizioni] = useState<{ lot: string; intent: PrescrizioniIntento } | null>(null);
 
   const { ordineFinestra, anno, ridurreAnimazioni } = usePrefs();
   useCloseOnScroll(!!contextMenu, (v) => {
@@ -573,11 +584,12 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     return () => clearTimeout(t);
   }, [caricamento, ridurreAnimazioni]);
 
-  // Cambiando vista, azzero le selezioni (le azioni sono diverse per vista).
+  // Cambiando vista o contesto annuale, azzero le selezioni: elementi appena nascosti
+  // non devono restare azionabili in una coda diversa.
   useEffect(() => {
     setSelezione(new Set());
     setSelLotti(new Set());
-  }, [vista]);
+  }, [vista, anno]);
 
   const carica = useCallback(async () => {
     try {
@@ -590,11 +602,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
       // Immunoterapia e Diagnostica (vanno nello stesso file/lotti Laboratorio, FASE 5D);
       // esclusi i rifiutati e Keriba (canale informale, non va a Laboratorio).
       setOrdini(
-        o.filter(
-          (x) =>
-            x.stato !== "Rifiutato" &&
-            (x.linee.includes(LINEA) || x.linee.includes("Diagnostica"))
-        )
+        o.filter(ordineDiProduzione)
       );
       setRighe(rg);
       setProdMap(new Map(pr.map((p) => [p.id, (p.data.nome as string) || ""])));
@@ -606,12 +614,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     }
   }, []);
 
-  useEffect(() => {
-    carica();
-    const iv = setInterval(carica, 8000);
-    return () => clearInterval(iv);
-  }, [carica]);
-  useRicaricaSuEventi(EVENTI_RICARICA, carica, 160);
+  useRicaricaSuEventi(EVENTI_RICARICA, carica, 160, { caricamentoIniziale: true });
 
   // Righe di prodotto per ordine (per le card espanse) + pazienti distinti per resoconto.
   const righePerOrdine = useMemo(() => {
@@ -685,62 +688,52 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     [ricercaProduzione, testoRicercaOrdine]
   );
 
-  // Conteggi per le etichette del SegmentedControl: in «Da produrre» rientrano anche gli
-  // ordini ancora senza prodotto, così il badge coincide con le card realmente visibili.
-  const nDaProdurre = useMemo(
+  // Le code operative includono l'anno scelto e gli arretrati, ma mai anni futuri.
+  const ordiniOperativiAnno = useMemo(
     () =>
-      ordini.filter(
-        (o) => {
-          const rows = righePerOrdine.get(o.id) ?? [];
-          return !["Spedito", "Chiuso", "Rifiutato"].includes(o.stato) &&
-            (rows.length === 0 || rows.some(daProdurreRiga));
-        }
-      ).length,
-    [ordini, righePerOrdine]
-  );
-  const nInLavorazione = useMemo(
-    () => ordini.filter((o) => (righePerOrdine.get(o.id) ?? []).some(inLavorazioneRiga)).length,
-    [ordini, righePerOrdine]
+      ordini.filter((o) => {
+        if (!dataEntroAnnoDiLavoro(o.data, anno)) return false;
+        const rows = righePerOrdine.get(o.id) ?? [];
+        return ordineDaProdurre(o, rows) || ordineInLavorazione(rows);
+      }),
+    [anno, ordini, righePerOrdine],
   );
 
-  // Agenti presenti fra gli ordini Immunoterapia (per il filtro).
+  // Agenti presenti nella medesima coda operativa visualizzabile.
   const opzioniAgenti = useMemo(() => {
     const m = new Map<string, string>();
-    for (const o of ordini) if (o.agenteId) m.set(o.agenteId, o.agenteNome || "—");
+    for (const o of ordiniOperativiAnno) if (o.agenteId) m.set(o.agenteId, o.agenteNome || "—");
     return [...m.entries()].map(([value, label]) => ({ value, label }));
-  }, [ordini]);
+  }, [ordiniOperativiAnno]);
 
   const filtroAgentiSet = useMemo(() => new Set(filtroAgenti), [filtroAgenti]);
 
-  // Filtro per-ordine per costruire le viste. In «In lavorazione» agente, acconto e
-  // ricerca NON vanno applicati qui: prima si costruiscono gli invii completi e poi si
-  // decide quali mostrare con una corrispondenza esistenziale sul lotto.
-  const filtrati = useMemo(() => {
-    return ordini.filter((o) => {
-      // Vista per PRESENZA di righe (FASE 7): «Da produrre» = l'ordine ha ≥1 riga da produrre
-      // (e non è già spedito/chiuso/rifiutato); «In lavorazione» = ha ≥1 riga in lavorazione.
-      // Un ordine con righe in entrambi gli stati compare in ENTRACORRIERE_C le viste (righe filtrate).
+  // Le due viste vengono derivate indipendentemente: i badge devono restare corretti
+  // anche quando la relativa scheda non è quella attiva.
+  const ordiniDaProdurreFiltrati = useMemo(() => {
+    return ordiniOperativiAnno.filter((o) => {
       const rgh = righePerOrdine.get(o.id) ?? [];
-      if (vista === "da_produrre") {
-        if (["Spedito", "Chiuso", "Rifiutato"].includes(o.stato)) return false;
-        // Un ordine senza righe prodotto è lavoro da completare, quindi deve essere
-        // visibile nella coda anche prima che qualcuno lo cerchi.
-        if (rgh.length > 0 && !rgh.some(daProdurreRiga)) return false;
-      } else {
-        if (!rgh.some(inLavorazioneRiga)) return false;
-      }
-      if (anno !== 0 && Number(o.data.slice(0, 4)) !== anno) return false;
-      if (vista === "in_lavorazione") return true;
+      if (!ordineDaProdurre(o, rgh)) return false;
       if (filtroAgentiSet.size > 0 && !filtroAgentiSet.has(o.agenteId)) return false;
       if (filtroAcconto === "incassato" && !o.accontoIncassato) return false;
       if (filtroAcconto === "atteso" && o.accontoIncassato) return false;
       return ordineCorrispondeRicerca(o);
     });
-  }, [ordini, vista, filtroAgentiSet, filtroAcconto, anno, righePerOrdine, ricercaProduzione, ordineCorrispondeRicerca]);
+  }, [ordiniOperativiAnno, filtroAgentiSet, filtroAcconto, righePerOrdine, ordineCorrispondeRicerca]);
+
+  // Per «In lavorazione» i filtri vengono applicati dopo il raggruppamento: basta che
+  // un ordine del lotto corrisponda per mantenere visibile l'intero invio.
+  const ordiniInLavorazione = useMemo(
+    () =>
+      ordiniOperativiAnno.filter((o) =>
+        ordineInLavorazione(righePerOrdine.get(o.id) ?? []),
+      ),
+    [ordiniOperativiAnno, righePerOrdine],
+  );
 
   // ---- «Da produrre»: lista piatta ordinata (Confermato prima, dal più vecchio al più nuovo) ----
   const codaOrdinata = useMemo(() => {
-    const arr = [...filtrati];
+    const arr = [...ordiniDaProdurreFiltrati];
     arr.sort((a, b) => {
       const isConfA = a.stato === "Confermato";
       const isConfB = b.stato === "Confermato";
@@ -750,12 +743,12 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
       return a.numero.localeCompare(b.numero, "it", { numeric: true });
     });
     return arr;
-  }, [filtrati]);
+  }, [ordiniDaProdurreFiltrati]);
 
   // Coda raggruppata per stato confermato + data ordine (dal più vecchio al più nuovo)
   const codaGruppiData = useMemo(() => {
     const m = new Map<string, { isConfermato: boolean; data: string; ordini: OrdineDto[] }>();
-    for (const o of filtrati) {
+    for (const o of ordiniDaProdurreFiltrati) {
       const isConfermato = o.stato === "Confermato";
       const key = `${isConfermato ? "conf" : "altro"}_${o.data}`;
       if (!m.has(key)) {
@@ -774,7 +767,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
       return a.data.localeCompare(b.data);
     });
     return gs;
-  }, [filtrati]);
+  }, [ordiniDaProdurreFiltrati]);
 
   const ordiniGlobalIdx = useMemo(() => {
     const idxs = new Map<string, number>();
@@ -788,11 +781,12 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   }, [codaGruppiData]);
 
   // ---- «In lavorazione»: raggruppa per lotto di invio, poi filtra per periodo ----
-  const bounds = estremiPeriodoIso(periodo, da, a);
+  // «Tutto» mantiene visibili anche gli arretrati; gli altri periodi vengono invece
+  // risolti nel contesto dell'anno selezionato.
+  const bounds = estremiPeriodoProduzione(periodo, da, a, anno);
   const gruppi = useMemo(() => {
-    if (vista !== "in_lavorazione") return [] as GruppoLotto[];
     const map = new Map<string, GruppoLotto>();
-    for (const o of filtrati) {
+    for (const o of ordiniInLavorazione) {
       // Righe in lavorazione di questo ordine, raggruppate per LOTTO (FASE 7): lo stesso
       // ordine può comparire sotto più lotti (invii parziali in momenti diversi).
       const perLotto = new Map<string, RecordDto[]>();
@@ -813,6 +807,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
             ordini: [],
             righeLotto: new Map(),
             dataInvio: dataLottoRiga,
+            maxRevision: "",
             totale: 0,
             nInProd: 0,
             nArrivati: 0,
@@ -823,6 +818,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         g.ordini.push(o);
         g.righeLotto.set(o.id, rows);
         for (const r of rows) {
+          if (r.revision && r.revision > g.maxRevision) g.maxRevision = r.revision;
           g.totale += typeof r.data.prezzo === "number" ? (r.data.prezzo as number) : 0;
           if (arrivataRiga(r)) g.nArrivati += 1;
           else g.nInProd += 1;
@@ -849,12 +845,17 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
           g.ordini.some((o) => ordineCorrispondeRicerca(o, g.righeLotto.get(o.id) ?? []))
       );
     }
-    arr.sort((a, b) => (b.dataInvio || "").localeCompare(a.dataInvio || ""));
+    arr.sort((a, b) => {
+      const cmpData = (b.dataInvio || "").localeCompare(a.dataInvio || "");
+      if (cmpData !== 0) return cmpData;
+      const cmpRev = (b.maxRevision || "").localeCompare(a.maxRevision || "");
+      if (cmpRev !== 0) return cmpRev;
+      return b.lotto.localeCompare(a.lotto);
+    });
     return arr;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    vista,
-    filtrati,
+    ordiniInLavorazione,
     periodo,
     da,
     a,
@@ -1057,7 +1058,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
           dataInvio: ((r.data.data_produzione as string) || "").trim() || o.dataProduzione || g.dataInvio,
           agente: o.agenteNome,
           medico: o.medicoNome || o.clienteNome,
-          paziente: (r.data.paziente as string) || "",
+          paziente: pazienteEffettivoProduzione(r.data.paziente, o.clienteNome),
           valore: i === 0 ? o.totale : "",
           dataPrevista: ((r.data.data_prevista as string) || "").trim() || (o.dataPrevista && o.dataPrevista.trim()) || dataPrev,
           formulazione: (r.data.formulazione as string) || "",
@@ -1223,41 +1224,45 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     if (hasImmuno !== hasDiag) {
       const linea: LineaExport = hasImmuno ? "immuno" : "diag";
       return (
-        <Button
-          size="compact-sm"
-          variant="light"
-          color="teal"
-          className="pt-azione-adattiva"
-          leftSection={<IconFileExport size={15} />}
-          onClick={() => scegli(linea)}
-          aria-label={hasImmuno ? "Esporta Laboratorio" : "Esporta Diagnostica"}
-        >
-          <span className="pt-azione-adattiva-label">
-            {hasImmuno ? "Esporta Laboratorio" : "Esporta Diagnostica"}
-          </span>
-        </Button>
-      );
-    }
-    return (
-      // zIndex sopra l'overlay della fioritura (1500): senza, la tendina compariva DIETRO
-      // lo sfondo scuro e non era cliccabile.
-      <Menu position="bottom-end" withArrow zIndex={1600} withinPortal>
-        <Menu.Target>
+        <Tooltip label={hasImmuno ? "Esporta Excel" : "Esporta Diagnostica"} withArrow>
           <Button
             size="compact-sm"
             variant="light"
             color="teal"
             className="pt-azione-adattiva"
             leftSection={<IconFileExport size={15} />}
-            rightSection={<IconChevronDown size={14} />}
-            aria-label="Esporta"
+            onClick={() => scegli(linea)}
+            aria-label={hasImmuno ? "Esporta Excel" : "Esporta Diagnostica"}
           >
-            <span className="pt-azione-adattiva-label">Esporta</span>
+            <span className="pt-azione-adattiva-label">
+              {hasImmuno ? "Esporta Excel" : "Esporta Diagnostica"}
+            </span>
           </Button>
-        </Menu.Target>
+        </Tooltip>
+      );
+    }
+    return (
+      // zIndex sopra l'overlay della fioritura (1500): senza, la tendina compariva DIETRO
+      // lo sfondo scuro e non era cliccabile.
+      <Menu position="bottom-end" withArrow zIndex={1600} withinPortal>
+        <Tooltip label="Esporta produzione" withArrow>
+          <Menu.Target>
+            <Button
+              size="compact-sm"
+              variant="light"
+              color="teal"
+              className="pt-azione-adattiva"
+              leftSection={<IconFileExport size={15} />}
+              rightSection={<IconChevronDown size={14} />}
+              aria-label="Esporta"
+            >
+              <span className="pt-azione-adattiva-label">Esporta</span>
+            </Button>
+          </Menu.Target>
+        </Tooltip>
         <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
           <Menu.Label>Quale file generare?</Menu.Label>
-          <Menu.Item onClick={() => scegli("immuno")}>Immunoterapia (Laboratorio)</Menu.Item>
+          <Menu.Item onClick={() => scegli("immuno")}>Immunoterapia (Excel)</Menu.Item>
           <Menu.Item onClick={() => scegli("diag")}>Diagnostica</Menu.Item>
         </Menu.Dropdown>
       </Menu>
@@ -1830,19 +1835,51 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
               € {centsToEurStr(g.totale)}
             </Text>
             {renderEsporta(g)}
-            {inProdIds.length > 0 && (
+            <Tooltip label="Esporta prescrizioni" withArrow>
               <Button
                 size="compact-sm"
                 variant="light"
-                color="cyan"
+                color="violet"
                 className="pt-azione-adattiva"
-                leftSection={<IconPackageImport size={15} />}
-                loading={salvando}
-                onClick={() => segnaArrivati(inProdIds, "Lotto segnato Arrivato in Italia.")}
-                aria-label="Arrivato in Italia"
+                leftSection={<IconZip size={15} />}
+                onClick={() => setPrescrizioni({ lot: g.lotto, intent: "zip" })}
+                aria-label="Esporta prescrizioni"
               >
-                <span className="pt-azione-adattiva-label">Arrivato in Italia</span>
+                <span className="pt-azione-adattiva-label">Prescrizioni</span>
               </Button>
+            </Tooltip>
+            <Tooltip label="Invia tutto a Laboratorio" withArrow>
+              <div style={{ display: "inline-flex" }}>
+                <PremiumAction
+                  buttonVariant="light"
+                  buttonColor="blue"
+                  buttonSize="compact-sm"
+                  className="pt-azione-adattiva"
+                  leftSection={<IconMail size={15} />}
+                  onAction={() => setPrescrizioni({ lot: g.lotto, intent: "email" })}
+                  ariaLabel="Invia tutto a Laboratorio"
+                  title="Invio produzione a Laboratorio"
+                  message="L’invio e-mail dal gestionale è disponibile con Premium."
+                >
+                  <span className="pt-azione-adattiva-label">Invia a Laboratorio</span>
+                </PremiumAction>
+              </div>
+            </Tooltip>
+            {inProdIds.length > 0 && (
+              <Tooltip label="Segna arrivato in Italia" withArrow>
+                <Button
+                  size="compact-sm"
+                  variant="light"
+                  color="cyan"
+                  className="pt-azione-adattiva"
+                  leftSection={<IconPackageImport size={15} />}
+                  loading={salvando}
+                  onClick={() => segnaArrivati(inProdIds, "Lotto segnato Arrivato in Italia.")}
+                  aria-label="Arrivato in Italia"
+                >
+                  <span className="pt-azione-adattiva-label">Arrivato in Italia</span>
+                </Button>
+              </Tooltip>
             )}
             <MenuAzioniRiga>
                 {righeConsegna.length > 0 && (
@@ -1963,7 +2000,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                 label: (
                   <Group gap={6} wrap="nowrap">
                     <IconClipboardList size={15} />
-                    <span>Da produrre{nDaProdurre ? ` (${nDaProdurre})` : ""}</span>
+                    <span>Da produrre{codaOrdinata.length ? ` (${codaOrdinata.length})` : ""}</span>
                   </Group>
                 ),
               },
@@ -1972,7 +2009,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
                 label: (
                   <Group gap={6} wrap="nowrap">
                     <IconHammer size={15} />
-                    <span>In lavorazione{nInLavorazione ? ` (${nInLavorazione})` : ""}</span>
+                    <span>In lavorazione{gruppi.length ? ` (${gruppi.length})` : ""}</span>
                   </Group>
                 ),
               },
@@ -2308,12 +2345,49 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
         }}
         distinta={
           esportaLotto
-            ? renderEsporta(esportaLotto, () => {
-                setInProduzione(false);
-                setEsportaLotto(null);
-              }, false)
+            ? (
+              <Group gap="xs" justify="center">
+                {renderEsporta(esportaLotto, () => {
+                  setInProduzione(false);
+                  setEsportaLotto(null);
+                }, false)}
+                <Button
+                  size="compact-sm"
+                  variant="light"
+                  color="violet"
+                  leftSection={<IconZip size={15} />}
+                  onClick={() => {
+                    setPrescrizioni({ lot: esportaLotto.lotto, intent: "zip" });
+                    setInProduzione(false);
+                    setEsportaLotto(null);
+                  }}
+                >
+                  Prepara le prescrizioni
+                </Button>
+                <PremiumAction
+                  buttonVariant="light"
+                  buttonColor="blue"
+                  buttonSize="compact-sm"
+                  leftSection={<IconMail size={15} />}
+                  onAction={() => {
+                    setPrescrizioni({ lot: esportaLotto.lotto, intent: "email" });
+                    setInProduzione(false);
+                    setEsportaLotto(null);
+                  }}
+                  title="Invio produzione a Laboratorio"
+                  message="L’invio e-mail dal gestionale è disponibile con Premium."
+                >
+                  Invia tutto a Laboratorio
+                </PremiumAction>
+              </Group>
+            )
             : undefined
         }
+      />
+      <PrescrizioniProduzioneModal
+        lot={prescrizioni?.lot ?? null}
+        intent={prescrizioni?.intent ?? "zip"}
+        onClose={() => setPrescrizioni(null)}
       />
     </Pagina>
   );

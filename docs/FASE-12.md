@@ -63,8 +63,10 @@ continuano a essere rappresentati dalla cronologia della FASE 11.
 
 ## 3. Modello dati previsto
 
-Le nuove entità sono premium e non sono modificabili tramite il CRUD generico, neppure su un PC
-abilitato.
+Le nuove entità restano protette dal CRUD generico, neppure su un PC abilitato. I flussi di dominio
+dei preventivi e della scheda cliente hanno invece accessi distinti: la consultazione e la gestione
+dei dati condivisi sono gratuite; le azioni di invio, sollecito ed esportazione su file del preventivo
+richiedono Premium.
 
 ### 3.1 Preventivo
 
@@ -276,18 +278,16 @@ Punti di accesso:
 
 ### 7.1 Primo salvataggio ordine
 
-- Con premium compare **Salva e stampa** accanto a **Salva**.
+- **Salva e stampa** è disponibile per tutti accanto a **Salva**.
 - Il comando salva prima l'ordine con il flusso normale, crea/precompila la scheda e apre
   l'anteprima.
 - Se il dialogo di stampa viene annullato, l'ordine resta correttamente salvato.
-- Senza premium **Salva e stampa** non viene mostrato.
 
 ### 7.2 Ordine già esistente
 
 - **Salva** e **Stampa** sono azioni separate.
-- **Stampa** resta visibile anche senza premium.
-- Senza premium non carica dati riservati né avvia il renderer: apre il modale premium.
-- La voce **Stampa scheda cliente** nei menu ⋯ segue lo stesso comportamento.
+- **Stampa** e **Stampa scheda cliente** sono visibili e funzionanti anche senza Premium.
+- Visualizzazione, modifica e salvataggio della scheda cliente non aprono il paywall.
 
 ## 8. Invio e solleciti
 
@@ -345,14 +345,21 @@ che invia senza una conferma di campagna.
 
 | Superficie | Premium attivo | Premium non attivo |
 |---|---|---|
-| Voce/sezione Preventivi | Visibile | Nascosta |
-| Azioni preventivo fuori dalla sezione | Visibili dove pertinenti | Nascoste |
-| `Salva e stampa` su nuovo ordine | Visibile | Nascosto |
-| `Stampa` su ordine esistente | Funzionante | Visibile, apre modale premium |
-| `Stampa scheda cliente` nei menu ordine | Funzionante | Visibile, apre modale premium |
-| Comandi backend e nuove entità | Consentiti | Rifiutati |
+| Sezione, sidebar e Spotlight Preventivi | Visibili | Visibili |
+| Nuovo, compilazione, modifica, anteprima e salvataggio preventivo condiviso | Disponibili | Disponibili |
+| Invio preventivo e `Salva e invia` | Disponibili | Paywall animato |
+| Sollecito singolo e campagne di sollecito | Disponibili | Paywall animato |
+| Stampa preventivo | Disponibile | Paywall animato |
+| Salva PDF / salva immagine del preventivo su file | Disponibili | Paywall animato |
+| Scheda cliente: apertura, modifica, salvataggio e stampa | Disponibili | Disponibili |
+| Lettura configurazione documenti e alias | Disponibili | Disponibili |
+| Scrittura configurazione documenti e alias | Disponibili | Paywall / comando rifiutato |
+| CRUD generico delle entità speciali | Solo tramite flussi di dominio | Rifiutato |
+| `Ctrl+P` / `Cmd+P` | Bloccati globalmente | Bloccati globalmente |
 
-La UI non è una barriera di sicurezza: ogni comando di dominio verifica nuovamente il gate.
+La UI non è una barriera di sicurezza: il salvataggio file del preventivo usa un comando dedicato
+che verifica nuovamente il gate; il salvataggio documentale generico mantiene il comportamento
+precedente.
 
 ## 11. Fette di implementazione
 
@@ -372,7 +379,8 @@ La UI non è una barriera di sicurezza: ogni comando di dominio verifica nuovame
 
 ### 12C — Sezione Preventivi
 
-- navigazione premium;
+- navigazione disponibile per tutti;
+- azioni di invio, sollecito ed esportazione protette dal paywall;
 - tabella, filtri e menu;
 - editor e compilazione da testo;
 - stati derivati di modifica/invio.

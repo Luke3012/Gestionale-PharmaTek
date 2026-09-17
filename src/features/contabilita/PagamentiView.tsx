@@ -326,7 +326,7 @@ export function PagamentiView({
 
   async function apriSollecito(r: PagamentoVista) {
     try {
-      const riepilogo = riepilogoSollecitoPagamenti([r], righe);
+      const riepilogo = riepilogoSollecitoPagamenti([r], righe, undefined, conti);
       if (!riepilogo.pagamentiScaduti.length) {
         toast.info("Non risultano pagamenti scaduti per questo ordine.");
         return;
@@ -336,9 +336,12 @@ export function PagamentiView({
         toast.error("Cliente non trovato.");
         return;
       }
+      const tuttiPagamenti = righe.filter((item) => item.ordineId === r.ordineId);
       const datiPagamento = datiPagamentoComunicazione(
         riepilogo.pagamentiAperti,
         conti,
+        undefined,
+        { tuttiPagamenti, includiRate: false },
       );
       await apriComunicazione({
         destinatarioEntita: "cliente",
@@ -520,13 +523,21 @@ export function PagamentiView({
       const targets = [...perCliente.entries()].map(
         ([clienteId, pagamenti]) => {
           const cliente = clientiPerId.get(clienteId);
+          const pagamentiCliente = righe.filter((item) => item.clienteId === clienteId);
           const riepilogo = riepilogoSollecitoPagamenti(
             pagamenti,
-            righe.filter((item) => item.clienteId === clienteId),
+            pagamentiCliente,
+            undefined,
+            conti,
           );
           const ordinati = riepilogo.pagamentiScaduti;
           const aperti = riepilogo.pagamentiAperti;
-          const datiPagamento = datiPagamentoComunicazione(aperti, conti);
+          const datiPagamento = datiPagamentoComunicazione(
+            aperti,
+            conti,
+            undefined,
+            { tuttiPagamenti: pagamentiCliente, includiRate: false },
+          );
           return {
             destinatarioEntita: "cliente" as const,
             destinatarioId: clienteId,
@@ -729,20 +740,12 @@ export function PagamentiView({
             ) : (
               <>
                 {scaduta(r) && canRunPremiumAction(premium) && (
-                  <Tooltip label="Sollecita" withArrow openDelay={350}>
-                    <Box>
+                  <Tooltip label="Sollecita" withinPortal>
+                    <Box style={{ display: "inline-flex" }}>
                       <PremiumAction
                         ariaLabel="Sollecita"
                         iconOnly
-                        leftSection={<IconMessage size={15} />}
-                        style={{
-                          background: "var(--mantine-color-gray-light)",
-                          borderColor: "transparent",
-                          height: 26,
-                          minHeight: 26,
-                          padding: 0,
-                          width: 26,
-                        }}
+                        leftSection={<IconMessage size={16} />}
                         onAction={() => void apriSollecito(r)}
                       >
                         Sollecita

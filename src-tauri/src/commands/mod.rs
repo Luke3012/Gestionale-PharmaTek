@@ -20,6 +20,11 @@ use crate::app::communication_config::{ConfigurazioneEmailDto, ConfigurazioneEma
 use crate::app::communication_templates::{
     ModelloComunicazioneDto, ModelloComunicazioneSalvaInput,
 };
+use crate::app::prescriptions::{
+    operation_cancel, operation_finish, operation_start, PrescriptionFileDto,
+    PrescriptionSelectionInput, PrescriptionsFolderDto, ProductionAttachmentsDto,
+    ProductionPrescriptionScanDto,
+};
 use crate::app::preventivi::{
     AliasPreventivoDto, ConfigurazioneDocumentiDto, ConfigurazioneDocumentiSalvaInput,
     PreventivoDto, PreventivoSalvaInput, SchedaClienteDto, SchedaClienteSalvaInput,
@@ -33,12 +38,13 @@ use crate::app::{
     PrezzoSuggeritoProdottoDto, ProduzioneRigaPatchInput, ProrogaPagamentoInput,
     ProvvigioniReportDto, PuliziaDatiArgs, PuliziaPreviewDto, PuliziaResultDto, RataInput,
     RecordDto, RigaNumeroIn, RimborsoDto, RimborsoExtraDto, RitiroDispositivoResult, SpedizioneDto,
-    SpedizioneRiepilogoDto, StoricoDto, SuggerimentiBundleDto, SyncOverviewDto, SyncPollOutcome,
-    UserDto,
+    SpedizioneRiepilogoDto, StoricoDto, SuggerimentiBundleDto, SuggerimentiPreferenzeInput,
+    SyncOverviewDto, SyncPollOutcome, UserDto,
 };
 use crate::data_events::{emetti_entita_modificate, EVENTO_RICERCA_INVALIDATA};
 
 const EVENTO_OPERAZIONE_PROGRESS: &str = "pt:operazione-progress";
+const EVENTO_PRESCRIZIONI_PROGRESS: &str = "pt:prescriptions-progress";
 const DESKTOP_SEARCH_SHORTCUT_NAME: &str = "Ricerca PharmaTek.lnk";
 #[cfg(target_os = "windows")]
 const DESKTOP_SEARCH_ICON_NAME: &str = "ricerca-pharmatek.ico";
@@ -55,6 +61,41 @@ pub struct OperationProgressDto {
     pub progress: u8,
     pub message: String,
     pub done: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrescriptionsProgressDto {
+    pub id: String,
+    pub phase: String,
+    pub progress: Option<u8>,
+    pub current: u64,
+    pub total: u64,
+    pub message: String,
+    pub done: bool,
+}
+
+fn emetti_prescrizioni_progress(
+    app: &tauri::AppHandle,
+    id: &str,
+    phase: &str,
+    progress: Option<u8>,
+    current: u64,
+    total: u64,
+    message: &str,
+) {
+    let _ = app.emit(
+        EVENTO_PRESCRIZIONI_PROGRESS,
+        PrescriptionsProgressDto {
+            id: id.into(),
+            phase: phase.into(),
+            progress,
+            current,
+            total,
+            message: message.into(),
+            done: phase == "complete" || phase == "cancelled" || phase == "error",
+        },
+    );
 }
 
 fn background_lock() -> &'static Mutex<()> {
@@ -815,14 +856,15 @@ pub fn documento_cache_salva(
     state.documento_cache_salva(input)
 }
 
-/// Rilascia i documenti appena generati. Restano sul disco soltanto quelli già
-/// affidati a una comunicazione in coda, sospesa o attualmente in invio.
+/// Rilascia i documenti appena generati. Con la pulizia immediata restano sul
+/// disco soltanto quelli ancora necessari a bozze, revisioni, invii o retry.
 #[tauri::command]
 pub fn documenti_cache_rilascia(
     allegati: Vec<AllegatoComunicazioneInput>,
+    elimina_se_non_usati: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    state.documenti_cache_rilascia(&allegati)
+    state.documenti_cache_rilascia_con_policy(&allegati, elimina_se_non_usati.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -1220,6 +1262,20 @@ pub fn preventivo_elimina(
 }
 
 #[tauri::command]
+pub fn preventivo_marca_inviato_manuale(
+    ordine_id: String,
+    revision: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PreventivoDto, String> {
+    emetti_se_ok(
+        &app,
+        state.preventivo_marca_inviato_manuale(&ordine_id, &revision),
+        &["preventivo"],
+    )
+}
+
+#[tauri::command]
 pub fn preventivo_ripristina(
     id: String,
     app: tauri::AppHandle,
@@ -1359,26 +1415,29 @@ pub fn dashboard_pannelli(state: State<'_, AppState>) -> Result<DashboardPanelsD
 /// Azioni utili correnti, già ordinate e protette dal gate Premium.
 #[tauri::command]
 pub fn suggerimenti_lista(
+    preferenze: SuggerimentiPreferenzeInput,
     nt: State<'_, std::sync::Arc<crate::notifiche::Notificatore>>,
 ) -> Result<SuggerimentiBundleDto, String> {
-    nt.suggerimenti_dashboard_lista()
+    nt.suggerimenti_dashboard_lista(preferenze)
 }
 
 /// Forza una nuova derivazione delle azioni, ignorando la cache corrente.
 #[tauri::command]
 pub fn suggerimenti_rigenera(
+    preferenze: SuggerimentiPreferenzeInput,
     nt: State<'_, std::sync::Arc<crate::notifiche::Notificatore>>,
 ) -> Result<SuggerimentiBundleDto, String> {
-    nt.suggerimenti_dashboard_rigenera()
+    nt.suggerimenti_dashboard_rigenera(preferenze)
 }
 
 /// Ricalcola tutte le azioni correnti ignorando, solo per questa lettura,
 /// fotografie nascoste e categorie sospese. Non invalida né modifica la cache.
 #[tauri::command]
 pub fn suggerimenti_rigenera_completa(
+    anno: Option<i32>,
     state: State<'_, AppState>,
 ) -> Result<SuggerimentiBundleDto, String> {
-    state.suggerimenti_lista_completa()
+    state.suggerimenti_lista_completa_per_anno(anno.unwrap_or(0))
 }
 
 /// Nasconde la fotografia corrente del suggerimento su tutte le postazioni Premium.
@@ -1390,7 +1449,7 @@ pub fn suggerimento_nascondi(
 ) -> Result<(), String> {
     let result = state.suggerimento_nascondi(&id);
     if result.is_ok() {
-        emetti_entita_modificate(&app, &["suggerimento_stato".into()]);
+        emetti_entita_modificate(&app, &["suggerimento_stato".into(), "spedizione".into()]);
     }
     result
 }
@@ -1404,7 +1463,7 @@ pub fn suggerimenti_nascondi(
 ) -> Result<(), String> {
     let result = state.suggerimenti_nascondi(&ids);
     if result.is_ok() {
-        emetti_entita_modificate(&app, &["suggerimento_stato".into()]);
+        emetti_entita_modificate(&app, &["suggerimento_stato".into(), "spedizione".into()]);
     }
     result
 }
@@ -1435,9 +1494,7 @@ pub fn griglia_export(
     state.griglia_export(&path, &foglio, colonne, righe, orizzontale, simbolo_euro)
 }
 
-/// Scrive un documento generato nel percorso scelto esplicitamente dall'utente.
-#[tauri::command]
-pub fn documento_salva(path: String, dati_base64: String) -> Result<(), String> {
+fn salva_documento_su_percorso(path: String, dati_base64: String) -> Result<(), String> {
     let destinazione = PathBuf::from(path);
     if destinazione.as_os_str().is_empty() || destinazione.file_name().is_none() {
         return Err("percorso di salvataggio non valido".into());
@@ -1447,6 +1504,32 @@ pub fn documento_salva(path: String, dati_base64: String) -> Result<(), String> 
         .map_err(|error| format!("contenuto del documento non valido: {error}"))?;
     std::fs::write(&destinazione, dati)
         .map_err(|error| format!("salvataggio del documento non riuscito: {error}"))
+}
+
+/// Scrive un documento generato nel percorso scelto esplicitamente dall'utente.
+#[tauri::command]
+pub fn documento_salva(path: String, dati_base64: String) -> Result<(), String> {
+    salva_documento_su_percorso(path, dati_base64)
+}
+
+/// Salva un PDF/PNG di preventivo: il renderer può essere usato anche in
+/// anteprima senza Premium, ma l'esportazione su file resta protetta nel core.
+fn documento_preventivo_salva_con_accesso(
+    state: &AppState,
+    path: String,
+    dati_base64: String,
+) -> Result<(), String> {
+    crate::premium::ensure_access(state)?;
+    salva_documento_su_percorso(path, dati_base64)
+}
+
+#[tauri::command]
+pub fn documento_preventivo_salva(
+    path: String,
+    dati_base64: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    documento_preventivo_salva_con_accesso(&state, path, dati_base64)
 }
 
 /// Automazione "Chiuso": chiude gli ordini Spediti+saldati da ≥20gg. Ritorna quanti.
@@ -1674,6 +1757,162 @@ pub fn diagnostica_export(
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
     state.diagnostica_export(&lotto, &path)
+}
+
+#[tauri::command]
+pub fn prescriptions_folder_get(
+    state: State<'_, AppState>,
+) -> Result<PrescriptionsFolderDto, String> {
+    state.prescriptions_folder_get()
+}
+
+#[tauri::command]
+pub fn prescriptions_folder_set(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<PrescriptionsFolderDto, String> {
+    state.prescriptions_folder_set(&path)
+}
+
+#[tauri::command]
+pub async fn prescriptions_scan_lot(
+    lot: String,
+    operation_id: String,
+    force_refresh: bool,
+    app: tauri::AppHandle,
+) -> Result<ProductionPrescriptionScanDto, String> {
+    let cancelled = operation_start(&operation_id)?;
+    let worker_app = app.clone();
+    let worker_id = operation_id.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let event_app = worker_app.clone();
+        let event_id = worker_id.clone();
+        state.prescriptions_scan_lot(
+            &lot,
+            force_refresh,
+            &cancelled,
+            &mut move |phase, progress, current, total, message| {
+                emetti_prescrizioni_progress(
+                    &event_app, &event_id, phase, progress, current, total, message,
+                );
+            },
+        )
+    })
+    .await;
+    operation_finish(&operation_id);
+    let result = joined.map_err(|error| format!("scansione prescrizioni interrotta: {error}"))?;
+    if let Err(error) = &result {
+        let phase = if error == "operazione annullata" {
+            "cancelled"
+        } else {
+            "error"
+        };
+        emetti_prescrizioni_progress(&app, &operation_id, phase, None, 0, 0, error);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn prescriptions_inspect_files(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<PrescriptionFileDto>, String> {
+    state.prescriptions_inspect_files(&paths)
+}
+
+#[tauri::command]
+pub fn prescription_open(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.prescription_open(&path)
+}
+
+#[tauri::command]
+pub async fn prescriptions_zip_save(
+    lot: String,
+    selections: Vec<PrescriptionSelectionInput>,
+    output: String,
+    operation_id: String,
+    app: tauri::AppHandle,
+) -> Result<u64, String> {
+    let cancelled = operation_start(&operation_id)?;
+    let worker_app = app.clone();
+    let worker_id = operation_id.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let event_app = worker_app.clone();
+        let event_id = worker_id.clone();
+        state.prescriptions_zip_save(
+            &lot,
+            &selections,
+            &output,
+            &cancelled,
+            &mut move |phase, progress, current, total, message| {
+                emetti_prescrizioni_progress(
+                    &event_app, &event_id, phase, progress, current, total, message,
+                );
+            },
+        )
+    })
+    .await;
+    operation_finish(&operation_id);
+    let result = joined.map_err(|error| format!("creazione ZIP interrotta: {error}"))?;
+    if let Err(error) = &result {
+        let phase = if error == "operazione annullata" {
+            "cancelled"
+        } else {
+            "error"
+        };
+        emetti_prescrizioni_progress(&app, &operation_id, phase, None, 0, 0, error);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn production_attachments_prepare(
+    lot: String,
+    selections: Vec<PrescriptionSelectionInput>,
+    include_zip: bool,
+    base: i64,
+    operation_id: String,
+    app: tauri::AppHandle,
+) -> Result<ProductionAttachmentsDto, String> {
+    let cancelled = operation_start(&operation_id)?;
+    let worker_app = app.clone();
+    let worker_id = operation_id.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app.state::<AppState>();
+        let event_app = worker_app.clone();
+        let event_id = worker_id.clone();
+        state.production_attachments_prepare(
+            &lot,
+            &selections,
+            include_zip,
+            base,
+            &cancelled,
+            &mut move |phase, progress, current, total, message| {
+                emetti_prescrizioni_progress(
+                    &event_app, &event_id, phase, progress, current, total, message,
+                );
+            },
+        )
+    })
+    .await;
+    operation_finish(&operation_id);
+    let result = joined.map_err(|error| format!("preparazione allegati interrotta: {error}"))?;
+    if let Err(error) = &result {
+        let phase = if error == "operazione annullata" {
+            "cancelled"
+        } else {
+            "error"
+        };
+        emetti_prescrizioni_progress(&app, &operation_id, phase, None, 0, 0, error);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn prescriptions_operation_cancel(operation_id: String) -> bool {
+    operation_cancel(&operation_id)
 }
 
 /// Elenco del Cestino (record soft-deleted di tutte le entità utente).
@@ -2127,6 +2366,20 @@ pub fn spedizione_destinatari_separa(
     )
 }
 
+/// Contrassegna manualmente una spedizione come già avvisata (fuori gestionale).
+#[tauri::command]
+pub fn spedizione_segna_avvisata(
+    id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    emetti_se_ok(
+        &app,
+        state.spedizione_segna_avvisata(&id),
+        &["spedizione", "suggerimento_stato"],
+    )
+}
+
 /// Riepilogo incassi di un lotto (on-demand): per conto e per agente, esclusi acconti.
 #[tauri::command]
 pub fn spedizione_riepilogo(
@@ -2263,4 +2516,36 @@ pub fn verifica_cartella_excel(path: String) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn salvataggio_file_preventivo_rifiuta_un_pc_senza_premium() {
+        let app = tempfile::tempdir().unwrap();
+        let state = AppState::init(app.path().to_path_buf()).unwrap();
+        let destinazione = app.path().join("preventivo.pdf");
+        let dati = base64::engine::general_purpose::STANDARD.encode(b"pdf");
+
+        let errore = documento_preventivo_salva_con_accesso(
+            &state,
+            destinazione.to_string_lossy().into_owned(),
+            dati.clone(),
+        )
+        .unwrap_err();
+        assert!(errore.contains("non abilitate"));
+        assert!(!destinazione.exists());
+
+        fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
+        documento_preventivo_salva_con_accesso(
+            &state,
+            destinazione.to_string_lossy().into_owned(),
+            dati,
+        )
+        .unwrap();
+        assert_eq!(fs::read(destinazione).unwrap(), b"pdf");
+    }
 }

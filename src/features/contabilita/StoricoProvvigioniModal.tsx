@@ -287,6 +287,7 @@ function RighePagamentoVirtuali({ righe }: { righe: RigaPag[] }) {
         idAccessor={(r) => r.ordineId || `${r.numero}-${r.data}`}
         storeColumnsKey="contabilita-storico-provvigioni-righe"
         emptyState={<Box />}
+        disattivaChunking
       />
     </Box>
   );

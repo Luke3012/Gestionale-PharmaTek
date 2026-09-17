@@ -57,7 +57,7 @@ const preventivo: Preventivo = {
   spedizioneCitta: "Milano",
   spedizioneCap: "20100",
   spedizioneProv: "MI",
-  spedizioneEmail: "",
+  spedizioneEmail: "demo@example.invalid",
   spedizioneTelefono: "+39 333 1234567",
   spedizioneNote: "Chiamare prima della consegna",
   spedizioneCodiceFiscale: "RSSMRA80A01F205X",
@@ -72,7 +72,7 @@ const preventivo: Preventivo = {
   medicoNome: "Dott.ssa Laura Bianchi",
   agenteId: "agente-1",
   agenteNome: "Livio",
-  email: "",
+  email: "demo@example.invalid",
   telefono: "+39 333 1234567",
   numeroPreventivo: "P-2026-0001",
   validitaGiorni: 30,
@@ -105,7 +105,7 @@ const preventivo: Preventivo = {
       contoId: "conto-1",
       contoNome: "Banca PharmaTek",
       contoTipo: "banca",
-      contoIban: "IBAN-DEMO-NON-VALIDO",
+      contoIban: "IT00 X000 00DE MO",
       data: "2026-07-27",
       verificato: true,
       distintaId: "",
@@ -124,7 +124,7 @@ const preventivo: Preventivo = {
       contoId: "conto-1",
       contoNome: "Banca PharmaTek",
       contoTipo: "banca",
-      contoIban: "IBAN-DEMO-NON-VALIDO",
+      contoIban: "IT00 X000 00DE MO",
       data: "",
       verificato: false,
       distintaId: "",
@@ -241,7 +241,7 @@ const scheda: SchedaClienteCampi = {
   dataRicezione: "2026-07-26",
   pazienti: "Mario Rossi",
   infoSpedizione: "Via Roma 1, 20100 Milano (MI)",
-  contatti: "+39 333 1234567 · ",
+  contatti: "+39 333 1234567 · demo@example.invalid",
   intestatarioNome: "Mario Rossi",
   intestatarioCodiceFiscale: "RSSMRA80A01F205X",
   intestatarioDataNascita: "",
@@ -370,7 +370,7 @@ describe("renderer documenti FASE 12", () => {
     expect(svg).not.toContain("2 FIALE");
     expect(svg).toContain("WhatsApp ");
     expect(svg).toContain("IBAN");
-    expect(svg).toContain("IBAN-DEMO-NON-VALIDO");
+    expect(svg).toContain("IT00 X000 00DE MO");
     expect(svg).toContain("SCONTO 10%");
     expect(svg).not.toContain("Dott.ssa Laura Bianchi");
     expect(svg).not.toContain(">Livio<");
@@ -454,7 +454,8 @@ describe("renderer documenti FASE 12", () => {
     });
     const svgSenzaSpedizione = documentoSvg(senzaSpedizione);
     expect(svgSenzaSpedizione.match(/Via Fatture 5/g)).toHaveLength(2);
-    expect(svgSenzaSpedizione.match(/C\.F\. RSSMRA80A01F205X/g)).toHaveLength(2);
+    // C.F. compare solo nella card di fatturazione, non in spedizione
+    expect(svgSenzaSpedizione.match(/C\.F\. RSSMRA80A01F205X/g)).toHaveLength(1);
 
     const senzaFatturazione = creaDocumentoPreventivo({
       ...preventivo,
@@ -468,7 +469,8 @@ describe("renderer documenti FASE 12", () => {
     });
     const svgSenzaFatturazione = documentoSvg(senzaFatturazione);
     expect(svgSenzaFatturazione.match(/Via Roma 1/g)).toHaveLength(2);
-    expect(svgSenzaFatturazione.match(/C\.F\. RSSMRA80A01F205X/g)).toHaveLength(2);
+    // C.F. copiato nei dati di fatturazione compare solo nella card di fatturazione
+    expect(svgSenzaFatturazione.match(/C\.F\. RSSMRA80A01F205X/g)).toHaveLength(1);
   });
 
   it("genera un PDF vettoriale a pagina singola", () => {
@@ -508,6 +510,218 @@ describe("renderer documenti FASE 12", () => {
     expect(documentoSvg(documento, (documento.pagine?.length ?? 0))).toContain(
       "CONDIZIONI DI PAGAMENTO",
     );
+  });
+
+  it("mostra etichette progressive per le rate legate alla spedizione (All'affidamento al corriere, Consegna + 30 gg, Consegna + 60 gg)", () => {
+    const prevConRate: Preventivo = {
+      ...preventivo,
+      pagamenti: [
+        {
+          id: "pag-1",
+          ordineId: "ordine-1",
+          tipo: "saldo",
+          importo: 10_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-1",
+          contoNome: "Contrassegno",
+          contoTipo: "transito",
+          contoIban: "",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 0,
+        },
+        {
+          id: "pag-2",
+          ordineId: "ordine-1",
+          tipo: "rata",
+          importo: 15_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-2",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT123",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 30,
+        },
+        {
+          id: "pag-3",
+          ordineId: "ordine-1",
+          tipo: "rata",
+          importo: 15_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-2",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT123",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 60,
+        },
+      ],
+    };
+    const doc = creaDocumentoPreventivo(prevConRate);
+    const svg = documentoSvg(doc);
+    expect(svg).toContain("All'affidamento al corriere");
+    expect(svg).toContain("Consegna + 30 gg");
+    expect(svg).toContain("Consegna + 60 gg");
+  });
+
+  it("posiziona sempre l'acconto prima del saldo nel riepilogo economico anche se forniti in ordine inverso", () => {
+    const prevConSaldoEAcconto: Preventivo = {
+      ...preventivo,
+      pagamenti: [
+        {
+          id: "pag-saldo",
+          ordineId: "ordine-1",
+          tipo: "saldo",
+          importo: 18_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-1",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT00 X000 00DE MO",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 0,
+        },
+        {
+          id: "pag-acconto",
+          ordineId: "ordine-1",
+          tipo: "acconto",
+          importo: 9_000,
+          saldato: false,
+          scadenza: "2026-09-14",
+          contoId: "conto-1",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT00 X000 00DE MO",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: false,
+          scadRelGiorni: 0,
+        },
+      ],
+    };
+    const doc = creaDocumentoPreventivo(prevConSaldoEAcconto);
+    const svg = documentoSvg(doc);
+    const posAcconto = svg.indexOf("Acconto");
+    const posSaldo = svg.indexOf("Saldo");
+    expect(posAcconto).toBeGreaterThan(-1);
+    expect(posSaldo).toBeGreaterThan(-1);
+    expect(posAcconto).toBeLessThan(posSaldo);
+
+    const posDataAcconto = svg.indexOf("14/09/2026");
+    const posDataSaldo = svg.indexOf("All'affidamento al corriere");
+    expect(posDataAcconto).toBeGreaterThan(-1);
+    expect(posDataSaldo).toBeGreaterThan(-1);
+    expect(posDataAcconto).toBeLessThan(posDataSaldo);
+  });
+
+  it("posiziona sempre l'acconto prima delle rate nel riepilogo economico", () => {
+    const prevConRateEAcconto: Preventivo = {
+      ...preventivo,
+      pagamenti: [
+        {
+          id: "pag-rata2",
+          ordineId: "ordine-1",
+          tipo: "rata",
+          importo: 10_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-1",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT123",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 30,
+        },
+        {
+          id: "pag-rata1",
+          ordineId: "ordine-1",
+          tipo: "rata",
+          importo: 10_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-1",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT123",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: true,
+          scadRelGiorni: 0,
+        },
+        {
+          id: "pag-acconto",
+          ordineId: "ordine-1",
+          tipo: "acconto",
+          importo: 5_000,
+          saldato: false,
+          scadenza: "",
+          contoId: "conto-1",
+          contoNome: "Banca",
+          contoTipo: "banca",
+          contoIban: "IT123",
+          data: "",
+          verificato: false,
+          distintaId: "",
+          contoAccreditoNome: "",
+          note: "",
+          scadDaSpedizione: false,
+          scadRelGiorni: 0,
+        },
+      ],
+    };
+    const doc = creaDocumentoPreventivo(prevConRateEAcconto);
+    const svg = documentoSvg(doc);
+    const posAcconto = svg.indexOf("Acconto");
+    const posRata1 = svg.indexOf("1ª rata");
+    const posRata2 = svg.indexOf("2ª rata");
+    expect(posAcconto).toBeGreaterThan(-1);
+    expect(posRata1).toBeGreaterThan(-1);
+    expect(posRata2).toBeGreaterThan(-1);
+    expect(posAcconto).toBeLessThan(posRata1);
+    expect(posRata1).toBeLessThan(posRata2);
+  });
+
+  it("non include il codice fiscale nei dati di spedizione del preventivo ma lo preserva in fatturazione", () => {
+    const doc = creaDocumentoPreventivo(preventivo);
+    const svg = documentoSvg(doc);
+    // In preventivo sia spedizioneCodiceFiscale che fatturazioneCodiceFiscale sono valorizzati:
+    // nel documento generato deve apparire solo una volta (nella card DATI DI FATTURAZIONE)
+    expect(svg.match(/C\.F\. RSSMRA80A01F205X/g)).toHaveLength(1);
   });
 
   it("produce la scheda cliente con caselle e riepilogo", () => {

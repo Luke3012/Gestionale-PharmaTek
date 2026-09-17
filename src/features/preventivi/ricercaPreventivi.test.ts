@@ -36,7 +36,7 @@ describe("ricerca preventivi", () => {
       clienteNome: "Cliente",
       medicoNome: "Medico",
       agenteNome: "Agente",
-      email: "",
+      email: "demo@example.invalid",
       telefono: "+39 333 123 4567",
       righe: [
         {

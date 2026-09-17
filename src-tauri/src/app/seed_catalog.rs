@@ -24,7 +24,29 @@ pub(super) fn ensure_builtin_conti(engine: &Engine) -> AppResult<()> {
     Ok(())
 }
 
-pub(super) fn ensure_builtin_corrieri(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_builtin_corrieri(engine: &Engine) -> AppResult<()> {
+    for (id, nome, profilo) in [
+        (CORRIERE_CORRIERE_B, "CORRIERE_B", "gls"),
+        (CORRIERE_CORRIERE_A, "CORRIERE_A", "corriere_a"),
+        (CORRIERE_CORRIERE_C, "CORRIERE_C", "mbe"),
+    ] {
+        let presente = engine.with_projection(|p| p.get("corriere", id).ok().flatten().is_some());
+        if !presente {
+            engine
+                .emit("corriere", id, EventBody::Created)
+                .map_err(es)?;
+            set_fields(
+                engine,
+                "corriere",
+                id,
+                &[
+                    ("nome", json!(nome)),
+                    ("profilo", json!(profilo)),
+                    ("builtin", json!(true)),
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -150,19 +172,190 @@ fn ensure_record(
 }
 
 /// Conti reali di default (non builtin, eliminabili) e loro ruoli.
-pub(super) fn ensure_conti_default(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_conti_default(engine: &Engine) -> AppResult<()> {
+    let conti = &[
+        (
+            "9438",
+            "Banca Demo 9438",
+            "Banca Demo San Paolo S.P.A.",
+            "IT00 X000 00DE MO",
+            true,
+        ),
+        (
+            "1243",
+            "Banca Demo 1243",
+            "Banca Demo San Paolo S.P.A.",
+            "IT00 X000 00DE MO",
+            false,
+        ),
+        (
+            "8376",
+            "Banca Demo 8376",
+            "Banca Demo San Paolo S.P.A.",
+            "IT00 X000 00DE MO",
+            false,
+        ),
+        (
+            "2163",
+            "Poste 2163",
+            "Banca Demo",
+            "IT00 B076 01DE MO",
+            false,
+        ),
+    ];
+    for (key, nome, banca, iban, predefinito) in conti {
+        let id = seed_id("conto", key);
+        ensure_record(
+            engine,
+            "conto",
+            &id,
+            &[
+                ("nome", json!(nome)),
+                ("banca", json!(banca)),
+                ("iban", json!(iban)),
+                ("tipo", json!("banca")),
+                ("predefinito_incassi", json!(predefinito)),
+                ("predefinito_acconti", json!(predefinito)),
+                ("predefinito_accrediti", json!(predefinito)),
+                ("predefinito_rimborsi", json!(predefinito)),
+                ("builtin", json!(false)),
+            ],
+        )?;
+    }
     Ok(())
 }
 
 /// Agenti di partenza (consolidati dagli ordini 2026).
-pub(super) fn ensure_agenti_default(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_agenti_default(engine: &Engine) -> AppResult<()> {
+    const AGENTI: &[&str] = &[
+        "Agente Demo 001",
+        "Agente Demo 002",
+        "Agente Demo 003",
+        "Pharmatek",
+        "Morello",
+        "Salis",
+        "Sannino",
+        "Quaresima",
+        "Infarinato",
+        "La Cava",
+    ];
+    for nome in AGENTI {
+        let id = seed_id("agente", nome);
+        let mut tipo = "fisso";
+        let mut valore = 20.0;
+        let mut fields = vec![
+            ("nome", json!(nome)),
+            ("provv_maturazione", json!("spedizione")),
+            ("builtin", json!(true)),
+        ];
+        if *nome == "Agente Demo 003" {
+            tipo = "percentuale";
+            valore = 15.0;
+            fields.push(("conto_saldo_id", json!(seed_id("conto", "8376"))));
+            fields.push(("acconto_default", json!(10000)));
+        } else if *nome == "Agente Demo 001" || *nome == "Agente Demo 002" {
+            tipo = "percentuale";
+            valore = 0.0;
+        } else if *nome == "Sannino" {
+            fields.push(("conto_saldo_id", json!(seed_id("conto", "9438"))));
+        }
+        fields.push(("provv_tipo", json!(tipo)));
+        if valore == 0.0 {
+            fields.push(("provv_valore", json!(0)));
+        } else {
+            fields.push(("provv_valore", json!(valore)));
+        }
+        ensure_record(engine, "agente", &id, &fields)?;
+    }
     Ok(())
 }
 
 /// Medici di partenza con il loro **prezzo immunoterapia tipico** (moda dagli ordini Q1
 /// 2026, in centesimi) e l'agente di riferimento. I nomi sono in forma propria (Title
 /// Case), da rifinire. Id fissi. Il prezzo è solo un default suggerito, sempre editabile.
-pub(super) fn ensure_medici_default(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_medici_default(engine: &Engine) -> AppResult<()> {
+    // (nome, agente, prezzo_immuno_euro)
+    const MEDICI: &[(&str, &str, i64)] = &[
+        ("Stefano Crescioli", "Agente Demo 002", 400),
+        ("Medico Demo 001", "Agente Demo 001", 250),
+        ("Medico Demo 002", "Agente Demo 002", 270),
+        ("Barbatano", "Agente Demo 002", 345),
+        ("Tansella", "Pharmatek", 275),
+        ("Cannata", "Agente Demo 003", 320),
+        ("Lamanna", "Morello", 250),
+        ("Ronchi", "Salis", 340),
+        ("Rinciani", "Agente Demo 003", 320),
+        ("Cabras", "Salis", 350),
+        ("Tourtchenko", "Agente Demo 003", 300),
+        ("Cantone", "Agente Demo 001", 375),
+        ("Leonetti", "Agente Demo 001", 330),
+        ("Casale", "Pharmatek", 511),
+        ("Dagnello", "Agente Demo 001", 275),
+        ("Caramazza", "Agente Demo 003", 300),
+        ("Borrelli", "Agente Demo 001", 275),
+        ("Cinquepalmi", "Morello", 275),
+        ("Del Giudice", "Agente Demo 001", 200),
+        ("Greco", "Agente Demo 001", 275),
+        ("Aiello", "Agente Demo 001", 175),
+        ("Del Buono", "Sannino", 340),
+        ("Berra", "Agente Demo 001", 175),
+        ("Kantar", "Agente Demo 001", 260),
+        ("Brinch", "Agente Demo 003", 260),
+        ("Gaspardini", "Salis", 340),
+        ("Falilla", "Agente Demo 001", 275),
+        ("Pellegrini", "Agente Demo 001", 270),
+        ("Craparo", "Agente Demo 003", 300),
+        ("Condoluci", "Agente Demo 001", 270),
+        ("Del Mastro", "Sannino", 348),
+        ("Di Palma", "La Cava", 275),
+        ("Nettis", "Morello", 400),
+        ("Florio", "Agente Demo 001", 400),
+        ("Sacerdoti", "Sannino", 400),
+        ("Businco", "Quaresima", 265),
+        ("Marta Boi", "Salis", 175),
+        ("Di Leo", "Morello", 270),
+        ("Varini", "Quaresima", 360),
+        ("Fanelli", "Pharmatek", 270),
+        ("Di Bella", "Agente Demo 003", 260),
+        ("Trimarchi", "Quaresima", 280),
+        ("Savoia", "Sannino", 400),
+        ("Puglisi", "Quaresima", 270),
+        ("Brivio", "Agente Demo 001", 300),
+        ("Fiocchi", "Agente Demo 002", 345),
+        ("De Bartolomeis", "Sannino", 275),
+        ("Gatta", "Quaresima", 357),
+        ("Pannofino", "Morello", 270),
+        ("Licitra", "Agente Demo 003", 320),
+        ("Di Girolamo", "Morello", 400),
+    ];
+    for (nome, agente, _prezzo) in MEDICI {
+        let id = seed_id("medico", nome);
+        let agente_id = seed_id("agente", agente);
+        let mut fields = vec![
+            ("nome", json!(nome)),
+            ("agente_id", json!(agente_id)),
+            ("prezzo_immuno_default", json!(0)),
+            ("builtin", json!(true)),
+        ];
+        if *nome == "Stefano Crescioli" {
+            fields.push(("conto_saldo_id", json!(seed_id("conto", "8376"))));
+        } else if *nome == "Medico Demo 001" || *nome == "Medico Demo 002" {
+            fields.push(("conto_saldo_id", json!(seed_id("conto", "1243"))));
+            if *nome == "Medico Demo 001" {
+                // `ensure_record` applica questo valore solo alla creazione: nessun
+                // backfill o modifica sulle installazioni già inizializzate.
+                fields.push(("rate_saldo_default", json!(2)));
+            }
+        } else if *nome == "Lamanna" {
+            fields.push(("conto_saldo_id", json!(seed_id("conto", "1243"))));
+            fields.push(("acconto_default", json!(9000)));
+        } else if *nome == "Del Giudice" {
+            fields.push(("acconto_default", json!(9000)));
+        } else if *nome == "Leonetti" {
+            fields.push(("acconto_default", json!(11500)));
+        }
+        ensure_record(engine, "medico", &id, &fields)?;
+    }
     Ok(())
 }
 
@@ -189,12 +382,181 @@ fn ensure_regola_prezzo(
 }
 
 /// Regole di listino personalizzate (medico/agente -> prodotto).
-pub(super) fn ensure_regole_prezzo_default(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_regole_prezzo_default(engine: &Engine) -> AppResult<()> {
+    // Agente Demo 003:
+    let blandino = seed_id("agente", "Agente Demo 003");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_blandino_sub3"),
+        &seed_id("prod", "Sublinguale 3 fiale"),
+        Some(&blandino),
+        None,
+        32000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_blandino_pol2"),
+        &seed_id("prod", "Polimerizzato 2 fiale"),
+        Some(&blandino),
+        None,
+        32000,
+    )?;
+
+    // Medico Demo 002:
+    let runci = seed_id("medico", "Medico Demo 002");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_runci_sub2"),
+        &seed_id("prod", "Sublinguale 2 fiale"),
+        None,
+        Some(&runci),
+        27000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_runci_lis2"),
+        &seed_id("prod", "Lisato batterico 2 fiale"),
+        None,
+        Some(&runci),
+        27000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_runci_lis3"),
+        &seed_id("prod", "Lisato batterico 3 fiale"),
+        None,
+        Some(&runci),
+        27000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_runci_lis4"),
+        &seed_id("prod", "Lisato batterico 4 fiale"),
+        None,
+        Some(&runci),
+        27000,
+    )?;
+
+    // Medico Demo 001:
+    let santiago = seed_id("medico", "Medico Demo 001");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_santiago_sub2"),
+        &seed_id("prod", "Sublinguale 2 fiale"),
+        None,
+        Some(&santiago),
+        25000,
+    )?;
+
+    // Sannino:
+    let sannino = seed_id("agente", "Sannino");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_sannino_sub2"),
+        &seed_id("prod", "Sublinguale 2 fiale"),
+        Some(&sannino),
+        None,
+        28000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_sannino_pol1"),
+        &seed_id("prod", "Polimerizzato 1 fiala"),
+        Some(&sannino),
+        None,
+        28000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_sannino_sub3"),
+        &seed_id("prod", "Sublinguale 3 fiale"),
+        Some(&sannino),
+        None,
+        35000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "agente_sannino_pol2"),
+        &seed_id("prod", "Polimerizzato 2 fiale"),
+        Some(&sannino),
+        None,
+        40000,
+    )?;
+
+    // Lamanna:
+    let lamanna = seed_id("medico", "Lamanna");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_lamanna_pol1"),
+        &seed_id("prod", "Polimerizzato 1 fiala"),
+        None,
+        Some(&lamanna),
+        25000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_lamanna_sub2"),
+        &seed_id("prod", "Sublinguale 2 fiale"),
+        None,
+        Some(&lamanna),
+        25000,
+    )?;
+
+    // Del Giudice:
+    let del_giudice = seed_id("medico", "Del Giudice");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_delgiudice_pol1"),
+        &seed_id("prod", "Polimerizzato 1 fiala"),
+        None,
+        Some(&del_giudice),
+        21000,
+    )?;
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_delgiudice_sub2"),
+        &seed_id("prod", "Sublinguale 2 fiale"),
+        None,
+        Some(&del_giudice),
+        21000,
+    )?;
+
+    // Leonetti:
+    let leonetti = seed_id("medico", "Leonetti");
+    ensure_regola_prezzo(
+        engine,
+        &seed_id("regola", "medico_leonetti_pol2"),
+        &seed_id("prod", "Polimerizzato 2 fiale"),
+        None,
+        Some(&leonetti),
+        37500,
+    )?;
+
     Ok(())
 }
 
 /// Parametri globali provvigioni agenti.
-pub(super) fn ensure_parametri_globali_default(_engine: &Engine) -> AppResult<()> {
+pub(super) fn ensure_parametri_globali_default(engine: &Engine) -> AppResult<()> {
+    ensure_record(
+        engine,
+        "parametri_globali",
+        "agenti",
+        &[
+            ("scorpora_iva", json!(true)),
+            ("detrai_spedizione", json!(true)),
+            ("quota_spedizione", json!(3000)),
+        ],
+    )?;
+    ensure_record(
+        engine,
+        "parametri_globali",
+        "prodotti",
+        &[
+            ("soglia_prezzo", json!(30000)),
+            ("acconto_prezzo_basso", json!(9000)),
+            ("acconto_prezzo_alto", json!(11500)),
+        ],
+    )?;
     Ok(())
 }
 
@@ -335,57 +697,57 @@ pub(super) fn ensure_prodotti_default(engine: &Engine) -> AppResult<()> {
 /// come `prodotto` categoria «Diagnostica» (id fisso sul codice), col `codice_laboratorio` salvato
 /// per l'export. Prezzo base 15€/fiala come riserva (editabile). Fonte: catalogo dimostrativo.
 pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {
-    const DIAG: &[&str] = &[
-        "DPF",
-        "DPT",
-        "Acarus siro",
-        "Blomia tropicalis",
-        "Lepidoglyphus destructor",
-        "Rabbit (alimento)",
-        "Pork",
-        "Lamb",
-        "Turkey",
-        "Chicken",
-        "Beef",
-        "Strawberry",
-        "Pineapple",
-        "Kiwi",
-        "Almond",
-        "Peanut",
-        "Chestnut",
-        "Coconut",
-        "Walnut",
-        "Pistachio",
-        "Garlic",
-        "Eggplant",
-        "Paprika",
-        "Cow Fresh Milk",
-        "Ovoalbumin",
-        "Emperor Fish",
-        "Tuna",
-        "Cod",
-        "Sole",
-        "Bass",
-        "Salmon",
-        "Squid",
-        "Clam",
-        "Crab",
-        "Shrimp / Prawn",
-        "Lobster",
-        "Mussel",
-        "Cladosporium herbarum",
-        "Betulla",
-        "Cupressus sempervirens Mediterranean Cypress",
-        "Olea europaea Olive Tree",
-        "Cynodon dactylon Bermuda Grass",
-        "Lolium perenne Rye Grass",
-        "MIX GRAMINACEE ESPONTANEAS",
-        "Artemisia",
-        "Parietaria",
-        "Salsola",
+    const DIAG: &[(&str, &str)] = &[
+        ("A-001", "DPF"),
+        ("A-002", "DPT"),
+        ("A-004", "Acarus siro"),
+        ("A-005", "Blomia tropicalis"),
+        ("A-007", "Lepidoglyphus destructor"),
+        ("F-001", "Rabbit (alimento)"),
+        ("F-002", "Pork"),
+        ("F-003", "Lamb"),
+        ("F-004", "Turkey"),
+        ("F-005", "Chicken"),
+        ("F-006", "Beef"),
+        ("F-023", "Strawberry"),
+        ("F-030", "Pineapple"),
+        ("F-033", "Kiwi"),
+        ("F-040", "Almond"),
+        ("F-042", "Peanut"),
+        ("F-043", "Chestnut"),
+        ("F-044", "Coconut"),
+        ("F-045", "Walnut"),
+        ("F-048", "Pistachio"),
+        ("F-050", "Garlic"),
+        ("F-052", "Eggplant"),
+        ("F-073", "Paprika"),
+        ("F-100", "Cow Fresh Milk"),
+        ("F-101", "Ovoalbumin"),
+        ("F-107", "Emperor Fish"),
+        ("F-110", "Tuna"),
+        ("F-111", "Cod"),
+        ("F-114", "Sole"),
+        ("F-115", "Bass"),
+        ("F-117", "Salmon"),
+        ("F-129", "Squid"),
+        ("F-130", "Clam"),
+        ("F-131", "Crab"),
+        ("F-132", "Shrimp / Prawn"),
+        ("F-133", "Lobster"),
+        ("F-134", "Mussel"),
+        ("M-009", "Cladosporium herbarum"),
+        ("P-003", "Betulla"),
+        ("P-005", "Cupressus sempervirens Mediterranean Cypress"),
+        ("P-012", "Olea europaea Olive Tree"),
+        ("P-058", "Cynodon dactylon Bermuda Grass"),
+        ("P-064", "Lolium perenne Rye Grass"),
+        ("P-093", "MIX GRAMINACEE ESPONTANEAS"),
+        ("P-103", "Artemisia"),
+        ("P-105", "Parietaria"),
+        ("P-108", "Salsola"),
     ];
-    for nome in DIAG {
-        let id = seed_id("proddiag", nome);
+    for (codice, nome) in DIAG {
+        let id = seed_id("proddiag", codice);
         ensure_record(
             engine,
             "prodotto",
@@ -393,7 +755,7 @@ pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {
             &[
                 ("nome", json!(nome)),
                 ("categoria", json!("Diagnostica")),
-                ("codice_laboratorio", json!("")),
+                ("codice_laboratorio", json!(codice)),
                 ("prezzo_base_default", json!(0)),
                 ("builtin", json!(true)),
             ],

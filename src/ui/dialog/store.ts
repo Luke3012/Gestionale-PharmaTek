@@ -46,6 +46,10 @@ class DialogStore {
     };
   }
 
+  isOpen(): boolean {
+    return this.queue.length > 0;
+  }
+
   private get current(): DialogAttivo | null {
     return this.queue[0] ?? null;
   }
@@ -85,6 +89,7 @@ class DialogStore {
 export const dialogStore = new DialogStore();
 
 export const dialog = {
+  isOpen: () => dialogStore.isOpen(),
   open: <T = unknown>(input: DialogInput) => dialogStore.open<T>(input),
 
   alert: (titolo: string, contenuto?: ReactNode, tipo: DialogTipo = "info") =>

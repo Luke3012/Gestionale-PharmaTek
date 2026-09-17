@@ -247,19 +247,20 @@ pub fn laboratorio_xlsx(path: &Path, righe: &[RigaLaboratorio]) -> Result<(), St
     // fra le righe). Niente più tetto fisso a 6 → nessuna colonna vuota di troppo.
     let max_all = righe.iter().map(|r| r.allergeni.len()).max().unwrap_or(0);
     let mut intest: Vec<(u16, String, f64)> = vec![
-        (2, "Acconto".into(), 10.0),       // C
-        (3, "N° prod.".into(), 8.0),       // D
-        (4, "Data invio".into(), 12.0),    // E
-        (5, "Agente".into(), 16.0),        // F
-        (6, "Medico".into(), 18.0),        // G
-        (7, "Paziente".into(), 24.0),      // H
-        (8, "Valore".into(), 10.0),        // I
-        (9, "Data prevista".into(), 14.0), // J
-        (11, "Formulazione".into(), 16.0), // L
-        (12, "Posologia".into(), 12.0),    // M
+        (0, "Acconto".into(), 10.0),       // A
+        (1, "N° prod.".into(), 8.0),       // B
+        (2, "Data invio".into(), 12.0),    // C
+        (3, "Agente".into(), 16.0),        // D
+        (4, "Medico".into(), 18.0),        // E
+        (5, "Paziente".into(), 24.0),      // F
+        (6, "Valore".into(), 10.0),        // G
+        (7, "Data prevista".into(), 14.0), // H
+        // Colonna 8 (I) lasciata vuota tra Data prevista e Formulazione (richiesta utente)
+        (9, "Formulazione".into(), 16.0), // J
+        (10, "Posologia".into(), 12.0),   // K
     ];
     for k in 0..max_all {
-        intest.push((13 + k as u16, format!("Allergene {}", k + 1), 15.0)); // N, O, P, …
+        intest.push((11 + k as u16, format!("Allergene {}", k + 1), 15.0)); // L, M, …
     }
     for (c, label, w) in &intest {
         ws.set_column_width(*c, *w).map_err(es)?;
@@ -267,50 +268,66 @@ pub fn laboratorio_xlsx(path: &Path, righe: &[RigaLaboratorio]) -> Result<(), St
             .map_err(es)?;
     }
 
-    let mut totale_c = 0.0f64;
+    let mut totale_acconto = 0.0f64;
+    let mut totale_valore = 0.0f64;
     for (i, r) in righe.iter().enumerate() {
         let row = i as u32 + 1; // riga 0 = intestazione
         if let Some(a) = r.acconto {
             let has_decimals = (a - a.trunc()).abs() > 0.005;
             let fmt = if has_decimals { &num_dec } else { &num_int };
-            ws.write_number_with_format(row, 2, a, fmt).map_err(es)?; // C
-            totale_c += a;
+            ws.write_number_with_format(row, 0, a, fmt).map_err(es)?; // A
+            totale_acconto += a;
         }
-        ws.write_number(row, 3, r.numero_produzione as f64)
-            .map_err(es)?; // D
-        ws.write_string(row, 4, r.data_invio.as_str()).map_err(es)?; // E
-        ws.write_string(row, 5, r.agente.as_str()).map_err(es)?; // F
-        ws.write_string(row, 6, r.medico.as_str()).map_err(es)?; // G
-        ws.write_string(row, 7, r.paziente.as_str()).map_err(es)?; // H
+        ws.write_number(row, 1, r.numero_produzione as f64)
+            .map_err(es)?; // B
+        ws.write_string(row, 2, r.data_invio.as_str()).map_err(es)?; // C
+        ws.write_string(row, 3, r.agente.as_str()).map_err(es)?; // D
+        ws.write_string(row, 4, r.medico.as_str()).map_err(es)?; // E
+        ws.write_string(row, 5, r.paziente.as_str()).map_err(es)?; // F
         if let Some(v) = r.valore {
             let has_decimals = (v - v.trunc()).abs() > 0.005;
             let fmt = if has_decimals { &num_dec } else { &num_int };
-            ws.write_number_with_format(row, 8, v, fmt).map_err(es)?; // I
+            ws.write_number_with_format(row, 6, v, fmt).map_err(es)?; // G
+            totale_valore += v;
         }
-        ws.write_string(row, 9, r.data_prevista.as_str())
+        ws.write_string(row, 7, r.data_prevista.as_str())
+            .map_err(es)?; // H
+                           // Colonna 8 (I) lasciata vuota
+        ws.write_string(row, 9, r.formulazione.as_str())
             .map_err(es)?; // J
-        ws.write_string(row, 11, r.formulazione.as_str())
-            .map_err(es)?; // L
-        ws.write_string(row, 12, r.posologia.as_str()).map_err(es)?; // M
-                                                                     // N in poi: una colonna per allergene, tutti (nessun tetto).
+        ws.write_string(row, 10, r.posologia.as_str()).map_err(es)?; // K
         for (k, a) in r.allergeni.iter().enumerate() {
-            ws.write_string(row, 13 + k as u16, a.as_str())
+            ws.write_string(row, 11 + k as u16, a.as_str())
                 .map_err(es)?;
         }
     }
 
-    // Somma di colonna C in fondo (totale acconti del lotto), col contorno della riga totali.
+    // Riga dei totali in fondo:
+    // Come nella stampa (e confermato dall'utente):
+    // - Col 0 (Acconto): totale acconto
+    // - Col 1 (N° prod.): scritta "TOTALE"
+    // - Col 6 (Valore): totale valore
+    // - Altre colonne: vuote
     if !righe.is_empty() {
-        let row = righe.len() as u32 + 2; // +1 header, +1 riga di stacco
-        let has_decimals = (totale_c - totale_c.trunc()).abs() > 0.005;
-        let fmt = if has_decimals {
+        let row = righe.len() as u32 + 1; // riga totali subito sotto i dati
+        let acc_has_decimals = (totale_acconto - totale_acconto.trunc()).abs() > 0.005;
+        let acc_fmt = if acc_has_decimals {
             &num_dec_bold
         } else {
             &num_int_bold
         };
+        ws.write_number_with_format(row, 0, totale_acconto, acc_fmt)
+            .map_err(es)?;
         ws.write_string_with_format(row, 1, "TOTALE", &bold)
             .map_err(es)?;
-        ws.write_number_with_format(row, 2, totale_c, fmt)
+
+        let val_has_decimals = (totale_valore - totale_valore.trunc()).abs() > 0.005;
+        let val_fmt = if val_has_decimals {
+            &num_dec_bold
+        } else {
+            &num_int_bold
+        };
+        ws.write_number_with_format(row, 6, totale_valore, val_fmt)
             .map_err(es)?;
     }
 

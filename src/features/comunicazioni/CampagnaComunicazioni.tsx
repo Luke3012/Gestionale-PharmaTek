@@ -146,6 +146,33 @@ function canaliPerTarget(
   ];
 }
 
+export function recapitiMancantiTarget(
+  target: CampagnaComunicazioneTarget,
+  scelta: SceltaCanale,
+): { richiediEmail: boolean; richiediTelefono: boolean } {
+  const mancaEmail = !emailComunicazioneValida(target.email);
+  const mancaTelefono = !telefonoWhatsappValido(target.telefono);
+
+  if (scelta === "email") {
+    return {
+      richiediEmail: mancaEmail,
+      richiediTelefono: false,
+    };
+  }
+
+  if (scelta === "whatsapp") {
+    return {
+      richiediEmail: false,
+      richiediTelefono: mancaTelefono,
+    };
+  }
+
+  return {
+    richiediEmail: mancaEmail,
+    richiediTelefono: mancaTelefono,
+  };
+}
+
 function dataIt(dataIso: string): string {
   return formattaDataIsoLocale(dataIso);
 }
@@ -394,6 +421,7 @@ export function CampagnaComunicazioniHost({
     const versione = ++versioneRicaricaDestinatariRef.current;
     const idsPerEntita = new Map<"cliente" | "medico", Set<string>>();
     for (const target of targetsRef.current) {
+      if (target.destinatarioEntita === "laboratorio_laboratorio") continue;
       const ids =
         idsPerEntita.get(target.destinatarioEntita) ?? new Set<string>();
       ids.add(target.destinatarioId);
@@ -418,6 +446,7 @@ export function CampagnaComunicazioniHost({
     if (versione !== versioneRicaricaDestinatariRef.current) return;
     setTargets((correnti) =>
       correnti.map((target) => {
+        if (target.destinatarioEntita === "laboratorio_laboratorio") return target;
         const record = perChiave.get(
           `${target.destinatarioEntita}:${target.destinatarioId}`,
         );
@@ -881,54 +910,60 @@ export function CampagnaComunicazioniHost({
         maxHeight={260}
         estimateHeight={58}
         gap={6}
-        renderItem={(voce) => (
-          <Group
-            justify="space-between"
-            wrap="nowrap"
-            p="xs"
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: "var(--mantine-radius-sm)",
-              opacity: voce.escluso ? 0.58 : 1,
-            }}
-          >
-            <Box style={{ minWidth: 0 }}>
-              <Text size="sm" fw={600} truncate>
-                {voce.target.destinatarioNome}
-              </Text>
-              <Text size="xs" c="dimmed" truncate>
-                {voce.escluso
-                  ? "Escluso manualmente dalla comunicazione"
-                  : voce.mancanti.length
-                  ? `Dati mancanti: ${voce.mancanti.join(", ")}`
-                  : voce.canali.length
-                    ? voce.canali
-                        .map((canale) =>
-                          canale === "email" ? "E-mail" : "WhatsApp",
-                        )
-                        .join(" + ")
-                    : "Nessun recapito utilizzabile"}
-              </Text>
-            </Box>
-            <Group gap={6} wrap="nowrap">
-              {!voce.escluso &&
-                (!emailComunicazioneValida(voce.target.email) ||
-                !telefonoWhatsappValido(voce.target.telefono)) && (
-                <RecapitoRapidoPopover
-                  target={voce.target}
-                  richiediEmail={!emailComunicazioneValida(voce.target.email)}
-                  richiediTelefono={
-                    !telefonoWhatsappValido(voce.target.telefono)
-                  }
-                  onAggiornato={applicaDestinatarioAggiornato}
-                  onOpenChange={(opened) =>
-                    aggiornaRecapitoAperto(
-                      chiaveTargetCampagna(voce.target),
-                      opened,
-                    )
-                  }
-                />
-              )}
+        renderItem={(voce) => {
+          const recapitiMancanti = recapitiMancantiTarget(
+            voce.target,
+            scelta,
+          );
+          const mostraAggiungiRecapito =
+            !voce.escluso &&
+            (recapitiMancanti.richiediEmail ||
+              recapitiMancanti.richiediTelefono);
+
+          return (
+            <Group
+              justify="space-between"
+              wrap="nowrap"
+              p="xs"
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: "var(--mantine-radius-sm)",
+                opacity: voce.escluso ? 0.58 : 1,
+              }}
+            >
+              <Box style={{ minWidth: 0 }}>
+                <Text size="sm" fw={600} truncate>
+                  {voce.target.destinatarioNome}
+                </Text>
+                <Text size="xs" c="dimmed" truncate>
+                  {voce.escluso
+                    ? "Escluso manualmente dalla comunicazione"
+                    : voce.mancanti.length
+                    ? `Dati mancanti: ${voce.mancanti.join(", ")}`
+                    : voce.canali.length
+                      ? voce.canali
+                          .map((canale) =>
+                            canale === "email" ? "E-mail" : "WhatsApp",
+                          )
+                          .join(" + ")
+                      : "Nessun recapito utilizzabile"}
+                </Text>
+              </Box>
+              <Group gap={6} wrap="nowrap">
+                {mostraAggiungiRecapito && (
+                  <RecapitoRapidoPopover
+                    target={voce.target}
+                    richiediEmail={recapitiMancanti.richiediEmail}
+                    richiediTelefono={recapitiMancanti.richiediTelefono}
+                    onAggiornato={applicaDestinatarioAggiornato}
+                    onOpenChange={(opened) =>
+                      aggiornaRecapitoAperto(
+                        chiaveTargetCampagna(voce.target),
+                        opened,
+                      )
+                    }
+                  />
+                )}
               <Tooltip
                 label={
                   voce.escluso
@@ -976,7 +1011,8 @@ export function CampagnaComunicazioniHost({
               </Badge>
             </Group>
           </Group>
-        )}
+        );
+      }}
       />
 
       {errore && (

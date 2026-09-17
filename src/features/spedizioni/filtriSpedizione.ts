@@ -1,6 +1,20 @@
 import { formattaDataItaliana } from "../../lib/date";
 import type { Spedizione } from "../../lib/tauri";
 
+/** Appartenenza della spedizione all'anno di lavoro (0 = tutti gli anni). */
+export function spedizioneNellAnno(spedizione: Spedizione, anno: number): boolean {
+  return anno === 0 || Number(spedizione.data.slice(0, 4)) === anno;
+}
+
+/** Numero di gruppi/lotto effettuati nell'anno di lavoro. */
+export function contaLottiSpedizionePerAnno(spedizioni: Spedizione[], anno: number): number {
+  return new Set(
+    spedizioni
+      .filter((spedizione) => spedizioneNellAnno(spedizione, anno))
+      .map((spedizione) => spedizione.lotto),
+  ).size;
+}
+
 /** Relazione condivisa ordine → lotti di spedizione, usata da Crediti e Giornaliero. */
 export function mappaLottiPerOrdine(spedizioni: Spedizione[]): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();
@@ -18,7 +32,7 @@ export function mappaLottiPerOrdine(spedizioni: Spedizione[]): Map<string, Set<s
 export function opzioniLottiSpedizione(spedizioni: Spedizione[], anno: number) {
   const gruppi = new Map<string, { data: string; corrieri: Set<string>; colli: number }>();
   for (const spedizione of spedizioni) {
-    if (anno !== 0 && Number(spedizione.data.slice(0, 4)) !== anno) continue;
+    if (!spedizioneNellAnno(spedizione, anno)) continue;
     const gruppo = gruppi.get(spedizione.lotto) ?? {
       data: spedizione.data,
       corrieri: new Set<string>(),

@@ -20,6 +20,16 @@ trap {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     throw "Manca 'node' (Node.js). Installalo da https://nodejs.org"
 }
+
+# Se un'istanza precedente è rimasta orfana in background sulla porta 4517, liberala
+$stuck = Get-NetTCPConnection -LocalPort 4517 -ErrorAction SilentlyContinue
+if ($stuck) {
+    $stuck.OwningProcess | Select-Object -Unique | ForEach-Object {
+        Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 300
+}
+
 Set-Location $root
 Write-Host "Apro l'editor del changelog nel browser..." -ForegroundColor Cyan
 node (Join-Path $PSScriptRoot 'changelog-editor.mjs')

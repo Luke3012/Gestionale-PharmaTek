@@ -35,10 +35,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::Local;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app::{
@@ -56,6 +57,7 @@ struct PreferenzeSuggerimenti {
     tipi_abilitati: HashSet<String>,
     notifiche_attive: bool,
     giorni_avviso: HashMap<String, i64>,
+    anno: i32,
 }
 
 fn normalizza_preferenze_suggerimenti(
@@ -84,6 +86,7 @@ fn normalizza_preferenze_suggerimenti(
         tipi_abilitati,
         notifiche_attive: input.notifiche_attive,
         giorni_avviso,
+        anno: input.anno,
     }
 }
 
@@ -117,8 +120,10 @@ struct Cfg {
 
 struct CacheSuggerimenti {
     sporca: bool,
+    soglia_preventivo: Option<i64>,
+    anno: Option<i32>,
+    giorno_preventivi: Option<String>,
     bundle: Option<SuggerimentiBundleDto>,
-    duplicato_locale: Option<SuggerimentoDto>,
     /// Prima osservazione locale della fotografia corrente. Impedisce che una
     /// card residua avvisi subito dopo un'azione parziale sulle sorgenti.
     rilevati_ms: HashMap<String, i64>,
@@ -128,8 +133,10 @@ impl Default for CacheSuggerimenti {
     fn default() -> Self {
         Self {
             sporca: true,
+            soglia_preventivo: None,
+            anno: None,
+            giorno_preventivi: None,
             bundle: None,
-            duplicato_locale: None,
             rilevati_ms: HashMap::new(),
         }
     }
@@ -166,6 +173,14 @@ struct Stato {
 }
 
 impl Stato {
+    /// Controllo solo in memoria: consente al timer da 5s di rispettare la scadenza
+    /// giornaliera dei messaggi senza riaprire SQLite a ogni giro.
+    fn riavviso_messaggio_dovuto_a(&self, ora: i64) -> bool {
+        self.messaggi_avvisati_ms
+            .values()
+            .any(|ultimo| *ultimo > 0 && ora.saturating_sub(*ultimo) >= GIORNO_MS)
+    }
+
     /// Diff de-dup: dato l'insieme **corrente** di notifiche non lette, ritorna quelle
     /// **nuove** da avvisare (e le marca come avvisate), oppure `None` al primo giro
     /// (semina silenziosa, salvo messaggi non letti da almeno un giorno). È pura e
@@ -371,6 +386,12 @@ pub struct Notificatore {
     /// blocchi/avvisi persi). Decide: suono via webview (a fuoco) vs rodio (in background),
     /// e se mostrare i pop-up overlay.
     main_focused: AtomicBool,
+    /// Flag reattivo: true se sono avvenute modifiche ai dati che richiedono una scansione.
+    dati_sporce: AtomicBool,
+    /// Timestamp (ms) dell'ultima derivazione completa delle notifiche.
+    ultimo_controllo_ms: AtomicI64,
+    /// Giorno di calendario (da epoch) dell'ultima scansione (per scadenze a mezzanotte).
+    ultimo_giorno_scansionato: AtomicI64,
 }
 
 impl Notificatore {
@@ -385,7 +406,15 @@ impl Notificatore {
             overlay_in_attesa: Arc::new(Mutex::new(Vec::new())),
             avvisi_sospesi: AtomicBool::new(true),
             main_focused: AtomicBool::new(false),
+            dati_sporce: AtomicBool::new(true),
+            ultimo_controllo_ms: AtomicI64::new(0),
+            ultimo_giorno_scansionato: AtomicI64::new(0),
         }
+    }
+
+    /// Segnala che i dati della proiezione sono cambiati e richiedono una nuova scansione.
+    pub fn segnala_modifica(&self) {
+        self.dati_sporce.store(true, Ordering::Release);
     }
 
     /// Aggiorna il fuoco della finestra principale (chiamato dai window event, main thread).
@@ -439,6 +468,7 @@ impl Notificatore {
         }
         *cfg = Some(prossima);
         drop(cfg);
+        self.segnala_modifica();
         self.scansiona();
     }
 
@@ -476,24 +506,20 @@ impl Notificatore {
             .lock()
             .expect("suggerimenti cache poisoned");
         cache.sporca = true;
-        if entities
-            .iter()
-            .any(|entity| matches!(entity.as_str(), "cliente" | "snapshot"))
-        {
-            cache.duplicato_locale = None;
-        }
     }
 
-    fn bundle_suggerimenti(&self, state: &AppState) -> Option<SuggerimentiBundleDto> {
+    fn bundle_suggerimenti(
+        &self,
+        state: &AppState,
+        soglia_preventivo: i64,
+        anno: i32,
+    ) -> Option<SuggerimentiBundleDto> {
         if !crate::premium::is_enabled(&state.app_dir) {
             let mut cache = self
                 .suggerimenti_cache
                 .lock()
                 .expect("suggerimenti cache poisoned");
-            if cache.bundle.is_some()
-                || cache.duplicato_locale.is_some()
-                || !cache.rilevati_ms.is_empty()
-            {
+            if cache.bundle.is_some() || !cache.rilevati_ms.is_empty() {
                 *cache = CacheSuggerimenti::default();
             }
             return None;
@@ -502,25 +528,27 @@ impl Notificatore {
             .suggerimenti_cache
             .lock()
             .expect("suggerimenti cache poisoned");
+        let soglia_preventivo = soglia_preventivo.clamp(0, 90);
+        let giorno_preventivi = Local::now().format("%Y-%m-%d").to_string();
+        if cache.soglia_preventivo != Some(soglia_preventivo)
+            || cache.anno != Some(anno)
+            || cache.giorno_preventivi.as_deref() != Some(&giorno_preventivi)
+        {
+            cache.soglia_preventivo = Some(soglia_preventivo);
+            cache.anno = Some(anno);
+            cache.giorno_preventivi = Some(giorno_preventivi);
+            cache.sporca = true;
+        }
         if cache.sporca {
-            cache.bundle = state.suggerimenti_lista().ok();
+            cache.bundle = state
+                .suggerimenti_lista_con_soglia_preventivi_per_anno(
+                    soglia_preventivo,
+                    anno,
+                )
+                .ok();
             cache.sporca = false;
         }
-        let mut bundle = cache.bundle.clone()?;
-        if let Some(duplicato) = cache.duplicato_locale.clone() {
-            if !bundle.nascosti.contains(&duplicato.id)
-                && !bundle.tipi_in_pausa.contains(&duplicato.tipo)
-            {
-                bundle.suggerimenti.push(duplicato);
-                bundle.suggerimenti.sort_by(|a, b| {
-                    b.priorita
-                        .cmp(&a.priorita)
-                        .then_with(|| a.tipo.cmp(&b.tipo))
-                        .then_with(|| a.id.cmp(&b.id))
-                });
-                bundle.suggerimenti.dedup_by(|a, b| a.id == b.id);
-            }
-        }
+        let bundle = cache.bundle.clone()?;
         aggiorna_rilevati_ms(
             &mut cache.rilevati_ms,
             bundle
@@ -534,49 +562,33 @@ impl Notificatore {
 
     pub fn aggiorna_duplicato_locale(
         &self,
-        state: &AppState,
-        suggerimento: Option<SuggerimentoDto>,
+        _state: &AppState,
+        _suggerimento: Option<SuggerimentoDto>,
     ) -> Result<bool, String> {
-        crate::premium::ensure_access(state)?;
-        if let Some(ref voce) = suggerimento {
-            if voce.tipo != "duplicati"
-                || !voce.id.starts_with("s14:duplicati:")
-                || voce.id.len() > 160
-                || voce.collegamento.path != "/impostazioni"
-                || voce.collegamento.azione.as_deref() != Some("ottimizza_database")
-            {
-                return Err("suggerimento duplicati locale non valido".into());
-            }
-        }
-        let mut cache = self
-            .suggerimenti_cache
-            .lock()
-            .expect("suggerimenti cache poisoned");
-        if cache.duplicato_locale == suggerimento {
-            return Ok(false);
-        }
-        let nuovo_id = suggerimento.as_ref().map(|voce| voce.id.as_str());
-        cache.rilevati_ms.retain(|id, _| {
-            !id.starts_with("s14:duplicati:") || nuovo_id.is_some_and(|corrente| corrente == id)
-        });
-        cache.duplicato_locale = suggerimento;
-        Ok(true)
+        Ok(false)
     }
 
-    pub fn suggerimenti_dashboard_lista(&self) -> Result<SuggerimentiBundleDto, String> {
+    pub fn suggerimenti_dashboard_lista(
+        &self,
+        preferenze: SuggerimentiPreferenzeInput,
+    ) -> Result<SuggerimentiBundleDto, String> {
         let state = self
             .app
             .try_state::<AppState>()
             .ok_or_else(|| "stato applicativo non disponibile".to_string())?;
         crate::premium::ensure_access(&state)?;
-        self.bundle_suggerimenti(&state)
+        let preferenze = normalizza_preferenze_suggerimenti(preferenze);
+        self.bundle_suggerimenti(&state, soglia_preventivo(&preferenze), preferenze.anno)
             .ok_or_else(|| "impossibile derivare le azioni suggerite".to_string())
     }
 
     /// Invalida esplicitamente la fotografia corrente e la ricalcola subito.
     /// È separato dalla lettura ordinaria perché il pulsante Dashboard deve
     /// eseguire un controllo reale anche quando nessuna entità ha emesso eventi.
-    pub fn suggerimenti_dashboard_rigenera(&self) -> Result<SuggerimentiBundleDto, String> {
+    pub fn suggerimenti_dashboard_rigenera(
+        &self,
+        preferenze: SuggerimentiPreferenzeInput,
+    ) -> Result<SuggerimentiBundleDto, String> {
         let state = self
             .app
             .try_state::<AppState>()
@@ -586,7 +598,8 @@ impl Notificatore {
             .lock()
             .expect("suggerimenti cache poisoned")
             .sporca = true;
-        self.bundle_suggerimenti(&state)
+        let preferenze = normalizza_preferenze_suggerimenti(preferenze);
+        self.bundle_suggerimenti(&state, soglia_preventivo(&preferenze), preferenze.anno)
             .ok_or_else(|| "impossibile rigenerare le azioni suggerite".to_string())
     }
 
@@ -599,7 +612,11 @@ impl Notificatore {
             return Vec::new();
         }
         let ora = ora_ms();
-        let bundle = self.bundle_suggerimenti(state);
+        let bundle = self.bundle_suggerimenti(
+            state,
+            soglia_preventivo(preferenze),
+            preferenze.anno,
+        );
         let rilevati_ms = self
             .suggerimenti_cache
             .lock()
@@ -673,6 +690,31 @@ impl Notificatore {
             }
         }
 
+        let oggi = oggi_giorni();
+        let ora = ora_ms();
+        let ultimo_controllo = self.ultimo_controllo_ms.load(Ordering::Acquire);
+        let ultimo_giorno = self.ultimo_giorno_scansionato.load(Ordering::Acquire);
+        let sporca = self.dati_sporce.load(Ordering::Acquire);
+        let giorno_cambiato = oggi != ultimo_giorno;
+        let fallback_tempo = ora.saturating_sub(ultimo_controllo) >= 60_000;
+        let riavviso_messaggio_dovuto = self
+            .stato
+            .lock()
+            .expect("stato poisoned")
+            .riavviso_messaggio_dovuto_a(ora);
+        let sessione_da_ricontrollare = self.avvisi_sospesi.load(Ordering::Acquire);
+
+        // Il timer resta reattivo ogni 5s, ma la derivazione SQLite parte soltanto per
+        // dati nuovi, cambio giorno, fallback o un riavviso maturato in memoria.
+        if !sporca
+            && !giorno_cambiato
+            && !fallback_tempo
+            && !riavviso_messaggio_dovuto
+            && !sessione_da_ricontrollare
+        {
+            return;
+        }
+
         // Verifica autorevole nel core, non nel WebView: continua a funzionare con
         // main sospesa/nascosta e blocca gli avvisi se cartella, identità o restore
         // rendono indisponibile la home. Il confronto utente evita che una vecchia
@@ -683,9 +725,32 @@ impl Notificatore {
         }
         self.avvisi_sospesi.store(false, Ordering::Release);
 
+        // Consumiamo il dirty flag soltanto ora: se la sessione non era disponibile
+        // resta pendente; una modifica concorrente successiva allo swap lo rialza.
+        self.dati_sporce.swap(false, Ordering::AcqRel);
+
+        // Il gate Premium viene letto a ogni scansione, anche se le notifiche dei
+        // suggerimenti sono disattivate. In questo modo una disattivazione elimina
+        // subito fotografie e tempi di rilevazione dalla cache; una successiva
+        // riattivazione riparte obbligatoriamente da una derivazione fresca.
+        if let Some(state) = self.app.try_state::<AppState>() {
+            if !crate::premium::is_enabled(&state.app_dir) {
+                let mut cache = self
+                    .suggerimenti_cache
+                    .lock()
+                    .expect("suggerimenti cache poisoned");
+                if cache.bundle.is_some() || !cache.rilevati_ms.is_empty() {
+                    *cache = CacheSuggerimenti::default();
+                }
+            }
+        }
+
         let correnti = self.deriva(&cfg);
         let reatt = self.reattivazioni(&cfg.user_id);
         let reatt_dashboard = self.riattivazioni_dashboard(&cfg.user_id);
+        self.ultimo_controllo_ms.store(ora, Ordering::Release);
+        self.ultimo_giorno_scansionato
+            .store(oggi, Ordering::Release);
 
         // Diff + marcatura ATOMICI (sotto un solo lock): garantisce che due trigger
         // concorrenti (timer + webview) non avvisino mai due volte la stessa notifica.
@@ -786,10 +851,8 @@ impl Notificatore {
 
         // Solleciti: pagamenti attesi (non saldati) scaduti oltre la soglia, su ordini
         // con credito reale (≥ Confermato: né Nuovo né Rifiutato).
-        let ordini_vivi: HashSet<String> = state
-            .ordini_lista()
-            .map(|ordini| ordini.into_iter().map(|o| o.id).collect())
-            .unwrap_or_default();
+        let ordini_completi = state.ordini_lista().unwrap_or_default();
+        let ordini_vivi: HashSet<String> = ordini_completi.iter().map(|o| o.id.clone()).collect();
         if let Ok(pags) = state.pagamenti_vista(None, None, None, None, None) {
             for p in pags {
                 if p.saldato || p.scadenza.is_empty() {
@@ -928,33 +991,31 @@ impl Notificatore {
                 )
             })
             .collect();
-        if let Ok(ordini) = state.ordini_lista() {
-            for o in ordini {
-                let Some((label, urgenza)) = marcatore_notifica(&o.marcatore) else {
-                    continue;
-                };
-                if !marcatore_notificabile_su_dispositivo(
-                    origini_marcatori.get(&o.id),
-                    &dispositivo_corrente,
-                ) {
-                    continue;
-                }
-                out.push(Notif {
-                    id: format!("marcatore:{}", o.id),
-                    tipo: "marcatore".into(),
-                    urgenza: urgenza.into(),
-                    titolo: format!("{label} · {}", o.numero),
-                    dettaglio: o.medico_nome.clone(),
-                    collegato_tipo: "ordine".into(),
-                    collegato_id: o.id.clone(),
-                    collegato_nome: o.numero.clone(),
-                    promemoria_id: String::new(),
-                    mittente_id: String::new(),
-                    origine_ms: 0,
-                    mostra_completa: false,
-                    suggerimento_collegamento: None,
-                });
+        for o in &ordini_completi {
+            let Some((label, urgenza)) = marcatore_notifica(&o.marcatore) else {
+                continue;
+            };
+            if !marcatore_notificabile_su_dispositivo(
+                origini_marcatori.get(&o.id),
+                &dispositivo_corrente,
+            ) {
+                continue;
             }
+            out.push(Notif {
+                id: format!("marcatore:{}", o.id),
+                tipo: "marcatore".into(),
+                urgenza: urgenza.into(),
+                titolo: format!("{label} · {}", o.numero),
+                dettaglio: o.medico_nome.clone(),
+                collegato_tipo: "ordine".into(),
+                collegato_id: o.id.clone(),
+                collegato_nome: o.numero.clone(),
+                promemoria_id: String::new(),
+                mittente_id: String::new(),
+                origine_ms: 0,
+                mostra_completa: false,
+                suggerimento_collegamento: None,
+            });
         }
 
         // Messaggi tra PC (FASE 6E): record `notifica` indirizzati a me (o a "tutti"),
@@ -1227,12 +1288,18 @@ fn suggerimento_notificabile(
     if !preferenze.tipi_abilitati.contains(&suggerimento.tipo) {
         return false;
     }
-    let giorni = preferenze
-        .giorni_avviso
-        .get(&suggerimento.tipo)
-        .copied()
-        .unwrap_or(0)
-        .clamp(0, 90);
+    // I preventivi sono già filtrati candidato per candidato dal motore usando
+    // giorni civili locali; non riapplicare qui la soglia all'aggregato.
+    let giorni = if suggerimento.tipo == "preventivo" {
+        0
+    } else {
+        preferenze
+            .giorni_avviso
+            .get(&suggerimento.tipo)
+            .copied()
+            .unwrap_or(0)
+            .clamp(0, 90)
+    };
     let da_data = giorni_civili(&suggerimento.riferimento_data)
         .map(|giorno| giorno.saturating_add(giorni).saturating_mul(GIORNO_MS))
         .unwrap_or_else(|| {
@@ -1245,6 +1312,15 @@ fn suggerimento_notificabile(
         .max(rilevato_ms)
         .saturating_add(RIVALIDAZIONE_SUGGERIMENTO_MS);
     ora >= da_data.max(dopo_rivalidazione)
+}
+
+fn soglia_preventivo(preferenze: &PreferenzeSuggerimenti) -> i64 {
+    preferenze
+        .giorni_avviso
+        .get("preventivo")
+        .copied()
+        .unwrap_or(7)
+        .clamp(0, 90)
 }
 
 /// `oggi − scadenza` in giorni civili; `None` se la data non è valida.
@@ -1361,6 +1437,7 @@ pub fn notifiche_config(config: NotificheConfigInput, nt: State<'_, std::sync::A
 /// Chiede una nuova scansione (il webview la chiama quando ricarica, da vivo).
 #[tauri::command]
 pub fn notifiche_check(nt: State<'_, std::sync::Arc<Notificatore>>) {
+    nt.segnala_modifica();
     nt.scansiona();
 }
 
@@ -1617,6 +1694,7 @@ mod tests {
             tipi_abilitati: tipi.iter().map(|tipo| (*tipo).to_string()).collect(),
             notifiche_attive: true,
             giorni_avviso: [("rimborso".to_string(), giorni)].into_iter().collect(),
+            anno: 0,
         }
     }
 
@@ -1683,6 +1761,34 @@ mod tests {
             &subito,
             molto_dopo,
             molto_dopo - RIVALIDAZIONE_SUGGERIMENTO_MS,
+        ));
+    }
+
+    #[test]
+    fn suggerimento_preventivo_non_riapplica_la_soglia_all_aggregato() {
+        let giorno = giorni_civili("2026-08-08").unwrap() * GIORNO_MS;
+        let suggerimento = SuggerimentoDto {
+            id: "s14:preventivo:test".into(),
+            tipo: "preventivo".into(),
+            titolo: String::new(),
+            dettaglio: String::new(),
+            azione_label: String::new(),
+            priorita: 80,
+            collegamento: SuggerimentoCollegamentoDto::default(),
+            riferimento_data: "2026-08-08".into(),
+            aggiornato_ms: giorno,
+        };
+        let preferenze = PreferenzeSuggerimenti {
+            tipi_abilitati: ["preventivo".to_string()].into_iter().collect(),
+            notifiche_attive: true,
+            giorni_avviso: [("preventivo".to_string(), 7)].into_iter().collect(),
+            anno: 0,
+        };
+        assert!(suggerimento_notificabile(
+            &suggerimento,
+            &preferenze,
+            giorno + RIVALIDAZIONE_SUGGERIMENTO_MS,
+            giorno,
         ));
     }
 
@@ -1851,5 +1957,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ids(&secondo_promemoria), vec!["msg:1"]);
+    }
+
+    #[test]
+    fn riavviso_messaggio_scade_in_memoria_e_si_riprogramma_dopo_l_avviso() {
+        let mut st = Stato::default();
+        let no = HashMap::new();
+        let origine = 1_000;
+        let prima_scadenza = origine + GIORNO_MS;
+
+        assert!(st
+            .nuove_da_avvisare_a(vec![messaggio_notif("msg:1", origine)], &no, origine)
+            .is_none());
+        assert!(!st.riavviso_messaggio_dovuto_a(prima_scadenza - 1));
+        assert!(st.riavviso_messaggio_dovuto_a(prima_scadenza));
+
+        let promemoria = st
+            .nuove_da_avvisare_a(vec![messaggio_notif("msg:1", origine)], &no, prima_scadenza)
+            .unwrap();
+        assert_eq!(ids(&promemoria), vec!["msg:1"]);
+        assert!(!st.riavviso_messaggio_dovuto_a(prima_scadenza + 1));
     }
 }

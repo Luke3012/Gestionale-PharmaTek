@@ -6,6 +6,7 @@ export interface GruppoLotto {
   ordini: OrdineDto[];
   righeLotto: Map<string, RecordDto[]>;
   dataInvio: string;
+  maxRevision: string;
   totale: number;
   nInProd: number;
   nArrivati: number;

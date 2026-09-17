@@ -108,7 +108,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Test frontend pubblici falliti.' }
         & npm --prefix $Destination run build
         if ($LASTEXITCODE -ne 0) { throw 'Build Vite pubblica fallita.' }
-        & cargo test --manifest-path (Join-Path $Destination 'src-tauri\Cargo.toml')
+        & cargo test --manifest-path (Join-Path $Destination 'src-tauri\Cargo.toml') -- --test-threads=1
         if ($LASTEXITCODE -ne 0) { throw 'Test Rust pubblici falliti.' }
         & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Destination 'scripts\build.ps1') -SkipTests -NoPause
         if ($LASTEXITCODE -ne 0) { throw 'Build Tauri pubblica fallita.' }

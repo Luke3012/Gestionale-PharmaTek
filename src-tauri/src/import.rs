@@ -803,7 +803,7 @@ mod tests {
             "",
             "Privato",
             "",
-            "",
+            "demo@example.invalid",
             "",
             "3331234567",
             "IT",
@@ -831,7 +831,7 @@ mod tests {
             "",
             "Privato",
             "",
-            "",
+            "demo@example.invalid",
             "",
             "3337654321",
             "IT",
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(clients[0].prov, "RM");
         assert_eq!(clients[0].cap, "00100");
         assert_eq!(clients[0].telefono, "3331234567");
-        assert_eq!(clients[0].email, "");
+        assert_eq!(clients[0].email, "demo@example.invalid");
         assert_eq!(clients[0].cf, "RSSMRA80A01H501U");
 
         assert_eq!(clients[1].nome, "GIULIA BIANCHI");

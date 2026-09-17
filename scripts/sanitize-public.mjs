@@ -39,8 +39,23 @@ for (const file of walk(root)) {
   if (!textExtensions.has(path.extname(file).toLowerCase())) continue;
   let value = fs.readFileSync(file, "utf8");
   value = value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "")
-    .replace(/\bIT\s*\d{2}\s*[A-Z]\s*(?:\d\s*){10}(?:[A-Z0-9]\s*){12}\b/g, "IBAN-DEMO-NON-VALIDO")
+    // Mantieni i fixture con un recapito demo valido, così i test pubblici
+    // continuano a esercitare i flussi e-mail senza esporre indirizzi reali.
+    .replace(/mailto:[A-Z0-9._%+-]+%40[A-Z0-9.-]+\.[A-Z]{2,}/gi, "mailto:demo%40example.invalid")
+    .replaceAll("laboratorio@example.invalid", "laboratorio@example.invalid")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "demo@example.invalid")
+    .replaceAll("laboratorio@example.invalid", "demo@example.invalid")
+    // Il codice distingue il conto Poste dal codice ABI/CAB nell'IBAN:
+    // conserva quel solo discriminante in un valore breve e non utilizzabile.
+    .replace(/\bIT\s*\d{2}\s*[A-Z]\s*(?:\d\s*){10}(?:[A-Z0-9]\s*){12}\b/gi, (iban) => {
+      const normalizzato = iban.replace(/\s+/g, "").toUpperCase();
+      return normalizzato.slice(5, 10) === "07601" ? "IT00 B076 01DE MO" : "IT00 X000 00DE MO";
+    })
+    // Evita di trasformare identificatori TypeScript in sintassi invalida
+    // quando il nome operativo viene sostituito con testo leggibile.
+    .replaceAll("GruppoCorriereA", "GruppoCorriereA")
+    .replaceAll("preparaRigheCorriereA", "preparaRigheCorriereA")
+    .replaceAll("spedizioneCorriereA", "spedizioneCorriereA")
     .replaceAll("https://github.com/Luke3012/Gestionale-PharmaTek", "https://github.com/Luke3012/Gestionale-PharmaTek")
     .replaceAll("repos/Luke3012/Gestionale-PharmaTek", "repos/Luke3012/Gestionale-PharmaTek")
     .replaceAll("Luke3012/Gestionale-PharmaTek", "Luke3012/Gestionale-PharmaTek")
@@ -63,28 +78,36 @@ for (const file of walk(root)) {
     .replaceAll("Banca Demo", "Banca Demo")
     .replaceAll("BANCA DEMO", "BANCA DEMO")
     .replaceAll("Banca Demo", "Banca Demo")
+    // Questi nomi possono comparire anche dentro identificatori e chiavi:
+    // le sostituzioni restano senza spazi per non rompere la sintassi.
     .replaceAll("LABORATORIO", "LABORATORIO")
     .replaceAll("Laboratorio", "Laboratorio")
     .replaceAll("laboratorio", "laboratorio")
     .replaceAll("CORRIERE_A", "CORRIERE_A")
-    .replaceAll("Corriere A", "Corriere A")
+    .replace(/(?<![A-Za-z0-9_])Corriere A(?![A-Za-z0-9_])/g, "Corriere A")
+    .replace(/(?<![A-Za-z0-9_])corriere_a(?![A-Za-z0-9_])/g, "corriere_a")
     .replaceAll("CORRIERE_B", "CORRIERE_B")
     .replaceAll("CORRIERE_C", "CORRIERE_C");
+  if (path.relative(root, file).replaceAll("\\", "/") === "src-tauri/src/app/tests.rs") {
+    value = value
+      .replace(
+        ".all(|r| r.data.get(\"prezzo_base_default\") == Some(&json!(6000))))",
+        ".all(|r| r.data.get(\"prezzo_base_default\") == Some(&json!(0))))",
+      )
+      .replace(
+        "assert_eq!(poli2.data.get(\"prezzo_base_default\"), Some(&json!(40000)));",
+        "assert_eq!(poli2.data.get(\"prezzo_base_default\"), Some(&json!(0)));",
+      )
+      .replace(
+        "assert_eq!(r2.prezzo, 40000);",
+        "assert_eq!(r2.prezzo, 0);",
+      );
+  }
   fs.writeFileSync(file, value, "utf8");
 }
 
 const seedPath = path.join(root, "src-tauri/src/app/seed_catalog.rs");
 let seed = fs.readFileSync(seedPath, "utf8");
-for (const name of [
-  "ensure_builtin_corrieri",
-  "ensure_conti_default",
-  "ensure_agenti_default",
-  "ensure_medici_default",
-  "ensure_regole_prezzo_default",
-  "ensure_parametri_globali_default",
-]) {
-  seed = replaceFunction(seed, name, `pub(super) fn ${name}(_engine: &Engine) -> AppResult<()> {\n    Ok(())\n}`);
-}
 const productsStart = seed.indexOf("pub(super) fn ensure_prodotti_default");
 const diagStart = seed.indexOf("pub(super) fn ensure_prodotti_diagnostica");
 let products = seed.slice(productsStart, diagStart)
@@ -103,9 +126,10 @@ for (let i = diagBrace; i < seed.length; i += 1) {
   if (depth === 0) { diagEnd = i + 1; break; }
 }
 const oldDiag = seed.slice(diagFunctionStart, diagEnd);
-const names = [...oldDiag.matchAll(/\("[A-Z]-\d+",\s*"([^"]+)"\)/g)].map((match) => match[1]);
-const escapedNames = names.map((name) => `        ${JSON.stringify(name)},`).join("\n");
-const newDiag = `pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {\n    const DIAG: &[&str] = &[\n${escapedNames}\n    ];\n    for nome in DIAG {\n        let id = seed_id("proddiag", nome);\n        ensure_record(\n            engine,\n            "prodotto",\n            &id,\n            &[\n                ("nome", json!(nome)),\n                ("categoria", json!("Diagnostica")),\n                ("codice_laboratorio", json!("")),\n                ("prezzo_base_default", json!(0)),\n                ("builtin", json!(true)),\n            ],\n        )?;\n    }\n    Ok(())\n}`;
+const entries = [...oldDiag.matchAll(/\("([A-Z]-\d+)",\s*"([^"]+)"\)/g)]
+  .map((match) => `        (${JSON.stringify(match[1])}, ${JSON.stringify(match[2])}),`)
+  .join("\n");
+const newDiag = `pub(super) fn ensure_prodotti_diagnostica(engine: &Engine) -> AppResult<()> {\n    const DIAG: &[(&str, &str)] = &[\n${entries}\n    ];\n    for (codice, nome) in DIAG {\n        let id = seed_id("proddiag", codice);\n        ensure_record(\n            engine,\n            "prodotto",\n            &id,\n            &[\n                ("nome", json!(nome)),\n                ("categoria", json!("Diagnostica")),\n                ("codice_laboratorio", json!(codice)),\n                ("prezzo_base_default", json!(0)),\n                ("builtin", json!(true)),\n            ],\n        )?;\n    }\n    Ok(())\n}`;
 seed = seed.slice(0, diagFunctionStart) + newDiag + seed.slice(diagEnd);
 seed = seed
   .replace(/Le liste derivano dal file reale normalizzato\./g, "Le liste descrivono la tassonomia tecnica della demo.")

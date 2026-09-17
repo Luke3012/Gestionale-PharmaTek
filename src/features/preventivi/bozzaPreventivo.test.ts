@@ -58,7 +58,7 @@ describe("preventivoDaBozza", () => {
         prov: "NA",
         cf: "ABC",
         telefono: "081",
-        email: "",
+        email: "demo@example.invalid",
       })],
       [record("medico-1", { nome: "Medico" })],
       [record("agente-1", { nome: "Agente" })],

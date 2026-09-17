@@ -18,7 +18,11 @@ export function animazioniRidotteSalvate(): boolean {
  * animazioni di opacità (Framer le considera "sicure"): per onorare davvero la
  * preferenza, i componenti con fade/slide/exit la consultano e degradano a istantaneo. */
 export function useAnimazioniRidotte(): boolean {
-  return usePrefs().ridurreAnimazioni;
+  try {
+    return usePrefs().ridurreAnimazioni;
+  } catch {
+    return animazioniRidotteSalvate();
+  }
 }
 
 // Durate condivise. Tenute volutamente brevi: la transizione tra schermate deve

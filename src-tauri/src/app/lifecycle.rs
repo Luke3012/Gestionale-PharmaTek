@@ -19,6 +19,10 @@ impl AppState {
 
     fn init_internal(app_dir: PathBuf, app_handle: Option<NativeAppHandle>) -> AppResult<Self> {
         fs::create_dir_all(&app_dir).map_err(e)?;
+        // Un arresto del processo può impedire il cleanup finale degli XLSX
+        // intermedi. La directory è locale ad AppData e contiene soltanto
+        // artefatti di preparazione rigenerabili.
+        let _ = fs::remove_dir_all(app_dir.join("production-preparation"));
         let mut config = load_config(&app_dir)?;
         if config.device_id.is_empty() {
             config.device_id = Ulid::generate().to_string();
@@ -70,6 +74,7 @@ impl AppState {
                     None
                 }
             }),
+            prescriptions_index: Mutex::new(None),
         };
         // Marker e manifest possono arrivare prima dei file del payload. In quella
         // finestra la proiezione è intenzionalmente incompleta: non va usata per

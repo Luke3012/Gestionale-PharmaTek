@@ -47,7 +47,7 @@ export function AnagraficaEditorModal({
   /** `null` crea un record; un record esistente viene modificato a patch. */
   record: RecordDto | null;
   onClose: () => void;
-  onSaved?: (record: RecordDto) => void;
+  onSaved?: (record: RecordDto, modalita?: "creato" | "unificato") => void;
   onInvalidated?: () => void;
   campiDisabilitati?: (record: RecordDto | null) => string[];
   modalExtra?: (record: RecordDto | null) => ReactNode;
@@ -208,11 +208,17 @@ export function AnagraficaEditorModal({
         if (registro.entity === "cliente") {
           const risultato = await salvaNuovoClienteConControllo(fields);
           if (!risultato) return;
-          onSaved?.(risultato.record);
+          if (risultato.modalita === "unificato") {
+            setErrori({});
+            applicaRemoto(risultato.record);
+            onSaved?.(risultato.record, "unificato");
+            return;
+          }
+          onSaved?.(risultato.record, "creato");
         } else {
           const creato = await api.recordCreate(registro.entity, fields);
           toast.success(`${inizialeMaiuscola(registro.singolare)} creato.`);
-          onSaved?.(creato);
+          onSaved?.(creato, "creato");
         }
         onClose();
         return;
@@ -276,8 +282,8 @@ export function AnagraficaEditorModal({
         </Text>
       }
       size={size ?? "lg"}
-      closeOnEscape={!bloccaChiusura}
-      closeOnClickOutside={!bloccaChiusura}
+      closeOnEscape={!bloccaChiusura && !salvando}
+      closeOnClickOutside={!bloccaChiusura && !salvando}
       transitionProps={{
         onExited: () => {
           setMostrato(false);

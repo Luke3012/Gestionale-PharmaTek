@@ -15,11 +15,11 @@
 import {
   memo,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useTransition,
 } from "react";
 import {
   ActionIcon,
@@ -73,6 +73,10 @@ import {
 import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
 import { Pagina, usePaginaPronta } from "../../pages/Pagina";
 import { DebouncedInput } from "../../ui/DebouncedInput";
+import {
+  spedizioneNellAnno,
+} from "./filtriSpedizione";
+import { ordineDaSpedireNelContesto } from "../../lib/annoLavoro";
 import { statoDef } from "../giornaliero/stati";
 import { ordinaCopia } from "../../ui/ordinamento";
 import { OrdineEditor } from "../giornaliero/OrdineEditor";
@@ -183,6 +187,15 @@ export function numeroComunicazioniSpedizione(spedizioni: Spedizione[]): number 
   ).size;
 }
 
+export function isModalitaRicerca(
+  cerca: string,
+  cercaDifferita?: string,
+): boolean {
+  return (
+    (cerca || "").trim().length > 0 || (cercaDifferita || "").trim().length > 0
+  );
+}
+
 // Categorie escluse di default da «Da spedire»: Diagnostica e Keriba viaggiano per canali
 // diversi e non si spediscono col flusso ordinario. Si mostrano con lo switch. FASE 5E.
 const CAT_NON_DEFAULT = new Set(["diagnostica", "keriba"]);
@@ -235,27 +248,57 @@ function DistintaGruppo({
   const [scelta, setScelta] = useState<string | null>(null);
   if (corrieri.length === 0) return null;
 
-  const esporta = (d: Distinta, controllata: boolean) => (
-    <EsportaTabella<ReturnType<typeof rigaCorriere>>
-      key={d.nome}
-      variante={compatto ? "icona" : "bottone"}
-      etichetta="Crea distinta"
-      adattivo
-      size="compact-sm"
-      senzaTrigger={controllata}
-      aperto={controllata ? scelta === d.nome : undefined}
-      onApertoChange={
-        controllata
-          ? (v) => {
-              if (!v) setScelta(null);
-            }
-          : undefined
-      }
-      {...proprietaEsportazioneDistinta(d)}
-    />
-  );
+  const corriereScelto = scelta ? corrieri.find((d) => d.nome === scelta) : null;
 
-  if (corrieri.length === 1) return esporta(corrieri[0], false);
+  if (corrieri.length === 1) {
+    const d = corrieri[0];
+    return (
+      <>
+        {compatto ? (
+          <Tooltip label="Crea distinta" withArrow>
+            <ActionIcon
+              size={36}
+              variant="light"
+              color="accent"
+              onClick={(e) => {
+                e.stopPropagation();
+                setScelta(d.nome);
+              }}
+              aria-label="Crea distinta"
+            >
+              <IconFileExport size={18} />
+            </ActionIcon>
+          </Tooltip>
+        ) : (
+          <Button
+            size="compact-sm"
+            variant="light"
+            color="accent"
+            className="pt-azione-adattiva"
+            leftSection={<IconFileExport size={16} />}
+            onClick={(e) => {
+              e.stopPropagation();
+              setScelta(d.nome);
+            }}
+            aria-label="Crea distinta"
+          >
+            <span className="pt-azione-adattiva-label">Crea distinta</span>
+          </Button>
+        )}
+        {corriereScelto && (
+          <EsportaTabella<ReturnType<typeof rigaCorriere>>
+            key={corriereScelto.nome}
+            senzaTrigger
+            aperto
+            onApertoChange={(v) => {
+              if (!v) setScelta(null);
+            }}
+            {...proprietaEsportazioneDistinta(corriereScelto)}
+          />
+        )}
+      </>
+    );
+  }
 
   // Più corrieri nello stesso gruppo (unito): si sceglie quale distinta generare.
   return (
@@ -302,7 +345,17 @@ function DistintaGruppo({
           </Menu>
         </Box>
       </Tooltip>
-      {corrieri.map((d) => esporta(d, true))}
+      {corriereScelto && (
+        <EsportaTabella<ReturnType<typeof rigaCorriere>>
+          key={corriereScelto.nome}
+          senzaTrigger
+          aperto
+          onApertoChange={(v) => {
+            if (!v) setScelta(null);
+          }}
+          {...proprietaEsportazioneDistinta(corriereScelto)}
+        />
+      )}
     </>
   );
 }
@@ -348,10 +401,43 @@ const DistintaGruppoLotto = memo(function DistintaGruppoLotto({
   return <DistintaGruppo corrieri={corrieri} compatto={compatto} />;
 });
 
-function spedizioneCorrisponde(s: Spedizione, q: string): boolean {
-  if (!q) return true;
-  if (s.lotto.toLowerCase().includes(q)) return true;
-  const campi = [
+const CellaAzioniLotto = memo(function CellaAzioniLotto({
+  g,
+  inRicerca,
+  onAnnullaLotto,
+}: {
+  g: GruppoSped;
+  inRicerca: boolean;
+  onAnnullaLotto: (g: GruppoSped) => void;
+}) {
+  return (
+    <Group
+      className="pt-cella-azioni-adattive"
+      gap="xs"
+      wrap="nowrap"
+      justify="flex-end"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <DistintaGruppoLotto spedizioni={g.spedizioni} compatto={false} />
+      {!inRicerca && (
+        <Tooltip label="Annulla tutto (ripristina da spedire)" withArrow>
+          <ActionIcon
+            variant="light"
+            color="red"
+            size={30}
+            onClick={() => onAnnullaLotto(g)}
+          >
+            <IconTrash size={16} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </Group>
+  );
+});
+
+function creaSearchBlobSpedizione(s: Spedizione): string {
+  return [
+    s.lotto,
     s.clienteNome,
     s.medicoNome,
     s.agenteNome,
@@ -362,13 +448,17 @@ function spedizioneCorrisponde(s: Spedizione, q: string): boolean {
     s.telefono?.replace(/\D/g, ""),
     s.corriereNome,
     s.numero,
-  ];
-  if (campi.some((x) => x && x.toLowerCase().includes(q))) return true;
-  return s.righe.some((r) =>
-    [r.clienteNome, r.ordineNumero, r.prodottoNome, r.numero].some(
-      (x) => x && x.toLowerCase().includes(q),
-    ),
-  );
+    ...s.righe.flatMap((r) => [
+      r.clienteNome,
+      r.ordineNumero,
+      r.prodottoNome,
+      r.numero,
+      r.paziente,
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 export function SpedizioniView({ identity }: { identity: Identity }) {
@@ -388,7 +478,23 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
   const [effettuate, setEffettuate] = useState<Spedizione[]>([]);
   const [caricamento, setCaricamento] = useState(true);
   const [cerca, setCerca] = useState("");
-  const cercaDifferita = useDeferredValue(cerca);
+  const [cercaFiltro, setCercaFiltro] = useState("");
+  const [, startTransition] = useTransition();
+  const inRicerca = isModalitaRicerca(cercaFiltro);
+  const inRicercaRef = useRef(inRicerca);
+  inRicercaRef.current = inRicerca;
+
+  const impostaCerca = useCallback((val: string) => {
+    setCerca(val);
+    startTransition(() => {
+      setCercaFiltro(val);
+    });
+  }, []);
+
+  const resettaCerca = useCallback((val: string = "") => {
+    setCerca(val);
+    setCercaFiltro(val);
+  }, []);
 
   // Mostra anche Diagnostica/Keriba fra gli ordini da spedire. È una preferenza locale:
   // il valore scelto resta valido alle visite successive su questa postazione. FASE 5E.
@@ -403,6 +509,8 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     useState<BollettazioneAnalisi | null>(null);
   const [analisiBollettazioneInCorso, setAnalisiBollettazioneInCorso] =
     useState(false);
+  const [fileCountBollettazione, setFileCountBollettazione] = useState(0);
+  const bollettazioneCancelledRef = useRef(false);
   const [righeBollettazioneSpedizione, setRigheBollettazioneSpedizione] =
     useState<BollettazioneConfermaRiga[] | null>(null);
   const [
@@ -559,8 +667,11 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       if (!selection) return;
       const paths = Array.isArray(selection) ? selection : [selection];
       if (paths.length === 0) return;
+      setFileCountBollettazione(paths.length);
+      bollettazioneCancelledRef.current = false;
       setAnalisiBollettazioneInCorso(true);
       const analysis = await api.bollettazioneAnalizza(paths);
+      if (bollettazioneCancelledRef.current) return;
       setAnalisiBollettazione(analysis);
       if (analysis.totals.failedFiles > 0) {
         toast.warning(
@@ -568,7 +679,9 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         );
       }
     } catch (error) {
-      toast.error(`Analisi dei file non riuscita: ${error}`);
+      if (!bollettazioneCancelledRef.current) {
+        toast.error(`Analisi dei file non riuscita: ${error}`);
+      }
     } finally {
       setAnalisiBollettazioneInCorso(false);
     }
@@ -640,7 +753,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       setEditor(null);
       setDistintaFlourish(null);
       setSpedito(false);
-      setCerca("");
+      resettaCerca("");
       setDal("");
       setAl("");
       setCorriereFiltro(deepLink.corriereNomi ?? []);
@@ -649,7 +762,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         cambiaVista(deepLink.tab);
       // Il deep-link descrive il filtro completo: non conservare corriere/periodo di
       // una visita precedente, altrimenti "Spedizioni oggi" può risultare vuoto.
-      setCerca(deepLink.cerca ?? "");
+      resettaCerca(deepLink.cerca ?? "");
       setDal(deepLink.dal ?? "");
       setAl(deepLink.al ?? "");
       setCorriereFiltro([]);
@@ -760,11 +873,21 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     [carica],
   );
 
-  // Ordini visibili nella vista «Da spedire»: di default solo gli ordinari (Immunoterapia);
-  // con lo switch entrano anche Diagnostica/Keriba. Base anche per il badge di conteggio.
+  const daSpedireAnno = useMemo(
+    () => daSpedire.filter((ordine) => ordineDaSpedireNelContesto(ordine, anno)),
+    [anno, daSpedire],
+  );
+
+  useEffect(() => {
+    setSelezione([]);
+    setSelezioneEff([]);
+  }, [anno]);
+
+  // Ordini visibili nella vista «Da spedire»: anno scelto + arretrati, mai anni futuri.
+  // Di default restano visibili solo gli ordinari (Immunoterapia).
   const daSpedireVisibili = useMemo(
-    () => (mostraAltre ? daSpedire : daSpedire.filter(ordinarioDaSpedire)),
-    [daSpedire, mostraAltre],
+    () => (mostraAltre ? daSpedireAnno : daSpedireAnno.filter(ordinarioDaSpedire)),
+    [daSpedireAnno, mostraAltre],
   );
 
   // Se nascondo Diagnostica/Keriba, tolgo dalla selezione gli ordini non più visibili.
@@ -792,19 +915,17 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     }));
   }, [daSpedireVisibili]);
 
+  const effettuateConBlob = useMemo(() => {
+    return effettuate.map((s) => ({
+      ...s,
+      _searchBlob: creaSearchBlobSpedizione(s),
+    }));
+  }, [effettuate]);
+
   // ---- Da spedire: ricerca + sort utente (default = ordine backend) ----
   const daSpedireFiltrati = useMemo(() => {
-    const q = cercaDifferita.trim().toLowerCase();
-    let arr = daSpedireConBlob.filter((o) => {
-      // Filtro Anno: i "Nuovo" (spesso preventivi) di anni passàti vengono nascosti
-      if (
-        o.stato === "Nuovo" &&
-        anno !== 0 &&
-        Number(o.data.slice(0, 4)) !== anno
-      )
-        return false;
-      return true;
-    });
+    const q = cercaFiltro.trim().toLowerCase();
+    let arr = [...daSpedireConBlob];
     if (q) {
       arr = arr.filter((o) => o._searchBlob.includes(q));
     }
@@ -871,30 +992,28 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       return sort.direction === "desc" ? -cmp : cmp;
     });
     return out;
-  }, [daSpedireConBlob, cercaDifferita, sort, anno]);
+  }, [daSpedireConBlob, cercaFiltro, sort]);
 
   // Quanti ordini Diagnostica/Keriba restano nascosti (per l'etichetta dello switch).
   const nNascosti = useMemo(
-    () => daSpedire.filter((o) => !ordinarioDaSpedire(o)).length,
-    [daSpedire],
+    () => daSpedireAnno.filter((o) => !ordinarioDaSpedire(o)).length,
+    [daSpedireAnno],
   );
 
   // ---- Effettuate: raggruppa per lotto (sessione di creazione) + ricerca/filtri ----
   const gruppi = useMemo<GruppoSped[]>(() => {
-    const q = cercaDifferita.trim().toLowerCase();
+    const q = cercaFiltro.trim().toLowerCase();
     const corrieri = new Set(corriereFiltro);
-    const filtrate = effettuate.filter((s) => {
-      // Filtro Anno: archivio storico, filtra per anno in cui è stata creata la spedizione
-      if (anno !== 0 && Number(s.data.slice(0, 4)) !== anno) return false;
-
-      if (corrieri.size > 0 && !corrieri.has(s.corriereNome)) return false;
-      if (dal && s.data < dal) return false;
-      if (al && s.data > al) return false;
-      if (q && !spedizioneCorrisponde(s, q)) return false;
-      return true;
-    });
     const map = new Map<string, GruppoSped>();
-    for (const s of filtrate) {
+
+    for (const s of effettuateConBlob) {
+      // Filtro Anno: archivio storico, filtra per anno in cui è stata creata la spedizione
+      if (!spedizioneNellAnno(s, anno)) continue;
+      if (corrieri.size > 0 && !corrieri.has(s.corriereNome)) continue;
+      if (dal && s.data < dal) continue;
+      if (al && s.data > al) continue;
+      if (q && !s._searchBlob.includes(q)) continue;
+
       let g = map.get(s.lotto);
       if (!g) {
         g = {
@@ -910,17 +1029,16 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         map.set(s.lotto, g);
       }
       g.spedizioni.push(s);
-      if (q) g.matchIds.add(s.id);
-      if (spedizioneDaAprire === s.id) g.matchIds.add(s.id);
+      if (q || spedizioneDaAprire === s.id) g.matchIds.add(s.id);
       if (s.unito) g.unito = true;
       if (s.mezzo === "contrassegno") g.contrassegnoTot += s.contrassegno;
       else if (s.mezzo === "assegno") g.assegnoTot += s.contrassegno;
     }
     // Già ordinate per data desc dal backend → i gruppi mantengono quell'ordine.
-    return [...map.values()].filter((g) => !q || g.matchIds.size > 0);
+    return [...map.values()];
   }, [
-    effettuate,
-    cercaDifferita,
+    effettuateConBlob,
+    cercaFiltro,
     corriereFiltro,
     dal,
     al,
@@ -952,17 +1070,16 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     );
   }, [spedizioneDaAprire, caricamento, effettuate]);
 
-  // Colli mostrati nelle Effettuate dopo i filtri (per il badge del tab, coerente con la lista).
-  const effettuateMostrate = useMemo(
-    () => gruppi.reduce((n, g) => n + g.spedizioni.length, 0),
-    [gruppi],
-  );
-
-  // Opzioni del filtro corriere (nomi distinti presenti nelle effettuate).
+  // Opzioni del filtro corriere (nomi distinti presenti nello storico dell'anno).
   const corriereOpzioni = useMemo(() => {
-    const nomi = new Set(effettuate.map((s) => s.corriereNome).filter(Boolean));
+    const nomi = new Set(
+      effettuate
+        .filter((spedizione) => spedizioneNellAnno(spedizione, anno))
+        .map((s) => s.corriereNome)
+        .filter(Boolean),
+    );
     return [...nomi].sort().map((n) => ({ value: n, label: n }));
-  }, [effettuate]);
+  }, [anno, effettuate]);
 
   // Gruppi selezionati (oggetti FRESCHI dalla lista filtrata, per lotto) e relative
   // distinte per corriere: una distinta per corriere presente nella selezione (più
@@ -1061,7 +1178,13 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             ...datiPagamentoComunicazione(
               pagamenti,
               conti,
-              "Nessun pagamento richiesto alla consegna."
+              "Nessun pagamento richiesto alla consegna.",
+              {
+                tuttiPagamenti: spedizioniCliente.flatMap(
+                  (spedizione) => spedizione.pagamenti
+                ),
+                includiRate: true,
+              }
             ),
           },
         };
@@ -1409,25 +1532,11 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         width: 170,
         textAlign: "right",
         render: (g) => (
-          <Group
-            className="pt-cella-azioni-adattive"
-            gap="xs"
-            wrap="nowrap"
-            justify="flex-end"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <DistintaGruppoLotto spedizioni={g.spedizioni} compatto={false} />
-            <Tooltip label="Annulla tutto (ripristina da spedire)" withArrow>
-              <ActionIcon
-                variant="light"
-                color="red"
-                size={30}
-                onClick={() => annullaLotto(g)}
-              >
-                <IconTrash size={16} />
-              </ActionIcon>
-            </Tooltip>
-          </Group>
+          <CellaAzioniLotto
+            g={g}
+            inRicerca={inRicercaRef.current}
+            onAnnullaLotto={annullaLotto}
+          />
         ),
       },
     ],
@@ -1509,7 +1618,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             </PremiumAction>
           </Box>
         </Tooltip>
-        {selezioneEff.length >= 2 && (
+        {!inRicerca && selezioneEff.length >= 2 && (
           <Tooltip label={`Unisci (${selezioneEff.length})`} withArrow>
             <Box className="pt-azione-adattiva-wrap">
               <Button
@@ -1619,7 +1728,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
                       <IconTruckDelivery size={15} />
                       <span>
                         Effettuate
-                        {effettuateMostrate ? ` (${effettuateMostrate})` : ""}
+                        {gruppiOrdinati.length ? ` (${gruppiOrdinati.length})` : ""}
                       </span>
                     </Group>
                   ),
@@ -1649,7 +1758,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
                 placeholder="Cerca destinatario, ordine, telefono o lotto…"
                 leftSection={<IconSearch size={16} />}
                 value={cerca}
-                onChange={setCerca}
+                onChange={impostaCerca}
                 style={{ flex: "1 1 180px", width: "clamp(140px, 24vw, 340px)", maxWidth: 340, minWidth: 140, marginLeft: "auto" }}
               />
             )}
@@ -1692,7 +1801,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
               placeholder="Cerca destinatario, ordine, telefono o lotto…"
               leftSection={<IconSearch size={16} />}
               value={cerca}
-              onChange={setCerca}
+              onChange={impostaCerca}
               style={{ flex: "0 1 280px", width: "clamp(130px, 24vw, 280px)", minWidth: 130 }}
             />
           </Group>}
@@ -1717,7 +1826,6 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
               columns={colDaSpedire}
               records={daSpedireFiltrati}
               caricamentoIniziale={caricamento}
-              ridimensionamentoSenzaSfumaturaKey={cercaDifferita}
               idAccessor="ordineId"
               storeColumnsKey="spedizioni-da-spedire"
               minColumnWidths={{ data: 86, stato: 86, azione: 48 }}
@@ -1743,7 +1851,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
               columns={colEffettuate}
               records={gruppiOrdinati}
               caricamentoIniziale={caricamento}
-              ridimensionamentoSenzaSfumaturaKey={`${cercaDifferita}\u0000${espansiEff.join("|")}`}
+              ridimensionamentoSenzaSfumaturaKey={espansiEff.join("|")}
               idAccessor="lotto"
               storeColumnsKey="spedizioni-effettuate-v10"
               minColumnWidths={{ data: 86, azione: 92 }}
@@ -1790,7 +1898,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
           setDataArrivoBollettazioneSpedizione(undefined);
           setBozzeBollettazione(undefined);
           setSelezione([]);
-          setCerca("");
+          resettaCerca("");
           cambiaVista("effettuate");
           // `setSpedito(true)` NON qui: la fioritura si accende quando arrivano le Effettuate
           // fresche, già con la distinta (vedi l'effetto sopra), così non si auto-chiude.
@@ -1800,7 +1908,13 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
 
       <BollettazioneReviewModal
         analysis={analisiBollettazione}
-        onClose={() => setAnalisiBollettazione(null)}
+        analyzing={analisiBollettazioneInCorso}
+        fileCount={fileCountBollettazione}
+        onClose={() => {
+          bollettazioneCancelledRef.current = true;
+          setAnalisiBollettazioneInCorso(false);
+          setAnalisiBollettazione(null);
+        }}
         onPrepareShipment={preparaSpedizioneBollettazione}
         onArrived={() => {
           setAnalisiBollettazione(null);

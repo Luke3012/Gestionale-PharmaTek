@@ -23,6 +23,8 @@ import {
   type DocumentoA4,
 } from "./rendererDocumenti";
 import { avviaInvioRapidoPreventivo } from "./invioRapidoPreventivo";
+import { PremiumAction } from "../../premium/PremiumAction";
+import { confermaInvioManualeDopoEsportazione } from "./invioManualePreventivo";
 
 export function PreventivoWindow() {
   const params = new URLSearchParams(window.location.search);
@@ -258,7 +260,15 @@ export function PreventivoWindow() {
         opened={anteprimaSoloAperta || !!documento}
         documento={documento}
         dentroFinestra
+        azioniPremium
         azioniAffollate
+        onFileEsportato={async () => {
+          if (!preventivoDocumento) return;
+          const aggiornato = await confermaInvioManualeDopoEsportazione(
+            preventivoDocumento,
+          );
+          if (aggiornato) setPreventivoDocumento(aggiornato);
+        }}
         onClose={() => void chiudi()}
         azioniExtra={
           <Group gap="sm">
@@ -290,15 +300,18 @@ export function PreventivoWindow() {
               </Button>
             )}
             {preventivoDocumento && (
-              <Button
-                variant="default"
+              <PremiumAction
+                buttonVariant="default"
                 leftSection={<IconSend size={16} />}
+                title="Invia preventivo"
+                message="Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium."
+                lockedPresentation="modal"
                 loading={inviando}
                 disabled={!!documento?.overflow.length}
-                onClick={() => void invia()}
+                onAction={() => void invia()}
               >
                 Invia preventivo
-              </Button>
+              </PremiumAction>
             )}
           </Group>
         }

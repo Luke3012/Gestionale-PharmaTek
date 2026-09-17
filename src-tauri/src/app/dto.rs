@@ -209,6 +209,9 @@ pub struct OrdineDto {
     /// `true` se il lotto è stato **unito** ad un altro (`lotto_produzione_pre` salvato):
     /// l'unione è reversibile con `produzione_lotto_separa`. FASE 5B.
     pub lotto_produzione_unito: bool,
+    /// Stato sintetico già derivato mentre `ordini_lista` attraversa le righe: permette
+    /// ai consumatori leggeri (es. Spotlight) di riconoscere la coda senza ricaricarle.
+    pub produzione_operativa: bool,
 }
 
 /// Una riga d'ordine ancora **da spedire** (FASE 4).
@@ -336,13 +339,16 @@ pub struct SpedizioneDto {
     pub regione: String,
     pub telefono: String,
     pub email: String,
-    /// Profilo di esportazione del corriere (`gls` | `carrai`), per l'export distinta.
+    /// Profilo di esportazione del corriere (`gls` | `corriere_a`), per l'export distinta.
     pub corriere_profilo: String,
     /// True se questa spedizione è stata fusa in un altro lotto (`lotto_pre` salvato): il
     /// gruppo è "unito" e può essere separato con `lotto_separa`.
     pub unito: bool,
     /// True se altri colli con lo stesso destinatario sono stati uniti in questo collo.
     pub destinatari_uniti: bool,
+    pub avvisato: bool,
+    pub ultimo_avviso_canale: Option<String>,
+    pub ultimo_avviso_ms: Option<u64>,
     pub n_righe: usize,
     pub righe: Vec<SpedizioneRigaDto>,
     pub pagamenti: Vec<PagamentoSpedizioneDto>,
@@ -432,6 +438,7 @@ pub struct PagamentoDto {
     pub note: String,
     pub scad_da_spedizione: bool,
     pub scad_rel_giorni: i64,
+    pub spedizione_id: String,
 }
 
 /// Riga della vista unica **Crediti** (Contabilità → Crediti): un pagamento con i
@@ -735,7 +742,7 @@ pub struct SuggerimentoCollegamentoDto {
 #[serde(rename_all = "camelCase")]
 pub struct SuggerimentoDto {
     pub id: String,
-    /// `rimborso`, `distinta`, `provvigione`, `produzione`, `spedizione`, `duplicati`.
+    /// `rimborso`, `distinta`, `provvigione`, `produzione`, `spedizione`, `preventivo`.
     pub tipo: String,
     pub titolo: String,
     pub dettaglio: String,
@@ -770,6 +777,8 @@ pub struct SuggerimentiPreferenzeInput {
     pub tipi_abilitati: Vec<String>,
     pub notifiche_attive: bool,
     pub giorni_avviso: HashMap<String, i64>,
+    #[serde(default)]
+    pub anno: i32,
 }
 
 /// Record generico verso il frontend (qualunque entità: anagrafiche, ordini…).

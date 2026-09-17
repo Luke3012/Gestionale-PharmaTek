@@ -236,16 +236,25 @@ dati_dest? (override destinatario/indirizzo/contatti), preavviso, mezzo, contras
 
 ### Pagamenti (registro unico tipizzato, con stato atteso/saldato)
 `id, ordine_id, tipo: acconto | saldo | rata, importo, saldato: bool, scadenza (data prevista),
-conto_id, data (data incasso), verificato: bool, distinta_id?, note?`
+conto_id, data (data incasso), verificato: bool, distinta_id?, spedizione_id?, note?`
 - **Un solo concetto** (refactor giugno 2026): acconto, saldo e rate sono tutti **pagamenti**. Ogni
   pagamento è **atteso** (`saldato = false`, con una `scadenza`) oppure **incassato** (`saldato =
   true`, con `data`/`conto`). **"Salda"** = passare da atteso a incassato. Niente più entità
   `piano_rate`/`rata`: una rata è semplicemente un pagamento `tipo = rata` atteso.
 - Il **tipo conta più della posizione**: un primo pagamento riscosso alla consegna è un `saldo`.
+  Un **acconto non può essere in contrassegno**: l'assegnazione di un conto di transito (contrassegno
+  o assegno) a una voce acconto la converte automaticamente in `saldo` con scadenza alla consegna
+  (`scad_da_spedizione = true`, +30gg) e azzera il campo testata `acconto` dell'ordine/preventivo.
 - `scadenza` = data prevista dell'incasso (per attesi/solleciti). `data` = data di incasso reale.
 - `verificato` = spunta di **prima nota** (solo per i saldati): verde chiaro → verde scuro.
 - `distinta_id?` = valorizzato quando un contrassegno/assegno è coperto da una **DistintaCorriere**
   (FASE 3C): a quel punto è "accreditato" sul conto reale.
+- `spedizione_id?` = valorizzato quando il pagamento è associato a una specifica spedizione (collo).
+  Permette la sincronizzazione bidirezionale 1-a-1: se un ordine ha più colli con contrassegno,
+  modificare una rata aggiorna unicamente la spedizione legata, e modificare il contrassegno dal collo
+  aggiorna solo la rata collegata senza cancellare o alterare le altre rate dello scadenzario.
+  Inoltre, ciascuna rata associata calcola la propria scadenza (+30gg) a partire dalla data di partenza
+  della **propria spedizione**, preservando le scadenze dei colli inviati in date differenti.
 - **`incassato = Σ pagamenti saldati`**; **`residuo = totale − incassato`** (gli attesi NON incidono).
 - **Pagamento pieno (anche con soldi extra)**: quando `incassato ≥ totale` l'ordine è **saldato**
   (per-ordine; il `residuo` può risultare negativo) e i pagamenti **attesi residui vengono rimossi**
@@ -258,6 +267,10 @@ conto_id, data (data incasso), verificato: bool, distinta_id?, note?`
   salvato senza prodotti resta invece a totale zero e senza crediti finché non viene completato.
   Il campo **acconto previsto** dell'ordine alimenta l'importo dell'acconto atteso, senza
   riscrivere un acconto già incassato.
+- **Associazione contrassegno alla spedizione**: se l'ordine contiene più rate (es. 225 € su banca e
+  225 € su contrassegno per totale 450 €), la modale di creazione spedizione propone la cifra della
+  singola rata a contrassegno (225 €) anziché l'intero totale ordine. Le altre rate aperte rimangono
+  intatte nello scadenzario.
 - **Rateizza**: divide il `saldo` atteso in N rate attese (parti uguali, l'ultima quadra i centesimi;
   scadenze a cadenza mensile/ogni N giorni). Acconto e pagamenti già saldati restano intatti.
 - **Modale pagamento unica**: crea (atteso/incassato), modifica, **Salda**, annulla. Richiamabile da
@@ -465,8 +478,12 @@ note, preventivo_whatsapp, preventivo_email, mantenimento, npp, paziente_nuovo, 
 - Logo, geometria e versione grafica sono incorporati nel renderer e non vengono duplicati nei
   record.
 
-Le quattro entità FASE 12 sono premium e protette dal CRUD generico. I comandi di dominio
-controllano nuovamente il gate anche se la UI non espone l'azione.
+Le quattro entità FASE 12 sono protette dal CRUD generico, anche su un PC abilitato: passano dai
+rispettivi flussi di dominio. I comandi di dominio dei preventivi e della scheda cliente per
+lettura, creazione, modifica, eliminazione, ripristino e salvataggio condiviso sono gratuiti;
+lettura della configurazione documenti e lista alias sono gratuite, mentre le rispettive scritture
+restano Premium. Il salvataggio PDF/PNG del preventivo su file usa un comando dedicato che verifica
+il gate prima di scrivere.
 
 Gli allegati generati localmente usano riferimenti `pt-cache://<sha256>.<ext>` nella
 comunicazione. Firma, hash, estensione e dimensione vengono verificati prima dell'effetto esterno;
@@ -478,7 +495,7 @@ residui dopo arresti anomali.
 ## Suggerimenti azionabili (FASE 14)
 
 Le card operative sono una proiezione derivata e non introducono un'entità `suggerimento`.
-Rimborsi, distinte, provvigioni, produzione, spedizioni e possibili duplicati restano governati
+Rimborsi, distinte, provvigioni, produzione e spedizioni restano governati
 dai rispettivi record e comandi di dominio.
 
 `suggerimento_stato/{hash}(suggerimento_id, nascosto, ts, utente_id, dispositivo_id)`
@@ -489,8 +506,7 @@ dai rispettivi record e comandi di dominio.
 - titolo, conteggio, priorità e deep-link non sono duplicati nel log condiviso.
 
 Categorie abilitate, notifiche e giorni di attesa sono preferenze locali del PC in
-`localStorage`; non esiste più un record condiviso `impostazioni/__suggerimenti__`. L'esito del
-matcher duplicati è una cache volatile locale e non entra nel registro eventi. Le notifiche
+`localStorage`; non esiste più un record condiviso `impostazioni/__suggerimenti__`. Le notifiche
 usano il normale `notifica_letta` per utente e una retention temporale dedicata agli id `s14:`.
 
 Per gli avvisi, ogni `spedizione` può contenere `ultimo_avviso_ms`,
@@ -499,6 +515,14 @@ funzione usata dal suggerimento e viene scritto soltanto dopo l'esito positivo d
 comunicazione. Una comunicazione locale può avere `origini_correlate: [{ id, fingerprint }]`:
 nel caso di più colli aggiorna il riepilogo condiviso di ogni spedizione, mentre coda e
 cronologia dettagliata restano locali.
+
+Per i preventivi e i relativi suggerimenti intelligenti, ogni `preventivo` traccia `ultimo_invio_ms`,
+`ultimo_invio_canale` (es. `"email"`, `"whatsapp"` o `"manuale"` tramite PDF/PNG) e
+`ultimo_invio_fingerprint`. Il comando `preventivo_marca_inviato_manuale` aggiorna tali campi
+quando l'operatore conferma l'invio manuale dopo il salvataggio del file, convalidando la revisione.
+La stampa non costituisce un invio e non aggiorna questi campi.
+Il `PreventivoDto` include inoltre `ordine_marcatore` per consentire ai suggerimenti e ai solleciti
+di escludere automaticamente gli ordini con marcatori attivi (urgente, anomalia, sollecito).
 
 ### Note (thread + categorie, polimorfiche)
 `id, target_type?, target_id?, parent_id?, autore, testo, categoria, ts, da_ricordare: bool,

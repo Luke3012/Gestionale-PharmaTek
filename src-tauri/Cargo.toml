@@ -11,6 +11,10 @@ rust-version = "1.89"
 name = "pharmatek_gestionale_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[lints.rust]
+# Silenzia l'output informativo del linker MSVC ("Creazione della libreria...") su Windows per le cdylib
+linker_messages = "allow"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -31,6 +35,7 @@ tauri-plugin-global-shortcut = "2"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 minisign-verify = "0.2.5"
@@ -66,6 +71,8 @@ lettre = { version = "0.11.22", default-features = false, features = ["builder",
 imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
 imap-proto = "0.16.7"
 zip = "8.6"
+unicode-normalization = "0.1"
+strsim = "0.11"
 # Export Excel nativo (.xlsx) per i riepiloghi (provvigioni, ecc.). Pura Rust.
 rust_xlsxwriter = "0.97"
 calamine = "0.36.1"

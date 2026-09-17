@@ -5,8 +5,9 @@ import {
   IconPhoto,
   IconPrinter,
 } from "@tabler/icons-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "../../ui/toast/store";
+import { PremiumAction } from "../../premium/PremiumAction";
 import {
   documentoPdfBlob,
   documentoPngBlob,
@@ -31,6 +32,8 @@ export function DocumentoPreviewModal({
   sovrapposizionePagina,
   nascondiAzioniStandard = false,
   dentroFinestra = false,
+  azioniPremium = false,
+  onFileEsportato,
 }: {
   documento: DocumentoA4 | null;
   documentoVisuale?: DocumentoA4 | null;
@@ -46,9 +49,11 @@ export function DocumentoPreviewModal({
   nascondiAzioniStandard?: boolean;
   /** Render a pagina nella Webview dedicata, senza un secondo modale interno. */
   dentroFinestra?: boolean;
+  /** Protegge stampa/PDF/PNG per i documenti preventivo. */
+  azioniPremium?: boolean;
+  onFileEsportato?: (tipo: "pdf" | "png") => void | Promise<void>;
 }) {
   const [operazione, setOperazione] = useState<OperazioneDocumento>(null);
-  const puliziaStampaRef = useRef<(() => void) | null>(null);
   const documentoDaMostrare = documentoVisuale ?? documento;
   const svgs = useMemo(
     () =>
@@ -66,8 +71,11 @@ export function DocumentoPreviewModal({
     if (!documento || bloccato || operazione) return;
     setOperazione("pdf");
     try {
-      if (await salvaBlobConPercorso(documentoPdfBlob(documento), documento.nomeFile)) {
+      if (await salvaBlobConPercorso(documentoPdfBlob(documento), documento.nomeFile, {
+        richiedePremium: azioniPremium,
+      })) {
         toast.success("PDF salvato.");
+        await onFileEsportato?.("pdf");
       }
     } catch (error) {
       toast.error(`Salvataggio PDF non riuscito: ${error}`);
@@ -81,8 +89,11 @@ export function DocumentoPreviewModal({
     setOperazione("png");
     try {
       const blob = await documentoPngBlob(documento);
-      if (await salvaBlobConPercorso(blob, documento.nomeFile.replace(/\.pdf$/i, ".png"))) {
+      if (await salvaBlobConPercorso(blob, documento.nomeFile.replace(/\.pdf$/i, ".png"), {
+        richiedePremium: azioniPremium,
+      })) {
         toast.success("Immagine salvata.");
+        await onFileEsportato?.("png");
       }
     } catch (error) {
       toast.error(`Generazione immagine non riuscita: ${error}`);
@@ -95,12 +106,7 @@ export function DocumentoPreviewModal({
     if (!documento || bloccato || operazione) return;
     setOperazione("stampa");
     try {
-      puliziaStampaRef.current?.();
-      let pulizia: (() => void) | null = null;
-      pulizia = stampaDocumento(documento, () => {
-        if (puliziaStampaRef.current === pulizia) puliziaStampaRef.current = null;
-      });
-      puliziaStampaRef.current = pulizia;
+      stampaDocumento(documento);
     } catch (error) {
       toast.warning(String(error));
     } finally {
@@ -108,20 +114,7 @@ export function DocumentoPreviewModal({
     }
   };
 
-  useEffect(() => {
-    if (!opened) {
-      puliziaStampaRef.current?.();
-      puliziaStampaRef.current = null;
-    }
-    return () => {
-      puliziaStampaRef.current?.();
-      puliziaStampaRef.current = null;
-    };
-  }, [opened]);
-
   const chiudi = () => {
-    puliziaStampaRef.current?.();
-    puliziaStampaRef.current = null;
     onClose();
   };
 
@@ -227,33 +220,79 @@ export function DocumentoPreviewModal({
               </Button>
             )}
             {azioniExtra}
-            {!nascondiAzioniStandard && <Button
-              variant="default"
-              leftSection={<IconPhoto size={16} />}
-              onClick={() => void salvaPng()}
-              loading={operazione === "png"}
-              disabled={!pronto || !!operazione}
-            >
-              Salva immagine
-            </Button>}
-            {!nascondiAzioniStandard && <Button
-              variant="default"
-              leftSection={<IconDownload size={16} />}
-              onClick={() => void salvaPdf()}
-              loading={operazione === "pdf"}
-              disabled={!pronto || !!operazione}
-            >
-              Salva PDF
-            </Button>}
-            {!nascondiAzioniStandard && <Button
-              color="accent"
-              leftSection={<IconPrinter size={16} />}
-              onClick={() => void stampa()}
-              loading={operazione === "stampa"}
-              disabled={!pronto || !!operazione}
-            >
-              Stampa
-            </Button>}
+            {!nascondiAzioniStandard && (azioniPremium ? (
+              <PremiumAction
+                buttonVariant="default"
+                leftSection={<IconPhoto size={16} />}
+                title="Salva immagine preventivo"
+                message="Il salvataggio del preventivo come immagine richiede Premium."
+                lockedPresentation="modal"
+                onAction={() => void salvaPng()}
+                loading={operazione === "png"}
+                disabled={!pronto || !!operazione}
+              >
+                Salva immagine
+              </PremiumAction>
+            ) : (
+              <Button
+                variant="default"
+                leftSection={<IconPhoto size={16} />}
+                onClick={() => void salvaPng()}
+                loading={operazione === "png"}
+                disabled={!pronto || !!operazione}
+              >
+                Salva immagine
+              </Button>
+            ))}
+            {!nascondiAzioniStandard && (azioniPremium ? (
+              <PremiumAction
+                buttonVariant="default"
+                leftSection={<IconDownload size={16} />}
+                title="Salva PDF preventivo"
+                message="Il salvataggio del preventivo in PDF richiede Premium."
+                lockedPresentation="modal"
+                onAction={() => void salvaPdf()}
+                loading={operazione === "pdf"}
+                disabled={!pronto || !!operazione}
+              >
+                Salva PDF
+              </PremiumAction>
+            ) : (
+              <Button
+                variant="default"
+                leftSection={<IconDownload size={16} />}
+                onClick={() => void salvaPdf()}
+                loading={operazione === "pdf"}
+                disabled={!pronto || !!operazione}
+              >
+                Salva PDF
+              </Button>
+            ))}
+            {!nascondiAzioniStandard && (azioniPremium ? (
+              <PremiumAction
+                buttonVariant="default"
+                buttonColor="accent"
+                leftSection={<IconPrinter size={16} />}
+                title="Stampa preventivo"
+                message="La stampa del preventivo richiede Premium."
+                lockedPresentation="modal"
+                onAction={() => void stampa()}
+                loading={operazione === "stampa"}
+                disabled={!pronto || !!operazione}
+              >
+                Stampa
+              </PremiumAction>
+            ) : (
+              <Button
+                color="accent"
+                leftSection={<IconPrinter size={16} />}
+                onClick={() => void stampa()}
+                loading={operazione === "stampa"}
+                disabled={!pronto || !!operazione}
+              >
+                Stampa
+              </Button>
+            ))}
           </div>
         </div>
       </Box>

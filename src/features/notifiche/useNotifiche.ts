@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, inTauri, type Identity } from "../../lib/tauri";
 import { usePrefs } from "../../lib/prefs";
+import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { listaPromemoria } from "../promemoria/promemoria";
 import { listaMessaggi } from "./messaggi";
 import { riproduciSuono } from "./suoni";
@@ -100,10 +101,18 @@ export function useNotifiche(
   coordinaRilevatoreCentrale = true,
 ): NotificheState {
   const {
+    anno,
     sogliaSolleciti,
     suonoNotifica,
     preferenzeSuggerimenti,
   } = usePrefs();
+  const preferenzePerCaricamento = useDebouncedValue(
+    preferenzeSuggerimenti,
+  );
+  const preferenzeConAnno = useMemo(
+    () => ({ ...preferenzePerCaricamento, anno }),
+    [anno, preferenzePerCaricamento],
+  );
   const premium = usePremiumAccess();
   const [notifiche, setNotifiche] = useState<Notifica[]>([]);
   const [stati, setStati] = useState<StatiNotifiche>({ viste: new Set(), scartate: new Set() });
@@ -141,9 +150,9 @@ export function useNotifiche(
         api.ordiniLista(),
         listaMessaggi(),
         api.comunicazioniLista().catch(() => []),
-        premium.enabled && preferenzeSuggerimenti.notificheAttive
+        premium.enabled && preferenzePerCaricamento.notificheAttive
           ? api
-              .suggerimentiNotificheLista(preferenzeSuggerimenti)
+              .suggerimentiNotificheLista(preferenzeConAnno)
               .catch(() => [])
           : Promise.resolve([]),
         identity ? caricaStati(identity.userId) : Promise.resolve<StatiNotifiche>({ viste: new Set(), scartate: new Set() }),
@@ -192,7 +201,7 @@ export function useNotifiche(
   }, [
     identity,
     premium.enabled,
-    preferenzeSuggerimenti,
+    preferenzeConAnno,
     sogliaSolleciti,
     coordinaRilevatoreCentrale,
   ]);

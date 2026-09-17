@@ -1042,7 +1042,8 @@ body,
   max-height: min(88dvh, calc(100dvh - 72px));
   overflow: hidden;
 }
-.mantine-Modal-body:has(> .pt-modal-shell) {
+.mantine-Modal-body:has(> .pt-modal-shell),
+.mantine-Modal-body:has(.pt-modal-shell) {
   overflow: hidden;
 }
 .pt-modal-shell {
@@ -1072,6 +1073,19 @@ body,
   max-height: none;
   overflow: visible;
   padding-right: 0;
+}
+.mantine-Modal-content:has(.pt-modal-shell-tall) {
+  max-height: min(92dvh, calc(100dvh - 48px));
+  overflow: hidden;
+  transition: max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1), height 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pt-modal-shell-tall {
+  max-height: min(86dvh, calc(100dvh - 96px));
+  transition: max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.pt-modal-shell-tall > .pt-modal-scroll {
+  flex: 1 1 auto;
+  max-height: calc(100dvh - 180px);
 }
 .pt-modal-table-scroll {
   min-height: 0;
@@ -1415,6 +1429,23 @@ body,
   outline-offset: 2px;
 }
 
+.pt-dialog-btn-informativo {
+  --button-hover: rgba(25, 113, 194, 0.22);
+  --button-hover-color: #1864ab;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.pt-dialog-btn-informativo:hover:where(:not([data-loading], :disabled, [data-disabled])) {
+  background-color: rgba(25, 113, 194, 0.22) !important;
+  color: #1864ab !important;
+}
+
+.pt-dialog-btn-informativo:active:where(:not([data-loading], :disabled, [data-disabled])) {
+  background-color: rgba(25, 113, 194, 0.32) !important;
+}
+
 /* Mantine 9 assegna minimi intrinseci più larghi ai contenuti con badge e bottoni.
    Le spedizioni effettuate devono invece restare sempre dentro la pagina. */
 .pt-spedizioni-effettuate .mantine-datatable-table {
@@ -1572,7 +1603,301 @@ body,
   width: min(1540px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 24px) !important;
+  transition:
+    width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    max-width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    max-height 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
+.pt-bollettazione-modal-content.pt-modal-compact {
+  width: min(480px, calc(100vw - 32px)) !important;
+  max-width: min(480px, calc(100vw - 32px)) !important;
+  max-height: min(420px, calc(100dvh - 48px)) !important;
+}
+
+.pt-prescrizioni-modal-content {
+  width: min(820px, calc(100vw - 32px));
+  max-width: min(820px, calc(100vw - 32px));
+  transition:
+    width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    max-width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    height 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    max-height 0.35s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.pt-prescrizioni-modal-content.pt-modal-compact {
+  width: min(480px, calc(100vw - 32px)) !important;
+  max-width: min(480px, calc(100vw - 32px)) !important;
+  max-height: min(420px, calc(100dvh - 48px)) !important;
+}
+
+.riduci-animazioni .pt-bollettazione-modal-content,
+.riduci-animazioni .pt-prescrizioni-modal-content {
+  transition: none !important;
+}
+
+/* Scanner animato per analisi bollettazione e ricerca prescrizioni */
+.pt-scanner-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px 24px;
+  text-align: center;
+}
+
+.pt-scanner-radar-container {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.pt-scanner-radar-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--mantine-color-teal-5);
+  opacity: 0;
+  pointer-events: none;
+  animation: pt-radar-pulse 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+.pt-scanner-radar-ring-2 {
+  animation-delay: 0.8s;
+}
+
+.pt-scanner-radar-ring-3 {
+  animation-delay: 1.6s;
+}
+
+@keyframes pt-radar-pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.35;
+  }
+  60% {
+    opacity: 0.12;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+.pt-scanner-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--mantine-color-teal-4) 22%, transparent) 0%,
+    color-mix(in srgb, var(--mantine-color-teal-3) 8%, transparent) 45%,
+    transparent 72%
+  );
+  filter: blur(8px);
+  z-index: 1;
+}
+
+.pt-scanner-card {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 16px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--mantine-color-teal-0) 90%, white) 0%,
+    color-mix(in srgb, var(--mantine-color-teal-1) 50%, white) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--mantine-color-teal-4) 30%, var(--mantine-color-default-border));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow:
+    0 6px 16px color-mix(in srgb, var(--mantine-color-teal-8) 8%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+  z-index: 2;
+}
+
+.pt-scanner-beam {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 14px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--mantine-color-teal-3) 25%, transparent) 65%,
+    color-mix(in srgb, var(--mantine-color-teal-4) 60%, transparent) 95%
+  );
+  border-bottom: 1.5px solid var(--mantine-color-teal-6);
+  animation: pt-scanner-beam-move 2.2s ease-in-out infinite;
+  z-index: 3;
+}
+
+@keyframes pt-scanner-beam-move {
+  0% {
+    top: -4px;
+    opacity: 0.3;
+  }
+  50% {
+    top: calc(100% - 15px);
+    opacity: 0.95;
+  }
+  100% {
+    top: -4px;
+    opacity: 0.3;
+  }
+}
+
+/* Tematizzazione colore scanner */
+.pt-scanner-wrapper[data-color="violet"] .pt-scanner-glow {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--mantine-color-violet-4) 22%, transparent) 0%,
+    color-mix(in srgb, var(--mantine-color-violet-3) 8%, transparent) 45%,
+    transparent 72%
+  );
+}
+
+.pt-scanner-wrapper[data-color="violet"] .pt-scanner-card {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--mantine-color-violet-0) 90%, white) 0%,
+    color-mix(in srgb, var(--mantine-color-violet-1) 50%, white) 100%
+  );
+  border-color: color-mix(in srgb, var(--mantine-color-violet-4) 30%, var(--mantine-color-default-border));
+  box-shadow:
+    0 6px 16px color-mix(in srgb, var(--mantine-color-violet-8) 8%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.pt-scanner-wrapper[data-color="violet"] .pt-scanner-radar-ring {
+  border-color: var(--mantine-color-violet-5);
+}
+
+.pt-scanner-wrapper[data-color="violet"] .pt-scanner-beam {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--mantine-color-violet-3) 25%, transparent) 65%,
+    color-mix(in srgb, var(--mantine-color-violet-4) 60%, transparent) 95%
+  );
+  border-bottom: 1.5px solid var(--mantine-color-violet-6);
+}
+
+.pt-scanner-wrapper[data-color="blue"] .pt-scanner-glow {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--mantine-color-blue-4) 22%, transparent) 0%,
+    color-mix(in srgb, var(--mantine-color-blue-3) 8%, transparent) 45%,
+    transparent 72%
+  );
+}
+
+.pt-scanner-wrapper[data-color="blue"] .pt-scanner-card {
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--mantine-color-blue-0) 90%, white) 0%,
+    color-mix(in srgb, var(--mantine-color-blue-1) 50%, white) 100%
+  );
+  border-color: color-mix(in srgb, var(--mantine-color-blue-4) 30%, var(--mantine-color-default-border));
+  box-shadow:
+    0 6px 16px color-mix(in srgb, var(--mantine-color-blue-8) 8%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.pt-scanner-wrapper[data-color="blue"] .pt-scanner-radar-ring {
+  border-color: var(--mantine-color-blue-5);
+}
+
+.pt-scanner-wrapper[data-color="blue"] .pt-scanner-beam {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--mantine-color-blue-3) 25%, transparent) 65%,
+    color-mix(in srgb, var(--mantine-color-blue-4) 60%, transparent) 95%
+  );
+  border-bottom: 1.5px solid var(--mantine-color-blue-6);
+}
+
+/* Barra di progresso indeterminata */
+.pt-scanner-progress-indeterminate {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: var(--mantine-color-default-hover);
+  overflow: hidden;
+}
+
+.pt-scanner-progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: var(--mantine-color-teal-6);
+  animation: pt-scanner-indeterminate-slide 1.6s ease-in-out infinite;
+}
+
+@keyframes pt-scanner-indeterminate-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.pt-scanner-wrapper[data-color="violet"] .pt-scanner-progress-indeterminate::after {
+  background: var(--mantine-color-violet-6);
+}
+
+.pt-scanner-wrapper[data-color="blue"] .pt-scanner-progress-indeterminate::after {
+  background: var(--mantine-color-blue-6);
+}
+
+.riduci-animazioni .pt-scanner-progress-indeterminate::after {
+  animation: none !important;
+  left: 0;
+  width: 30%;
+  opacity: 0.6;
+}
+
+.riduci-animazioni .pt-scanner-radar-ring,
+.riduci-animazioni .pt-scanner-beam,
+.riduci-animazioni .pt-scanner-glow {
+  display: none !important;
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pt-bollettazione-modal-content,
+  .pt-prescrizioni-modal-content {
+    transition: none !important;
+  }
+  .pt-scanner-radar-ring,
+  .pt-scanner-beam,
+  .pt-scanner-glow {
+    display: none !important;
+    animation: none !important;
+  }
+  .pt-scanner-progress-indeterminate::after {
+    animation: none !important;
+    left: 0;
+    width: 30%;
+    opacity: 0.6;
+  }
+}
+
 .pt-bollettazione-modal-body {
   overflow: hidden;
 }
@@ -1607,6 +1932,16 @@ body,
   display: inline-flex;
   flex: 0 0 auto;
 }
+.pt-bollettazione-status-badge {
+  min-width: 20px;
+  height: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.pt-bollettazione-status-badge .mantine-Badge-label {
+  overflow: visible;
+  text-overflow: clip;
+}
 
 .pt-bollettazione-row {
   border: 1px solid var(--mantine-color-default-border);
@@ -1626,6 +1961,10 @@ body,
 .pt-bollettazione-row[data-status="non_trovato"] {
   border-left-color: var(--mantine-color-red-6);
 }
+.pt-bollettazione-row[data-status="gia_registrato"] {
+  border-left-color: var(--mantine-color-gray-4);
+  opacity: 0.88;
+}
 .pt-bollettazione-match {
   border-radius: var(--mantine-radius-sm);
   background: var(--mantine-color-default-hover);
@@ -1636,87 +1975,57 @@ body,
   background: color-mix(in srgb, var(--mantine-color-orange-0) 65%, transparent);
 }
 .pt-bollettazione-date {
-  grid-area: date;
-  width: 180px;
-  min-width: 180px;
+  width: 148px;
+}
+.pt-bollettazione-date .mantine-TextInput-input {
+  padding-inline: 8px;
 }
 .pt-bollettazione-footer {
-  display: grid;
-  grid-template-areas: "summary date actions";
-  grid-template-columns: minmax(120px, 1fr) 180px max-content;
-  align-items: end;
-  column-gap: 18px;
-  row-gap: 12px;
-  padding: 14px 0 4px;
-  margin-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0 2px;
+  margin-top: 10px;
 }
 .pt-bollettazione-footer-summary {
-  grid-area: summary;
-  min-width: 108px;
-  padding-bottom: 10px;
+  flex: 0 0 auto;
 }
 .pt-bollettazione-footer-actions {
-  grid-area: actions;
-  display: grid;
-  grid-template-columns: repeat(3, max-content);
-  justify-content: end;
-  align-items: end;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: nowrap;
 }
 .pt-bollettazione-footer-actions .mantine-Button-root {
   white-space: nowrap;
 }
 
-@container bollettazione-shell (max-width: 1040px) {
+@container bollettazione-shell (max-width: 960px) {
   .pt-bollettazione-footer {
-    grid-template-areas:
-      "summary date"
-      "actions actions";
-    grid-template-columns: max-content 1fr;
-    align-items: end;
-  }
-  .pt-bollettazione-date {
-    justify-self: start;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
   .pt-bollettazione-footer-actions {
-    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
   }
 }
 
-@media (max-width: 760px) {
-  .pt-spedizioni-crea-header {
-    gap: 6px;
-  }
-  .pt-spedizioni-crea-header
-    > .pt-bollettazione-action
-    .mantine-Button-label {
-    display: none;
-  }
-}
-
-@container bollettazione-shell (max-width: 720px) {
-  .pt-bollettazione-footer {
-    grid-template-areas:
-      "summary"
-      "date"
-      "actions";
-    grid-template-columns: minmax(0, 1fr);
+@container bollettazione-shell (max-width: 600px) {
+  .pt-bollettazione-footer-actions {
+    flex-direction: column;
     align-items: stretch;
   }
-  .pt-bollettazione-footer-summary,
-  .pt-bollettazione-date {
-    width: 100%;
-    min-width: 0;
-    padding-bottom: 0;
+  .pt-bollettazione-date-group {
+    justify-content: space-between;
   }
-  .pt-bollettazione-footer-actions {
-    grid-template-columns: 1fr 1fr;
+  .pt-bollettazione-date {
     width: 100%;
   }
   .pt-bollettazione-footer-actions .mantine-Button-root {
     width: 100%;
-  }
-  .pt-bollettazione-footer-primary {
-    grid-column: 1 / -1;
   }
 }
 
@@ -1771,7 +2080,7 @@ body,
   }
 }
 
-@container (max-width: 1100px) {
+@container (max-width: 950px) {
   .pt-lotto-produzione .pt-azioni-produzione .pt-azione-adattiva-label {
     display: none;
   }

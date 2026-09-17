@@ -60,12 +60,17 @@ import {
   type RigaScadenzarioEditor,
 } from "../giornaliero/PagamentoScadenzarioPanel";
 import {
+  useScadenzarioEditor,
+  calcolaScadRelGiorni,
+  persistiCodTutto,
+} from "../giornaliero/useScadenzarioEditor";
+import {
   confrontaPagamentiAperti,
   confrontaRigheScadenzario,
-  pagamentoApertoDaSaldare,
   pagamentoApertoSaldoRata,
   pagamentoPreviewLocale,
   proponiPagamentoAggiuntivo,
+  selezionaProssimoPagamentoDaSaldare,
 } from "../giornaliero/ordineScadenzario";
 import { importoCoperto } from "../contabilita/coperturaScadenzario";
 import { riallineaVociAperteLocali } from "../contabilita/riallineaSaldo";
@@ -88,7 +93,6 @@ import { preventivoDaBozza, type BozzaPreventivoDaZero } from "./bozzaPreventivo
 import {
   applicaPatchPagamentoVirtuale,
   campiContoPagamentoVirtuale,
-  giorniTraScadenze,
   rigaVuotaPreventivo as rigaVuota,
   righeDaPreventivo,
   snapshotPreventivoEditor as snapshot,
@@ -98,6 +102,7 @@ import {
   type TestataDraftPreventivo as TestataDraft,
 } from "./preventivoEditorModel";
 import { avviaInvioRapidoPreventivo } from "./invioRapidoPreventivo";
+import { PremiumAction } from "../../premium/PremiumAction";
 
 const EVENTI_PREVENTIVO_APERTO = [
   "preventivo:salvato",
@@ -169,9 +174,6 @@ export function PreventivoEditorModal({
   const [pagamentiVirtualiAggiunti, setPagamentiVirtualiAggiunti] = useState<
     Pagamento[]
   >([]);
-  const [pagamentoTarget, setPagamentoTarget] =
-    useState<PagamentoModalTarget | null>(null);
-  const [rateizzaTarget, setRateizzaTarget] = useState<RateizzaTarget | null>(null);
   const [clienteDaModificare, setClienteDaModificare] =
     useState<RecordDto | null>(null);
   const [caricandoCliente, setCaricandoCliente] = useState(false);
@@ -185,6 +187,7 @@ export function PreventivoEditorModal({
     if (!opened || (!ordineId && !bozzaIniziale)) return;
     let attivo = true;
     setCaricamento(true);
+    setCodTutto(false);
     setPatchPagamentiVirtuali({});
     setPianoRateVirtuale(null);
     setPagamentiVirtualiAggiunti([]);
@@ -312,7 +315,7 @@ export function PreventivoEditorModal({
                 tipo: "rata",
                 importo: rata.importo,
                 saldato: false,
-                scadenza: rata.scadenza,
+                scadenza: "",
                 contoId: contoSaldoId,
                 contoNome: String(contoSaldo?.data.nome ?? ""),
                 contoTipo: String(contoSaldo?.data.tipo ?? ""),
@@ -323,8 +326,7 @@ export function PreventivoEditorModal({
                 contoAccreditoNome: "",
                 note: "",
                 scadDaSpedizione: true,
-                scadRelGiorni:
-                  indice === 0 ? 0 : giorniTraScadenze(inizio, rata.scadenza),
+                scadRelGiorni: indice * 30,
               }),
             ),
           });
@@ -572,15 +574,48 @@ export function PreventivoEditorModal({
     () => new Map(conti.map((conto) => [conto.id, conto])),
     [conti],
   );
-  const optionsConti = useMemo(
-    () =>
-      conti.map((conto) => ({
-        value: conto.id,
-        label: String(conto.data.nome || "(conto)"),
-      })),
-    [conti],
-  );
+  const {
+    codTutto,
+    setCodTutto,
+    toggleCod: toggleCodHook,
+    pagTarget: pagamentoTarget,
+    setPagTarget: setPagamentoTarget,
+    rateizzaTarget,
+    setRateizzaTarget,
+    contrassegnoContoId,
+    optionsConti,
+    optionsContiAcconto,
+  } = useScadenzarioEditor({
+    conti,
+    categoria: linea,
+    totale,
+    onCodTuttoAttivato: () => {
+      setAcconto(0);
+    },
+    onCodTuttoDisattivato: () => {
+      if (linea === "Keriba") {
+        setAcconto(totale > 0 ? totale : 0);
+      }
+    },
+  });
   const pagamentiPreview = useMemo(() => {
+    if (codTutto && contrassegnoContoId) {
+      if (totale <= 0) return [];
+      const conto = contiById.get(contrassegnoContoId);
+      return [
+        {
+          id: "__preview_scadenzario__saldo",
+          ordineId: preventivo?.ordineId || ordineId || "",
+          tipo: "saldo" as const,
+          importo: totale,
+          saldato: false,
+          scadenza: "",
+          ...campiContoPagamentoVirtuale(contrassegnoContoId, conto),
+          scadDaSpedizione: true,
+          scadRelGiorni: 0,
+        },
+      ];
+    }
     let prossimi = pagamenti
       .filter(
         (pagamento) =>
@@ -682,8 +717,10 @@ export function PreventivoEditorModal({
   }, [
     acconto,
     agenti,
+    codTutto,
     conti,
     contiById,
+    contrassegnoContoId,
     linea,
     medici,
     ordineId,
@@ -706,14 +743,7 @@ export function PreventivoEditorModal({
     0,
     totale - importoCoperto(pagamentiPreview),
   );
-  const prossimaRataDaSaldare =
-    [...pagamentiPreview]
-      .filter(
-        (pagamento) =>
-          !pagamentoPreviewLocale(pagamento) &&
-          pagamentoApertoDaSaldare(pagamento),
-      )
-      .sort(confrontaPagamentiAperti)[0] ?? null;
+  const prossimaRataDaSaldare = selezionaProssimoPagamentoDaSaldare(pagamentiPreview, conti);
   const propostaPagamento = proponiPagamentoAggiuntivo({
     pagamentiPreview,
     residuo,
@@ -976,13 +1006,10 @@ export function PreventivoEditorModal({
       tipo: "rata",
       importo: rata.importo,
       saldato: false,
-      scadenza: rata.scadenza,
+      scadenza: daSpedizione ? "" : rata.scadenza,
       ...campiContoPagamentoVirtuale(contoId, conto),
       scadDaSpedizione: daSpedizione,
-      scadRelGiorni:
-        indice === 0
-          ? 0
-          : giorniTraScadenze(rate[0]?.scadenza || rata.scadenza, rata.scadenza),
+      scadRelGiorni: indice * 30,
     }));
     setPianoRateVirtuale((corrente) => ({
       modalita:
@@ -1004,6 +1031,7 @@ export function PreventivoEditorModal({
     const piano = pianoRateVirtuale;
     if (
       !piano &&
+      !codTutto &&
       Object.keys(patchPagamentiVirtuali).length === 0 &&
       pagamentiVirtualiAggiunti.length === 0
     ) {
@@ -1011,13 +1039,21 @@ export function PreventivoEditorModal({
     }
     let pagamentiAggiornati = await api.pagamentiOrdine(ordineIdSalvato);
 
+    if (codTutto && contrassegnoContoId) {
+      await persistiCodTutto(ordineIdSalvato, totale, contrassegnoContoId);
+      return;
+    }
+
+    const aggiuntiSpediz = pagamentiVirtualiAggiunti.filter(
+      (p) => p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata")
+    );
     for (const pagamento of pagamentiVirtualiAggiunti) {
       const creato = await api.pagamentoRegistra({
         ordineId: ordineIdSalvato,
         tipo: pagamento.tipo,
         importo: pagamento.importo,
         saldato: pagamento.saldato,
-        scadenza: pagamento.scadenza,
+        scadenza: pagamento.saldato || pagamento.scadDaSpedizione ? "" : pagamento.scadenza,
         contoId: pagamento.contoId,
         data: pagamento.data,
         verificato: pagamento.verificato,
@@ -1028,9 +1064,14 @@ export function PreventivoEditorModal({
         pagamento.scadDaSpedizione &&
         (pagamento.tipo === "saldo" || pagamento.tipo === "rata")
       ) {
+        const idxLoc = aggiuntiSpediz.indexOf(pagamento);
+        const offsetBase = pagamentiAggiornati.filter(
+          (p) => p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata")
+        ).length;
+        const relGiorni = calcolaScadRelGiorni(idxLoc, offsetBase, pagamento.scadRelGiorni);
         await api.recordUpdate("pagamento", creato.id, {
           scad_da_spedizione: true,
-          scad_rel_giorni: pagamento.scadRelGiorni,
+          scad_rel_giorni: relGiorni,
           scadenza: "",
         });
       }
@@ -1107,11 +1148,14 @@ export function PreventivoEditorModal({
         rateVirtuali.map((virtuale, indice) => {
           const persistita = ratePersistite[indice];
           if (!persistita) return Promise.resolve();
+          const relGiorni = virtuale.scadDaSpedizione
+            ? calcolaScadRelGiorni(indice, 0, virtuale.scadRelGiorni)
+            : 0;
           return api.recordUpdate("pagamento", persistita.id, {
             conto_id: virtuale.contoId,
             scadenza: virtuale.scadDaSpedizione ? "" : virtuale.scadenza,
             scad_da_spedizione: virtuale.scadDaSpedizione,
-            scad_rel_giorni: virtuale.scadRelGiorni,
+            scad_rel_giorni: relGiorni,
           }).then(() => undefined);
         }),
       );
@@ -1140,6 +1184,10 @@ export function PreventivoEditorModal({
           .then(() => undefined);
       }),
     );
+  }
+
+  function toggleCod() {
+    toggleCodHook();
   }
 
   async function salva(inviaDopo = false) {
@@ -1211,7 +1259,7 @@ export function PreventivoEditorModal({
             stato: "Nuovo",
             marcatore: "",
             note: note.trim(),
-            acconto,
+            acconto: codTutto ? 0 : acconto,
             omaggio: false,
             provvisorio: !navigator.onLine,
           },
@@ -1235,7 +1283,7 @@ export function PreventivoEditorModal({
         introduzione: introduzione.trim(),
         note: note.trim(),
         scontoPercentuale,
-        acconto,
+        acconto: codTutto ? 0 : acconto,
         righe: inputRighe,
       });
       preventivoPersistito = true;
@@ -1269,6 +1317,7 @@ export function PreventivoEditorModal({
       setPatchPagamentiVirtuali({});
       setPianoRateVirtuale(null);
       setPagamentiVirtualiAggiunti([]);
+      setCodTutto(false);
       toast.success(preventivo.esiste ? "Preventivo salvato." : "Preventivo creato.");
       if (dentroFinestra) {
         // Nella Webview dedicata l'editor resta visibile finché il documento è
@@ -1572,8 +1621,8 @@ export function PreventivoEditorModal({
                   evidenziato={false}
                   ordineId={preventivo.ordineId}
                   categoria={linea}
-                  codTutto={false}
-                  acconto={acconto / 100}
+                  codTutto={codTutto}
+                  acconto={codTutto ? 0 : acconto / 100}
                   accontoIncassato={false}
                   accontoData=""
                   totale={totale}
@@ -1581,19 +1630,21 @@ export function PreventivoEditorModal({
                   residuo={residuo}
                   righe={righeScadenzario}
                   optionsConti={optionsConti}
+                  optionsContiAcconto={optionsContiAcconto}
                   importoRateizzabile={Math.max(0, saldoAttesoCorrente)}
                   saldoAttesoCorrente={saldoAttesoCorrente}
                   scopertoScadenzario={scopertoScadenzario}
                   prossimaRataDaSaldare={prossimaRataDaSaldare}
                   azioneAggiungiPagamento={azioneAggiungiPagamento}
                   rimborsoLabel={null}
-                  onAccontoChange={(value) =>
+                  onAccontoChange={(value) => {
+                    if (codTutto) setCodTutto(false);
                     setAcconto(
                       Math.max(0, Math.round(Number(value || 0) * 100)),
-                    )
-                  }
+                    );
+                  }}
                   onAccontoFocus={() => {}}
-                  onToggleCod={() => {}}
+                  onToggleCod={toggleCod}
                   onAccontoIncassatoChange={() => {}}
                   onAccontoDataChange={() => {}}
                   onApriPagamento={setPagamentoTarget}
@@ -1637,15 +1688,19 @@ export function PreventivoEditorModal({
                   >
                     Salva e visualizza
                   </Button>
-                  <Button
-                    color="accent"
+                  <PremiumAction
+                    buttonVariant="filled"
+                    buttonColor="accent"
                     leftSection={<IconSend size={16} />}
-                    onClick={() => void salva(true)}
+                    title="Salva e invia preventivo"
+                    message="Invia il preventivo direttamente al cliente via email o messaggio. Funzionalità disponibile con Premium."
+                    lockedPresentation="modal"
+                    onAction={() => void salva(true)}
                     loading={azioneSalvataggio === "invia"}
                     disabled={salvando}
                   >
                     Salva e invia
-                  </Button>
+                  </PremiumAction>
                 </>
               )}
             </div>

@@ -29,8 +29,6 @@ import {
   aggiungiGiorniRate,
   calcolaRate,
   dataLocaleOggi,
-  differenzaGiorni,
-  offsetSpedizione,
 } from "./rateizzazione";
 
 export interface RateizzaTarget {
@@ -113,8 +111,7 @@ function Form({
   // la spunta, la prima scadenza è fissa a 30 giorni dopo l'acconto.
   const [daSpedizione, setDaSpedizione] = useState(true);
   const primaRataTransito = èContoTransito(target.contoTipo);
-  const baseOffset = offsetSpedizione(target.contoTipo);
-  const baseOffsetSuccessive = primaRataTransito ? offsetSpedizione(target.contoRateSuccessiveTipo) : baseOffset;
+  const baseOffset = primaRataTransito ? 30 : 7;
 
   // `inizio` è l'ancora delle scadenze in anteprima. Con la spunta attiva è provvisorio
   // (oggi + baseOffset): conta solo la spaziatura fra le rate, l'ancora vera la fissa la spedizione.
@@ -126,7 +123,7 @@ function Form({
       totaleCents,
       numeroRateIniziale,
       daSpedizione ? inizioSped : inizioFisso,
-      "mensile",
+      daSpedizione ? "giorni" : "mensile",
       30
     )
   );
@@ -141,8 +138,10 @@ function Form({
   useEffect(() => {
     const n = numRate === "" ? 0 : Number(numRate);
     const g = giorni === "" ? 30 : Number(giorni);
-    setRate(calcolaRate(totaleCents, n, inizio, cadenza, g));
-  }, [totaleCents, numRate, cadenza, giorni, inizio]);
+    const cadenzaEffettiva = daSpedizione ? "giorni" : cadenza;
+    const giorniEffettivi = daSpedizione && cadenza === "mensile" ? 30 : g;
+    setRate(calcolaRate(totaleCents, n, inizio, cadenzaEffettiva, giorniEffettivi));
+  }, [totaleCents, numRate, cadenza, giorni, inizio, daSpedizione]);
 
   const sommaRate = useMemo(() => rate.reduce((s, r) => s + r.importo, 0), [rate]);
   const quadra = rate.length > 0 && sommaRate === totaleCents;
@@ -216,8 +215,8 @@ function Form({
             label={`Prima scadenza ~${baseOffset} giorni dopo la spedizione`}
             description={
               primaRataTransito
-                ? `All'invio la prima rata resta a +${baseOffset} giorni sul conto di transito; le successive seguono il conto dell'ordine e la cadenza scelta.`
-                : `All'invio della spedizione la prima rata si fissa a +${baseOffset} giorni. Le altre seguono la cadenza scelta. Togli la spunta per partire da 30 giorni dopo l'acconto.`
+                ? "All'invio della spedizione la prima rata si fissa a +30 giorni (contrassegno alla consegna) e le successive a bonifico a +37gg, +67gg... (+7gg base banca + cadenza). Togli la spunta per partire da 30 giorni dopo l'acconto."
+                : "All'invio della spedizione la prima rata si fissa a +7 giorni e le successive seguono la cadenza scelta (+37gg, +67gg...). Togli la spunta per partire da 30 giorni dopo l'acconto."
             }
           />
 
@@ -264,39 +263,44 @@ function Form({
           <Divider label="Anteprima rate (modificabile)" labelPosition="left" my={4} />
 
           <Stack gap={6}>
-            {rate.map((r, i) => (
-              <Group key={i} gap="sm" wrap="nowrap" align="flex-end" data-pt-row={`rate-${i}`}>
-                <Text size="sm" w={32} c="dimmed">
-                  #{i + 1}
-                </Text>
-                <Box data-pt-field="rateizza-rata-importo">
-                  <EuroInput
-                    aria-label={`Importo rata ${i + 1}`}
-                    value={r.importo / 100}
-                    onChange={(v) => aggiornaRata(i, { importo: v === "" ? 0 : eurToCents(Number(v)) })}
-                    min={0}
-                    w={150}
-                  />
-                </Box>
-                {daSpedizione ? (
-                  <TextInput
-                    aria-label={`Scadenza rata ${i + 1}`}
-                    value={`≈ spedizione + ${(i === 0 ? baseOffset : baseOffsetSuccessive) + differenzaGiorni(r.scadenza, inizio)}gg`}
-                    disabled
-                    style={{ flex: 1 }}
-                  />
-                ) : (
-                  <Box data-pt-field="rateizza-rata-scadenza" style={{ flex: 1 }}>
-                    <TextInput
-                      aria-label={`Scadenza rata ${i + 1}`}
-                      type="date"
-                      value={r.scadenza}
-                      onChange={(e) => aggiornaRata(i, { scadenza: e.currentTarget.value })}
+            {rate.map((r, i) => {
+              const baseRata = i === 0 ? baseOffset : (èContoTransito(target.contoRateSuccessiveTipo) ? 30 : 7);
+              const cadenzaGiorni = cadenza === "mensile" ? 30 : (Number(giorni) || 30);
+              const offsetRata = baseRata + i * cadenzaGiorni;
+              return (
+                <Group key={i} gap="sm" wrap="nowrap" align="flex-end" data-pt-row={`rate-${i}`}>
+                  <Text size="sm" w={32} c="dimmed">
+                    #{i + 1}
+                  </Text>
+                  <Box data-pt-field="rateizza-rata-importo">
+                    <EuroInput
+                      aria-label={`Importo rata ${i + 1}`}
+                      value={r.importo / 100}
+                      onChange={(v) => aggiornaRata(i, { importo: v === "" ? 0 : eurToCents(Number(v)) })}
+                      min={0}
+                      w={150}
                     />
                   </Box>
-                )}
-              </Group>
-            ))}
+                  {daSpedizione ? (
+                    <TextInput
+                      aria-label={`Scadenza rata ${i + 1}`}
+                      value={`≈ spedizione + ${offsetRata}gg`}
+                      disabled
+                      style={{ flex: 1 }}
+                    />
+                  ) : (
+                    <Box data-pt-field="rateizza-rata-scadenza" style={{ flex: 1 }}>
+                      <TextInput
+                        aria-label={`Scadenza rata ${i + 1}`}
+                        type="date"
+                        value={r.scadenza}
+                        onChange={(e) => aggiornaRata(i, { scadenza: e.currentTarget.value })}
+                      />
+                    </Box>
+                  )}
+                </Group>
+              );
+            })}
           </Stack>
 
           <Text size="sm" c={quadra ? "dimmed" : "red"}>

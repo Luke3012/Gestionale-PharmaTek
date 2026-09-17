@@ -70,9 +70,20 @@ pub fn apri_cartella_sistema(dir: &Path) -> Result<(), String> {
     shell_open(dir.as_os_str())
 }
 
+#[cfg(target_os = "windows")]
+pub fn apri_file_sistema(path: &Path) -> Result<(), String> {
+    shell_open(path.as_os_str())
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn apri_cartella_sistema(dir: &Path) -> Result<(), String> {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn apri_file_sistema(path: &Path) -> Result<(), String> {
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     Ok(())
 }
 
@@ -94,13 +105,13 @@ mod tests {
     #[test]
     fn consente_solo_deep_link_esterni_previsti() {
         assert!(url_esterno_consentito("whatsapp://send?phone=393281883355"));
-        assert!(url_esterno_consentito("mailto:cliente%40example.it"));
+        assert!(url_esterno_consentito("mailto:demo%40example.invalid"));
         assert!(url_esterno_consentito("https://example.com"));
 
         assert!(!url_esterno_consentito("javascript:alert(1)"));
         assert!(!url_esterno_consentito("whatsapp://send?phone=39ABC"));
         assert!(!url_esterno_consentito(
-            "mailto:cliente%40example.it?bcc=altro%40example.it"
+            "mailto:demo%40example.invalid?bcc=altro%40example.it"
         ));
     }
 }

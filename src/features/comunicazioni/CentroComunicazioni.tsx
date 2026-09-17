@@ -575,15 +575,46 @@ export function CentroComunicazioniContenuto({
   };
 
   const riprovaFallitiCampagna = async (campagnaId: string, quanti: number) => {
-    const riuscita = await aggiornaCampagna(campagnaId, () =>
-      api.campagnaComunicazioneRiprovaFallite(campagnaId)
-    );
+    let rimessiInCoda = 0;
+    let nonValidi = 0;
+    const riuscita = await aggiornaCampagna(campagnaId, async () => {
+      const aggiornate = await api.campagnaComunicazioneRiprovaFallite(campagnaId);
+      rimessiInCoda = aggiornate.filter((item) => item.stato === "in_coda").length;
+      nonValidi = aggiornate.filter(
+        (item) =>
+          item.stato === "fallito" &&
+          item.erroreCodice === "recapito_anagrafica_non_valido",
+      ).length;
+      return aggiornate;
+    });
     if (riuscita) {
-      toast.success(
-        quanti === 1
-          ? "Il messaggio fallito è stato rimesso in coda."
-          : `${quanti} messaggi falliti sono stati rimessi in coda.`
-      );
+      if (rimessiInCoda > 0 && nonValidi > 0) {
+        toast.warning(
+          `${rimessiInCoda} ${
+            rimessiInCoda === 1 ? "messaggio rimesso" : "messaggi rimessi"
+          } in coda; ${nonValidi} ${
+            nonValidi === 1 ? "escluso" : "esclusi"
+          } per recapito non valido in anagrafica.`,
+        );
+      } else if (rimessiInCoda > 0) {
+        toast.success(
+          rimessiInCoda === 1
+            ? "Il messaggio fallito è stato rimesso in coda."
+            : `${rimessiInCoda} messaggi falliti sono stati rimessi in coda.`,
+        );
+      } else if (nonValidi > 0) {
+        toast.error(
+          nonValidi === 1
+            ? "Impossibile riprovare: il recapito in anagrafica non è valido."
+            : `Impossibile riprovare: i recapiti di ${nonValidi} destinatari in anagrafica non sono validi.`,
+        );
+      } else {
+        toast.success(
+          quanti === 1
+            ? "Il messaggio fallito è stato rimesso in coda."
+            : `${quanti} messaggi falliti sono stati rimessi in coda.`,
+        );
+      }
     }
   };
 

@@ -90,6 +90,7 @@ impl Projection {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             -- Se una connessione precedente è ancora in chiusura (es. il thread del
             -- file-watch), attende invece di fallire subito con "database is locked".
@@ -239,17 +240,41 @@ impl Projection {
     /// ora, `false` se era già presente (idempotenza tramite `applied_events`).
     ///
     /// Tutto avviene in una transazione: o l'evento è applicato per intero, o niente.
+    /// Applica una sequenza di eventi all'interno di una singola transazione SQLite.
+    /// Utilizza query con cache dei prepared statements per massimizzare il throughput.
+    /// Restituisce l'insieme delle entità modificate.
+    pub fn apply_batch(&mut self, events: &[Event]) -> Result<Vec<String>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tx = self.conn.transaction()?;
+        let mut modified = std::collections::HashSet::new();
+        for ev in events {
+            if Self::apply_event_tx(&tx, ev)? {
+                modified.insert(ev.entity.clone());
+            }
+        }
+        tx.commit()?;
+        Ok(modified.into_iter().collect())
+    }
+
+    /// Applica un evento alla proiezione. Restituisce `true` se ha cambiato lo stato
+    /// ora, `false` se era già presente (idempotenza tramite `applied_events`).
+    ///
+    /// Tutto avviene in una transazione: o l'evento è applicato per intero, o niente.
     pub fn apply(&mut self, ev: &Event) -> Result<bool> {
         let tx = self.conn.transaction()?;
+        let changed = Self::apply_event_tx(&tx, ev)?;
+        tx.commit()?;
+        Ok(changed)
+    }
 
+    fn apply_event_tx(tx: &rusqlite::Transaction<'_>, ev: &Event) -> Result<bool> {
         // Idempotenza: stesso evento applicato due volte (es. conflicted copy
         // duplicata, o re-ingest dopo snapshot) non cambia lo stato.
         let already: bool = tx
-            .query_row(
-                "SELECT 1 FROM applied_events WHERE event_id = ?1",
-                params![ev.id],
-                |_| Ok(()),
-            )
+            .prepare_cached("SELECT 1 FROM applied_events WHERE event_id = ?1")?
+            .query_row(params![ev.id], |_| Ok(()))
             .optional()?
             .is_some();
         if already {
@@ -259,30 +284,30 @@ impl Projection {
         let ts = ev.ts.to_string();
         let mut changed = false;
 
-        if !matches!(ev.body, EventBody::Purged) && Self::is_purged(&tx, &ev.entity, &ev.entity_id)?
+        if !matches!(ev.body, EventBody::Purged) && Self::is_purged(tx, &ev.entity, &ev.entity_id)?
         {
-            Self::insert_applied_and_watermark(&tx, ev, &ts)?;
-            tx.commit()?;
+            Self::insert_applied_and_watermark(tx, ev, &ts)?;
             return Ok(false);
         }
 
         if !matches!(ev.body, EventBody::Purged) {
             // Assicura l'esistenza del record (qualunque evento implicitamente lo crea:
             // robusto al riordino, es. un Deleted che arriva prima del Created).
-            let inserted = tx.execute(
-                "INSERT OR IGNORE INTO records(entity, id, data, deleted, created_hlc, updated_hlc)
-                 VALUES(?1, ?2, '{}', 0, ?3, ?3)",
-                params![ev.entity, ev.entity_id, ts],
-            )?;
+            let inserted = tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO records(entity, id, data, deleted, created_hlc, updated_hlc)
+                     VALUES(?1, ?2, '{}', 0, ?3, ?3)",
+                )?
+                .execute(params![ev.entity, ev.entity_id, ts])?;
             changed |= inserted > 0;
 
             // `created_hlc` = minimo HLC fra tutti gli eventi del record: deterministico
             // a prescindere dall'ordine di applicazione (serve alla numerazione ordini).
-            tx.execute(
+            tx.prepare_cached(
                 "UPDATE records SET created_hlc = ?3
                  WHERE entity = ?1 AND id = ?2 AND ?3 < created_hlc",
-                params![ev.entity, ev.entity_id, ts],
-            )?;
+            )?
+            .execute(params![ev.entity, ev.entity_id, ts])?;
         }
 
         match &ev.body {
@@ -290,62 +315,57 @@ impl Projection {
                 // L'esistenza è già garantita sopra; nessun campo da impostare.
             }
             EventBody::FieldSet { field, value } => {
-                if Self::clock_wins(&tx, &ev.entity, &ev.entity_id, field, &ts)? {
-                    let mut data = Self::load_data(&tx, &ev.entity, &ev.entity_id)?;
+                if Self::clock_wins(tx, &ev.entity, &ev.entity_id, field, &ts)? {
+                    let mut data = Self::load_data(tx, &ev.entity, &ev.entity_id)?;
                     data.insert(field.clone(), value.clone());
-                    Self::store_data(&tx, &ev.entity, &ev.entity_id, &data)?;
-                    Self::set_clock(&tx, &ev.entity, &ev.entity_id, field, &ts)?;
-                    Self::bump_updated(&tx, &ev.entity, &ev.entity_id, &ts)?;
+                    Self::store_data(tx, &ev.entity, &ev.entity_id, &data)?;
+                    Self::set_clock(tx, &ev.entity, &ev.entity_id, field, &ts)?;
+                    Self::bump_updated(tx, &ev.entity, &ev.entity_id, &ts)?;
                     changed = true;
                 }
             }
             EventBody::Deleted | EventBody::Restored => {
-                if Self::clock_wins(&tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)? {
+                if Self::clock_wins(tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)? {
                     let deleted = matches!(ev.body, EventBody::Deleted);
-                    tx.execute(
+                    tx.prepare_cached(
                         "UPDATE records SET deleted = ?3 WHERE entity = ?1 AND id = ?2",
-                        params![ev.entity, ev.entity_id, deleted as i64],
-                    )?;
-                    Self::set_clock(&tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)?;
-                    Self::bump_updated(&tx, &ev.entity, &ev.entity_id, &ts)?;
+                    )?
+                    .execute(params![
+                        ev.entity,
+                        ev.entity_id,
+                        deleted as i64
+                    ])?;
+                    Self::set_clock(tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)?;
+                    Self::bump_updated(tx, &ev.entity, &ev.entity_id, &ts)?;
                     changed = true;
                 }
             }
             EventBody::Purged => {
                 // Terminale: i dati applicativi spariscono davvero; resta solo una
                 // tombstone minima per impedire resurrezioni da vecchi log.
-                let removed_records = tx.execute(
-                    "DELETE FROM records WHERE entity = ?1 AND id = ?2",
-                    params![ev.entity, ev.entity_id],
-                )?;
-                let removed_clocks = tx.execute(
-                    "DELETE FROM field_clocks WHERE entity = ?1 AND id = ?2",
-                    params![ev.entity, ev.entity_id],
-                )?;
-                let inserted = tx.execute(
-                    "INSERT OR IGNORE INTO purged(entity, id) VALUES(?1, ?2)",
-                    params![ev.entity, ev.entity_id],
-                )?;
-                tx.execute(
-                    "DELETE FROM local_suppressions WHERE entity = ?1 AND id = ?2",
-                    params![ev.entity, ev.entity_id],
-                )?;
+                let removed_records = tx
+                    .prepare_cached("DELETE FROM records WHERE entity = ?1 AND id = ?2")?
+                    .execute(params![ev.entity, ev.entity_id])?;
+                let removed_clocks = tx
+                    .prepare_cached("DELETE FROM field_clocks WHERE entity = ?1 AND id = ?2")?
+                    .execute(params![ev.entity, ev.entity_id])?;
+                let inserted = tx
+                    .prepare_cached("INSERT OR IGNORE INTO purged(entity, id) VALUES(?1, ?2)")?
+                    .execute(params![ev.entity, ev.entity_id])?;
+                tx.prepare_cached("DELETE FROM local_suppressions WHERE entity = ?1 AND id = ?2")?
+                    .execute(params![ev.entity, ev.entity_id])?;
                 changed = removed_records > 0 || removed_clocks > 0 || inserted > 0;
             }
         }
 
-        Self::insert_applied_and_watermark(&tx, ev, &ts)?;
-        tx.commit()?;
+        Self::insert_applied_and_watermark(tx, ev, &ts)?;
         Ok(changed)
     }
 
     fn is_purged(tx: &rusqlite::Transaction<'_>, entity: &str, id: &str) -> Result<bool> {
         Ok(tx
-            .query_row(
-                "SELECT 1 FROM purged WHERE entity = ?1 AND id = ?2",
-                params![entity, id],
-                |_| Ok(()),
-            )
+            .prepare_cached("SELECT 1 FROM purged WHERE entity = ?1 AND id = ?2")?
+            .query_row(params![entity, id], |_| Ok(()))
             .optional()?
             .is_some())
     }
@@ -355,21 +375,19 @@ impl Projection {
         ev: &Event,
         ts: &str,
     ) -> Result<()> {
-        tx.execute(
-            "INSERT OR IGNORE INTO applied_events(event_id, hlc) VALUES(?1, ?2)",
-            params![ev.id, ts],
-        )?;
+        tx.prepare_cached("INSERT OR IGNORE INTO applied_events(event_id, hlc) VALUES(?1, ?2)")?
+            .execute(params![ev.id, ts])?;
         Self::upsert_watermark_tx(tx, &ev.ts.device, ts)?;
         Ok(())
     }
 
     fn upsert_watermark_tx(tx: &rusqlite::Transaction<'_>, device: &str, hlc: &str) -> Result<()> {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO watermarks(device, hlc) VALUES(?1, ?2)
              ON CONFLICT(device) DO UPDATE SET hlc = excluded.hlc
              WHERE excluded.hlc > watermarks.hlc",
-            params![device, hlc],
-        )?;
+        )?
+        .execute(params![device, hlc])?;
         Ok(())
     }
 
@@ -383,11 +401,10 @@ impl Projection {
         ts: &str,
     ) -> Result<bool> {
         let cur: Option<String> = tx
-            .query_row(
+            .prepare_cached(
                 "SELECT hlc FROM field_clocks WHERE entity = ?1 AND id = ?2 AND field = ?3",
-                params![entity, id, field],
-                |r| r.get(0),
-            )
+            )?
+            .query_row(params![entity, id, field], |r| r.get(0))
             .optional()?;
         Ok(match cur {
             None => true,
@@ -402,11 +419,11 @@ impl Projection {
         field: &str,
         ts: &str,
     ) -> Result<()> {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO field_clocks(entity, id, field, hlc) VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(entity, id, field) DO UPDATE SET hlc = excluded.hlc",
-            params![entity, id, field, ts],
-        )?;
+        )?
+        .execute(params![entity, id, field, ts])?;
         Ok(())
     }
 
@@ -417,11 +434,11 @@ impl Projection {
         ts: &str,
     ) -> Result<()> {
         // updated_hlc = max(updated_hlc, ts)
-        tx.execute(
+        tx.prepare_cached(
             "UPDATE records SET updated_hlc = ?3
              WHERE entity = ?1 AND id = ?2 AND ?3 > updated_hlc",
-            params![entity, id, ts],
-        )?;
+        )?
+        .execute(params![entity, id, ts])?;
         Ok(())
     }
 
@@ -430,11 +447,9 @@ impl Projection {
         entity: &str,
         id: &str,
     ) -> Result<Map<String, Value>> {
-        let json: String = tx.query_row(
-            "SELECT data FROM records WHERE entity = ?1 AND id = ?2",
-            params![entity, id],
-            |r| r.get(0),
-        )?;
+        let json: String = tx
+            .prepare_cached("SELECT data FROM records WHERE entity = ?1 AND id = ?2")?
+            .query_row(params![entity, id], |r| r.get(0))?;
         let v: Value = serde_json::from_str(&json)?;
         Ok(v.as_object().cloned().unwrap_or_default())
     }
@@ -446,10 +461,8 @@ impl Projection {
         data: &Map<String, Value>,
     ) -> Result<()> {
         let json = serde_json::to_string(&Value::Object(data.clone()))?;
-        tx.execute(
-            "UPDATE records SET data = ?3 WHERE entity = ?1 AND id = ?2",
-            params![entity, id, json],
-        )?;
+        tx.prepare_cached("UPDATE records SET data = ?3 WHERE entity = ?1 AND id = ?2")?
+            .execute(params![entity, id, json])?;
         Ok(())
     }
 
@@ -1168,6 +1181,60 @@ mod tests {
         assert_eq!(
             p.get_max_hlc_for_device("PC-B").unwrap().unwrap(),
             Hlc::new(15, 0, "PC-B")
+        );
+    }
+
+    #[test]
+    fn apply_batch_equivale_ad_apply_singolo() {
+        let mut p1 = Projection::open_in_memory().unwrap();
+        let mut p2 = Projection::open_in_memory().unwrap();
+
+        let events = vec![
+            set("PC-A", 1, 0, "cliente", "C1", "nome", json!("Mario")),
+            set("PC-A", 2, 0, "cliente", "C1", "cognome", json!("Rossi")),
+            set("PC-B", 3, 0, "cliente", "C2", "nome", json!("Luigi")),
+            set(
+                "PC-A",
+                4,
+                0,
+                "cliente",
+                "C1",
+                "nome",
+                json!("Mario Corretto"),
+            ),
+            Event::new(
+                Hlc::new(5, 0, "PC-B"),
+                "PC-B",
+                "u",
+                "cliente",
+                "C2",
+                EventBody::Deleted,
+            ),
+        ];
+
+        for ev in &events {
+            p1.apply(ev).unwrap();
+        }
+
+        let modified = p2.apply_batch(&events).unwrap();
+        assert!(modified.contains(&"cliente".to_string()));
+
+        let c1_p1 = p1.get("cliente", "C1").unwrap().unwrap();
+        let c1_p2 = p2.get("cliente", "C1").unwrap().unwrap();
+        assert_eq!(c1_p1, c1_p2);
+
+        let c2_p1 = p1.get("cliente", "C2").unwrap().unwrap();
+        let c2_p2 = p2.get("cliente", "C2").unwrap().unwrap();
+        assert_eq!(c2_p1, c2_p2);
+        assert!(c2_p2.deleted);
+
+        assert_eq!(
+            p1.get_max_hlc_for_device("PC-A").unwrap(),
+            p2.get_max_hlc_for_device("PC-A").unwrap()
+        );
+        assert_eq!(
+            p1.get_max_hlc_for_device("PC-B").unwrap(),
+            p2.get_max_hlc_for_device("PC-B").unwrap()
         );
     }
 }

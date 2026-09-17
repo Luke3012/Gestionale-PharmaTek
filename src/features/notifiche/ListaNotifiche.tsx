@@ -11,7 +11,7 @@ import { ActionIcon, Box, Button, Group, ScrollArea, Stack, Text, ThemeIcon, Too
 import { IconMessagePlus, IconSparkles, IconTrash, IconX } from "@tabler/icons-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAnimazioniRidotte } from "../../ui/motion";
-import { type Identity } from "../../lib/tauri";
+import { api, type Identity } from "../../lib/tauri";
 import { apriFinestraOrdine } from "../giornaliero/apriFinestra";
 import { apriFinestraPagamento } from "../contabilita/apriFinestraPagamento";
 import { apriRiepilogo, type TipoRiepilogo } from "../../shell/apriRiepilogo";
@@ -168,6 +168,9 @@ export function ListaNotifiche({
       onDopoApri?.();
     } else if (n.suggerimento) {
       void segna(n.id);
+      if (n.id.startsWith("s14:spedizione:")) {
+        void api.suggerimentoNascondi(n.id).catch(() => {});
+      }
       void vaiAllaPrincipale(deepLinkSuggerimento(n.suggerimento));
       onDopoApri?.();
     } else if (n.collegato) {
@@ -260,6 +263,9 @@ export function ListaNotifiche({
           }
           onClick={() => onRiga(n)}
           onScarta={() => {
+            if (n.id.startsWith("s14:spedizione:")) {
+              void api.suggerimentoNascondi(n.id).catch(() => {});
+            }
             if (n.tipo === "comunicazione") {
               scartaComunicazioneLocale(n.id);
             } else {
@@ -347,6 +353,12 @@ export function ListaNotifiche({
                 visibility: contenutoAncoraVisibile ? "visible" : "hidden",
               }}
               onClick={() => {
+                const idsSpedizioni = visibili
+                  .filter((n) => n.id.startsWith("s14:spedizione:"))
+                  .map((n) => n.id);
+                if (idsSpedizioni.length > 0) {
+                  void api.suggerimentiNascondi(idsSpedizioni).catch(() => {});
+                }
                 const idsComunicazioni = visibili
                   .filter((n) => n.tipo === "comunicazione")
                   .map((n) => n.id);

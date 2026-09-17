@@ -552,6 +552,8 @@ impl AppState {
                 conferma_se_nuovo(engine, ordine_id)?;
                 pulisci_attesi_se_saldato(engine, ordine_id)?;
                 prova_chiudi_ordine(engine, ordine_id, &data_giorni_fa(GIORNI_CHIUSURA))?;
+            } else {
+                super::riallinea_contrassegno_spedizioni_ordine(engine, ordine_id)?;
             }
 
             engine

@@ -150,7 +150,10 @@ export function accontoPrevistoDopoModifica(args: {
   tipoDopo: VoceCopertura["tipo"];
   importoDopo: number;
 }): number | null {
-  if (args.saldatoPrima || (args.tipoPrima !== "acconto" && args.tipoDopo !== "acconto")) {
+  if (args.tipoPrima !== "acconto" && args.tipoDopo !== "acconto") {
+    return null;
+  }
+  if (args.saldatoPrima && args.tipoPrima === "acconto" && args.tipoDopo === "acconto") {
     return null;
   }
   return args.tipoDopo === "acconto" ? Math.max(0, Math.floor(args.importoDopo)) : 0;

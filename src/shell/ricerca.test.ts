@@ -1,7 +1,56 @@
 import { describe, expect, it } from "vitest";
-import type { Preventivo, Spedizione } from "../lib/tauri";
+import type { OrdineDaSpedire, OrdineDto, Preventivo, Spedizione } from "../lib/tauri";
 import type { Promemoria } from "../features/promemoria/promemoria";
-import { DATI_VUOTI, chiaveBersaglio, costruisciVoci, type DatiRicerca } from "./ricerca";
+import {
+  DATI_VUOTI,
+  chiaveBersaglio,
+  costruisciVoci,
+  preventivoNellAnnoRicerca,
+  selezionaOrdiniRicerca,
+  type DatiRicerca,
+} from "./ricerca";
+
+const ordineRicerca = (id: string, data: string, stato = "Confermato") =>
+  ({ id, data, stato, linee: [], produzioneOperativa: false }) as unknown as OrdineDto;
+
+describe("anno di lavoro di Spotlight", () => {
+  it("unisce lo storico annuale agli arretrati realmente operativi", () => {
+    const anno = ordineRicerca("anno", "2025-03-01", "Chiuso");
+    const arretratoSpedizione = ordineRicerca("sped", "2024-03-01");
+    const arretratoProduzione = {
+      ...ordineRicerca("produzione", "2024-04-01"),
+      produzioneOperativa: true,
+    };
+    const arretratoChiuso = ordineRicerca("chiuso", "2024-03-01", "Chiuso");
+    const futuro = {
+      ...ordineRicerca("futuro", "2026-03-01"),
+      produzioneOperativa: true,
+    };
+    const daSpedire = [{
+      ordineId: arretratoSpedizione.id,
+      data: arretratoSpedizione.data,
+      stato: arretratoSpedizione.stato,
+    }] as OrdineDaSpedire[];
+
+    expect(
+      selezionaOrdiniRicerca(
+        [anno, arretratoSpedizione, arretratoProduzione, arretratoChiuso, futuro],
+        daSpedire,
+        2025,
+      ).map((ordine) => ordine.id),
+    ).toEqual(["anno", "sped", "produzione"]);
+  });
+
+  it("classifica i preventivi con la data dell'ordine", () => {
+    const preventivo = {
+      ordineData: "2025-12-20",
+      creatoMs: new Date("2026-01-10T10:00:00+01:00").getTime(),
+    } as Preventivo;
+    expect(preventivoNellAnnoRicerca(preventivo, 2025)).toBe(true);
+    expect(preventivoNellAnnoRicerca(preventivo, 2026)).toBe(false);
+    expect(preventivoNellAnnoRicerca(preventivo, 0)).toBe(true);
+  });
+});
 
 function spedizione(lotto: string): Spedizione {
   return {
@@ -152,7 +201,7 @@ describe("Spotlight provvigioni per agente", () => {
   });
 });
 
-describe("Spotlight preventivi Premium", () => {
+describe("Spotlight preventivi", () => {
   const preventivo = {
     id: "preventivo/ordine-1",
     ordineId: "ordine-1",
@@ -200,16 +249,16 @@ describe("Spotlight preventivi Premium", () => {
     ).toBe(true);
   });
 
-  it("non espone i preventivi se Premium non è abilitato", () => {
+  it("espone i preventivi anche senza Premium", () => {
     const dati: DatiRicerca = {
       ...DATI_VUOTI,
       preventivi: [preventivo],
     };
     expect(
-      costruisciVoci("P-2026-0012", dati, {
-        preventiviAbilitati: false,
-      }).some((risultato) => risultato.gruppo === "Preventivi"),
-    ).toBe(false);
+      costruisciVoci("P-2026-0012", dati).some(
+        (risultato) => risultato.gruppo === "Preventivi",
+      ),
+    ).toBe(true);
   });
 });
 

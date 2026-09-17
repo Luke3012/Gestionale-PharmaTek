@@ -73,7 +73,7 @@ impl SnapshotStore {
     /// altri. La fusione usa i clock LWW, unisce le tombstone terminali e conserva
     /// per ogni log soltanto l'offset sicuramente coperto da tutti gli snapshot.
     pub fn latest(&self) -> io::Result<Option<SnapshotData>> {
-        let mut paths = fs::read_dir(&self.dir)?
+        let raw_paths = fs::read_dir(&self.dir)?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|path| {
                 path.is_file()
@@ -83,6 +83,40 @@ impl SnapshotStore {
                         .unwrap_or(false)
             })
             .collect::<Vec<_>>();
+
+        // Raggruppa per dispositivo e conserva solo lo snapshot con sequenza massima.
+        // Evita di rileggere e fondere file storici obsoleti della stessa postazione.
+        let mut latest_by_device: BTreeMap<String, (u64, PathBuf)> = BTreeMap::new();
+        let mut others = Vec::new();
+        for path in raw_paths {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Some(stem) = file_name
+                    .strip_suffix(".json")
+                    .or_else(|| file_name.strip_suffix(".JSON"))
+                {
+                    if let Some((device, seq_str)) = stem.rsplit_once('-') {
+                        if let Ok(seq) = seq_str.parse::<u64>() {
+                            match latest_by_device.get_mut(device) {
+                                Some((cur_seq, cur_path)) => {
+                                    if seq > *cur_seq {
+                                        *cur_seq = seq;
+                                        *cur_path = path;
+                                    }
+                                }
+                                None => {
+                                    latest_by_device.insert(device.to_string(), (seq, path));
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+            others.push(path);
+        }
+
+        let mut paths: Vec<PathBuf> = latest_by_device.into_values().map(|(_, p)| p).collect();
+        paths.extend(others);
         paths.sort();
 
         let mut snapshots = Vec::new();
@@ -499,7 +533,7 @@ mod tests {
         snap_b.records.push(RawRecord {
             entity: "cliente".into(),
             id: "C1".into(),
-            data: json!({"nome":"Corretto", "email":""}).to_string(),
+            data: json!({"nome":"Corretto", "email":"demo@example.invalid"}).to_string(),
             deleted: false,
             created_hlc: "0000000000000001-00000000-PC-A".into(),
             updated_hlc: "0000000000000014-00000000-PC-B".into(),
@@ -545,7 +579,7 @@ mod tests {
         );
         assert_eq!(
             data["email"],
-            json!(""),
+            json!("demo@example.invalid"),
             "resta il campo visto solo da B"
         );
         assert!(merged.records.iter().any(|record| record.id == "SOLO-A"));

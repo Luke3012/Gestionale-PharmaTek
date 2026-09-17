@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActionIcon, TextInput, type TextInputProps } from "@mantine/core";
 import { IconX } from "@tabler/icons-react";
 
@@ -17,16 +17,22 @@ export function DebouncedInput({
   ...props
 }: DebouncedInputProps) {
   const [localValue, setLocalValue] = useState(parentValue);
+  const ultimoInviatoRef = useRef(parentValue);
 
-  // Sincronizza lo stato locale se il valore genitore cambia esternamente (es. deep-link o reset)
+  // Sincronizza lo stato locale SOLO se il valore genitore cambia esternamente (es. deep-link o reset)
+  // e NON per effetto della notifica inviata dal debounce stesso.
   useEffect(() => {
-    setLocalValue(parentValue);
+    if (parentValue !== ultimoInviatoRef.current) {
+      ultimoInviatoRef.current = parentValue;
+      setLocalValue(parentValue);
+    }
   }, [parentValue]);
 
   // Esegue il debounce dell'input
   useEffect(() => {
     const handler = setTimeout(() => {
-      if (localValue !== parentValue) {
+      if (localValue !== ultimoInviatoRef.current) {
+        ultimoInviatoRef.current = localValue;
         onChange(localValue);
       }
     }, delay);
@@ -34,7 +40,7 @@ export function DebouncedInput({
     return () => {
       clearTimeout(handler);
     };
-  }, [localValue, parentValue, onChange, delay]);
+  }, [localValue, onChange, delay]);
 
   return (
     <TextInput
@@ -50,6 +56,7 @@ export function DebouncedInput({
             aria-label="Azzera ricerca"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
+              ultimoInviatoRef.current = "";
               setLocalValue("");
               onChange("");
             }}

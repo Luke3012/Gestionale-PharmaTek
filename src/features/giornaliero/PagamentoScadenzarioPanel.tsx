@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useMemo, type RefObject } from "react";
 import {
   Badge,
   Box,
@@ -26,6 +26,7 @@ import type { PagamentoModalTarget } from "../contabilita/PagamentoModal";
 import { tipoPagamentoLabel } from "../contabilita/statiPagamento";
 import { centsDi } from "./ordineEditorModel";
 import {
+  calcolaOffsetSpedizRighe,
   formatDataScadenzario,
   offsetScadenzaDaSpedizione,
   scaduta,
@@ -63,6 +64,7 @@ interface PagamentoScadenzarioPanelProps {
   residuo: number;
   righe: RigaScadenzarioEditor[];
   optionsConti: Array<{ value: string; label: string }>;
+  optionsContiAcconto?: Array<{ value: string; label: string }>;
   importoRateizzabile: number;
   saldoAttesoCorrente: number;
   scopertoScadenzario: number;
@@ -97,6 +99,7 @@ export function PagamentoScadenzarioPanel({
   residuo,
   righe,
   optionsConti,
+  optionsContiAcconto,
   importoRateizzabile,
   saldoAttesoCorrente,
   scopertoScadenzario,
@@ -115,6 +118,8 @@ export function PagamentoScadenzarioPanel({
   onApriRateizzazione,
   onApriRimborso,
 }: PagamentoScadenzarioPanelProps) {
+  const offsetMappe = useMemo(() => calcolaOffsetSpedizRighe(righe), [righe]);
+
   return (
     <Card
       ref={containerRef}
@@ -249,7 +254,7 @@ export function PagamentoScadenzarioPanel({
                             <Text size="xs" c="dimmed">→</Text>
                             <ContoBozzaSelect
                               value={riga.contoId}
-                              options={optionsConti}
+                              options={optionsContiAcconto ?? optionsConti}
                               onChange={(contoId) => onAggiornaContoBozza(riga.key, contoId)}
                             />
                           </Group>
@@ -258,7 +263,7 @@ export function PagamentoScadenzarioPanel({
                             {riga.scadDaSpedizione ? (
                               <TextInput
                                 size="xs"
-                                value={`≈ spediz. + ${offsetScadenzaDaSpedizione(riga.contoTipo, riga.scadRelGiorni || 0)}gg`}
+                                value={`≈ spediz. + ${offsetMappe.get(riga.key) ?? offsetScadenzaDaSpedizione(riga.contoTipo, riga.scadRelGiorni || 0)}gg`}
                                 disabled
                                 w={120}
                                 styles={{ input: { textAlign: "center", fontWeight: 500 } }}
@@ -297,7 +302,7 @@ export function PagamentoScadenzarioPanel({
                           {riga.saldato
                             ? `${formatDataScadenzario(riga.data)}${riga.contoNome ? ` · ${riga.contoNome}` : ""}`
                             : riga.scadDaSpedizione && !riga.scadenza
-                              ? `≈ spediz. + ${offsetScadenzaDaSpedizione(riga.contoTipo, riga.scadRelGiorni || 0)}gg${riga.contoNome ? ` · → ${riga.contoNome}` : ""}`
+                              ? `≈ spediz. + ${offsetMappe.get(riga.key) ?? offsetScadenzaDaSpedizione(riga.contoTipo, riga.scadRelGiorni || 0)}gg${riga.contoNome ? ` · → ${riga.contoNome}` : ""}`
                               : riga.scadenza
                                 ? `scad. ${formatDataScadenzario(riga.scadenza)}${riga.contoNome ? ` · → ${riga.contoNome}` : ""}`
                                 : "—"}

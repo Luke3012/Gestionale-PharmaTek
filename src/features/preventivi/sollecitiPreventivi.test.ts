@@ -8,9 +8,12 @@ function preventivo(
   overrides: Partial<{
     id: string;
     ordineStato: string;
+    ordineMarcatore?: string;
     indicazioneInvio: string;
     ultimoInvioMs: number;
     ultimoSollecitoMs: number;
+    creatoMs: number;
+    ultimaModificaMs: number;
   }> = {},
 ) {
   return {
@@ -19,11 +22,45 @@ function preventivo(
     indicazioneInvio: "inviato",
     ultimoInvioMs: OGGI - 8 * GIORNO_MS,
     ultimoSollecitoMs: 0,
+    creatoMs: OGGI - 10 * GIORNO_MS,
+    ultimaModificaMs: 0,
     ...overrides,
   };
 }
 
 describe("classificaSollecitiPreventivi", () => {
+  it("considera la soglia in giorni civili e non in intervalli esatti di 24 ore", () => {
+    const adesso = new Date(2026, 8, 16, 9).getTime();
+    const setteGiorniFaDiSera = new Date(2026, 8, 9, 18).getTime();
+    const risultato = classificaSollecitiPreventivi(
+      [
+        preventivo({
+          indicazioneInvio: "mai_inviato",
+          ultimoInvioMs: 0,
+          creatoMs: setteGiorniFaDiSera,
+        }),
+      ],
+      7,
+      adesso,
+    );
+    expect(risultato.daInviare).toHaveLength(1);
+  });
+
+  it("con soglia zero rende immediatamente candidabili i preventivi", () => {
+    const risultato = classificaSollecitiPreventivi(
+      [
+        preventivo({
+          indicazioneInvio: "mai_inviato",
+          ultimoInvioMs: 0,
+          creatoMs: OGGI,
+        }),
+      ],
+      0,
+      OGGI,
+    );
+    expect(risultato.daInviare).toHaveLength(1);
+  });
+
   it("include il preventivo inviato che ha raggiunto la soglia", () => {
     const risultato = classificaSollecitiPreventivi([preventivo()], 7, OGGI);
     expect(risultato.daSollecitare).toHaveLength(1);
@@ -43,26 +80,54 @@ describe("classificaSollecitiPreventivi", () => {
     expect(candidati.totale).toBe(0);
   });
 
-  it("include subito mai inviati e modificati anche per ordini avanzati", () => {
+  it("esclude ordini che hanno una segnalazione attiva", () => {
+    const candidati = classificaSollecitiPreventivi(
+      [
+        preventivo({ id: "urgente", ordineMarcatore: "urgente" }),
+        preventivo({ id: "anomalia", ordineMarcatore: "anomalia" }),
+        preventivo({ id: "sollecito", ordineMarcatore: "sollecito" }),
+      ],
+      7,
+      OGGI,
+    );
+    expect(candidati.daSollecitare).toEqual([]);
+    expect(candidati.daInviare).toEqual([]);
+    expect(candidati.totale).toBe(0);
+  });
+
+  it("include mai inviati e modificati solo se hanno raggiunto la soglia e per ordini Nuovi", () => {
     const risultato = classificaSollecitiPreventivi(
       [
         preventivo({
-          id: "nuovo",
+          id: "nuovo-maturo",
           indicazioneInvio: "mai_inviato",
+          creatoMs: OGGI - 8 * GIORNO_MS,
           ultimoInvioMs: 0,
         }),
         preventivo({
-          id: "modificato",
+          id: "nuovo-recente",
+          indicazioneInvio: "mai_inviato",
+          creatoMs: OGGI - 2 * GIORNO_MS,
+          ultimoInvioMs: 0,
+        }),
+        preventivo({
+          id: "modificato-maturo",
+          indicazioneInvio: "modificato_dopo_invio",
+          ultimaModificaMs: OGGI - 9 * GIORNO_MS,
+        }),
+        preventivo({
+          id: "modificato-non-nuovo",
           ordineStato: "In produzione",
           indicazioneInvio: "modificato_dopo_invio",
+          ultimaModificaMs: OGGI - 10 * GIORNO_MS,
         }),
       ],
       7,
       OGGI,
     );
     expect(risultato.daInviare.map((item) => item.id)).toEqual([
-      "nuovo",
-      "modificato",
+      "nuovo-maturo",
+      "modificato-maturo",
     ]);
     expect(risultato.daSollecitare).toEqual([]);
     expect(risultato.totale).toBe(2);

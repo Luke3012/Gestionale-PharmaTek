@@ -29,7 +29,7 @@ import { useAnimazioniRidotte } from "../../ui/motion";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { TIPI_PAGAMENTO } from "./statiPagamento";
 import { impattoRimborsoDopoIncasso, mappaRimborsiExtra } from "./statiRimborso";
-import { èContoTransito, opzioniContiConTransito, risolviContoPreferito } from "./contoPreferito";
+import { èContoTransito, opzioniConti, opzioniContiConTransito, risolviContoPreferito } from "./contoPreferito";
 import { offsetScadenzaDaSpedizione } from "../giornaliero/ordineScadenzario";
 import { riallineaPagamentiAperti } from "./riallineaSaldo";
 import {
@@ -243,11 +243,7 @@ export function PagamentoForm({
   const [data, setData] = useState(p?.data || oggi());
   const [verificato, setVerificato] = useState(p?.verificato ?? false);
   const [scadDaSpedizione, setScadDaSpedizione] = useState(
-    p
-      ? p.scadDaSpedizione
-      : target.nuovo?.importo === 0
-        ? false
-        : true
+    p ? Boolean(p.scadDaSpedizione) : true
   );
   const [note, setNote] = useState(p?.note ?? "");
   const [salvando, setSalvando] = useState(false);
@@ -323,7 +319,7 @@ export function PagamentoForm({
       distintaId: p?.distintaId ?? "",
       contoAccreditoNome: p?.contoAccreditoNome ?? "",
       note,
-      scadDaSpedizione: (tipo === "saldo" || tipo === "rata") ? scadDaSpedizione : false,
+      scadDaSpedizione: !saldato && (tipo === "saldo" || tipo === "rata") ? scadDaSpedizione : false,
       scadRelGiorni: p?.scadRelGiorni ?? 0,
     };
   }, [contoId, contoSelezionato, contoTipoSelezionato, data, importo, note, ordineId, p, saldato, scadDaSpedizione, scadenza, scadenzaDaSpedizione, tipo, verificato]);
@@ -360,6 +356,12 @@ export function PagamentoForm({
   }, 120);
 
   const datiConti = useMemo(() => opzioniContiConTransito(conti), [conti]);
+  const opzioniContiDisponibili = useMemo(() => {
+    if (tipo === "acconto") {
+      return opzioniConti(conti.filter((c) => !èContoTransito(c.data.tipo)));
+    }
+    return datiConti;
+  }, [tipo, conti, datiConti]);
 
   async function preparaCopertura(cents: number): Promise<{
     ok: boolean;
@@ -472,6 +474,11 @@ export function PagamentoForm({
 
   async function scadenzaEffettivaDaSalvare(): Promise<string> {
     if (saldato || !scadenzaDaSpedizione) return saldato ? "" : scadenza;
+    if (p?.spedizioneId) {
+      const sped = await api.recordGet("spedizione", p.spedizioneId);
+      const spedData = (sped?.data?.data as string) || "";
+      if (spedData) return aggiungiGiorni(spedData, offsetSpedizione);
+    }
     const speditaIl = await dataSpedizioneOrdine(ordineId);
     return speditaIl ? aggiungiGiorni(speditaIl, offsetSpedizione) : "";
   }
@@ -621,7 +628,10 @@ export function PagamentoForm({
       }
       if (copertura.adeguamentoRate) {
         for (const aggiornamento of copertura.adeguamentoRate.aggiornamenti) {
-          await api.recordUpdate("pagamento", aggiornamento.id, { importo: aggiornamento.importo });
+          await api.recordUpdate("pagamento", aggiornamento.id, {
+            importo: aggiornamento.importo,
+            scad_da_spedizione: true,
+          });
         }
         for (const id of copertura.adeguamentoRate.eliminazioni) {
           await api.pagamentoElimina(id);
@@ -635,15 +645,20 @@ export function PagamentoForm({
         riallineaApertiDopoSalvataggio = copertura.totaleProdottiAdeguato.ordineId;
       }
       if (copertura.residuoDaCreare && copertura.residuoDaCreare.importo > 0) {
-        await api.pagamentoRegistra({
+        const pag = await api.pagamentoRegistra({
           ordineId,
           tipo: "rata",
           importo: copertura.residuoDaCreare.importo,
           saldato: false,
-          scadenza: copertura.residuoDaCreare.scadenza,
+          scadenza: "",
           contoId,
           note: "Rimanenza concordata",
         });
+        await api.recordUpdate("pagamento", pag.id, {
+          scad_da_spedizione: true,
+          scad_rel_giorni: 0,
+        });
+        riallineaApertiDopoSalvataggio = ordineId;
       }
       if (copertura.creaRimborsoExtra) {
         const [precompilato, rimborsi] = await Promise.all([
@@ -736,6 +751,9 @@ export function PagamentoForm({
       await Promise.all([
         (async () => {
           await api.pagamentoElimina(p.id);
+          if (p.tipo === "acconto") {
+            await api.recordUpdate("ordine", p.ordineId, { acconto: 0 });
+          }
           if (rimborso) await api.recordDelete("rimborso", rimborso.id);
         })(),
         animazioniRidotte
@@ -770,7 +788,17 @@ export function PagamentoForm({
               label="Tipo"
               data={TIPI_PAGAMENTO as unknown as { value: string; label: string }[]}
               value={tipo}
-              onChange={(v) => setTipo(v ?? "saldo")}
+              onChange={(v) => {
+                const nuovoTipo = v ?? "saldo";
+                if (nuovoTipo === "acconto") {
+                  if (èContoTransito(contoTipoSelezionato)) {
+                    const primoNonTransito = conti.find((c) => !èContoTransito(c.data.tipo))?.id ?? "";
+                    setContoId(primoNonTransito);
+                  }
+                  setScadDaSpedizione(false);
+                }
+                setTipo(nuovoTipo);
+              }}
               allowDeselect={false}
               comboboxProps={{ withinPortal: true, zIndex: 1400 }}
             />
@@ -804,9 +832,11 @@ export function PagamentoForm({
               <Select
                 label={saldato ? "Conto" : "Conto previsto"}
                 placeholder="Scegli…"
-                data={datiConti}
+                data={opzioniContiDisponibili}
                 value={contoId || null}
-                onChange={(v) => setContoId(v ?? "")}
+                onChange={(v) => {
+                  setContoId(v ?? "");
+                }}
                 allowDeselect={false}
                 comboboxProps={{ withinPortal: true, zIndex: 1400 }}
               />

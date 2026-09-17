@@ -159,7 +159,13 @@ function Corpo({
       for (const { ordine: o, righe: righeScelte } of scelti) {
         const righeCheck = Object.fromEntries(o.righe.map((r) => [r.rigaId, sel.has(r.rigaId)]));
         const mezzo = o.codMezzo || "";
-        const contrassegno = mezzo ? calcolaImportoSpedizione([o], righeCheck) : 0;
+        const contrassegno = mezzo
+          ? (o.codImporto && o.codImporto > 0
+              ? o.codImporto
+              : o.residuo && o.residuo > 0
+                ? o.residuo
+                : calcolaImportoSpedizione([o], righeCheck))
+          : 0;
         const haDatiVaccino = ordineHaDatiVaccino(o);
         const colli = haDatiVaccino
           ? colliDistintaAuto(corriereSelezionato?.profilo || "gls", righeScelte.length)
@@ -447,8 +453,8 @@ function Corpo({
                   label="Colli"
                   w={80}
                   min={1}
-                  value={corriereSelezionato?.profilo === "carrai" ? 1 : m.colli}
-                  disabled={corriereSelezionato?.profilo === "carrai"}
+                  value={corriereSelezionato?.profilo === "corriere_a" ? 1 : m.colli}
+                  disabled={corriereSelezionato?.profilo === "corriere_a"}
                   onChange={(v) => setF("colli", v === "" ? "" : Number(v))}
                 />
                 <Switch

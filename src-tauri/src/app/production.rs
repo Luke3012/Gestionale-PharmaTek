@@ -714,10 +714,11 @@ impl AppState {
 
             // Ordini Immunoterapia del lotto (esclusa Diagnostica/Keriba), ordinati per
             // data invio poi creazione (sequenza stabile della numerazione).
-            let (agenti, medici, totali, transito) = engine.with_projection(|p| {
+            let (agenti, medici, clienti, totali, transito) = engine.with_projection(|p| {
                 (
                     nome_map(p, "agente"),
                     nome_map(p, "medico"),
+                    nome_map(p, "cliente"),
                     totali_ordini(p),
                     conti_transito(p),
                 )
@@ -752,6 +753,10 @@ impl AppState {
                     .unwrap_or_default();
                 let medico = medici
                     .get(&str_field(&o.data, "medico_id"))
+                    .cloned()
+                    .unwrap_or_default();
+                let cliente = clienti
+                    .get(&str_field(&o.data, "cliente_id"))
                     .cloned()
                     .unwrap_or_default();
                 let agg = pagamenti.get(&o.id);
@@ -813,6 +818,12 @@ impl AppState {
                     } else {
                         data_prevista.to_string()
                     };
+                    let paz = str_field(&riga.data, "paziente");
+                    let paziente = if paz.trim().is_empty() {
+                        cliente.clone()
+                    } else {
+                        paz.trim().to_string()
+                    };
                     out.push(crate::export::RigaLaboratorio {
                         // Acconto/valore solo sulla PRIMA riga dell'ordine (no doppio conteggio).
                         acconto: (idx == 0 && acconto_cent != 0)
@@ -821,7 +832,7 @@ impl AppState {
                         data_invio: data_invio.clone(),
                         agente: agente.clone(),
                         medico: medico.clone(),
-                        paziente: str_field(&riga.data, "paziente"),
+                        paziente,
                         valore: (idx == 0 && valore_cent != 0).then(|| valore_cent as f64 / 100.0),
                         data_prevista: data_prev,
                         formulazione: str_field(&riga.data, "formulazione"),

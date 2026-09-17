@@ -32,8 +32,11 @@ export function titoloContestualePaywall(title: string, message: string): string
   if (contesto.includes("scheda cliente")) {
     return "Schede cliente complete, pronte da stampare";
   }
+  if (contesto.includes("sollecit") && contesto.includes("preventiv")) {
+    return "Non perdere i preventivi dimenticati";
+  }
   if (contesto.includes("preventiv")) {
-    return "Preventivi pronti da creare e condividere";
+    return "Preventivi pronti da condividere";
   }
   if (contesto.includes("bollettazione")) {
     return "Dal file alle spedizioni, in pochi passaggi";
@@ -86,6 +89,8 @@ export interface PremiumActionProps {
   showLock?: boolean;
   /** Disabilita temporaneamente l'azione (per esempio durante un salvataggio). */
   disabled?: boolean;
+  /** Stato di caricamento per i trigger basati sul Button Mantine. */
+  loading?: boolean;
 }
 
 /** Modale paywall controllabile per superfici non-button (per esempio le voci
@@ -186,6 +191,7 @@ export function PremiumAction({
   buttonSize,
   showLock = true,
   disabled = false,
+  loading = false,
 }: PremiumActionProps) {
   const access = usePremiumAccess();
   const reduced = useAnimazioniRidotte();
@@ -290,6 +296,7 @@ export function PremiumAction({
       variant={buttonVariant}
       color={buttonColor}
       size={buttonSize}
+      loading={loading}
       leftSection={leftSection}
       rightSection={indicatoreBlocco}
       onClick={activate}

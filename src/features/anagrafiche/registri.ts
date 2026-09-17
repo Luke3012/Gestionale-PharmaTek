@@ -99,7 +99,7 @@ function provvigioneFmt(rec: RecordDto): string {
 /** Etichetta del profilo distinta di un corriere. */
 function profiloFmt(rec: RecordDto): string {
   const p = String(rec.data.profilo ?? "");
-  if (p === "carrai") return "CORRIERE_A";
+  if (p === "corriere_a") return "CORRIERE_A";
   if (p === "gls") return "CORRIERE_B";
   if (p === "mbe") return "CORRIERE_C";
   return p;
@@ -288,7 +288,7 @@ export const REGISTRI: Registro[] = [
         tipo: "select",
         opzioni: [
           { value: "gls", label: "CORRIERE_B (E-mail + Servizi 31,25)" },
-          { value: "carrai", label: "CORRIERE_A (con preavviso)" },
+          { value: "corriere_a", label: "CORRIERE_A (con preavviso)" },
           { value: "mbe", label: "CORRIERE_C (preavviso + contrassegno)" },
         ],
         half: true,

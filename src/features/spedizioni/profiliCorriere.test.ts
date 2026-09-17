@@ -7,14 +7,14 @@ import {
   preparaRigheEsportazione,
 } from "./profiliCorriere";
 
-function spedizioneCorriere A(): Spedizione {
+function spedizioneCorriereA(): Spedizione {
   return {
     id: "spedizione",
     lotto: "lotto",
     data: "2026-07-14",
-    corriereId: "carrai",
+    corriereId: "corriere_a",
     corriereNome: "CORRIERE_A",
-    corriereProfilo: "carrai",
+    corriereProfilo: "corriere_a",
     numero: "LOT-1 + LOT-2 + LOT-3",
     colli: 3,
     peso: 3,
@@ -69,12 +69,12 @@ describe("numeri lotto nelle distinte corriere", () => {
   });
 
   it("mantiene sempre colli e peso a 1 per Corriere A", () => {
-    expect(normalizzaColliPesoCorriere("carrai", 8, 12)).toEqual({ colli: 1, peso: 1 });
+    expect(normalizzaColliPesoCorriere("corriere_a", 8, 12)).toEqual({ colli: 1, peso: 1 });
     expect(normalizzaColliPesoCorriere("gls", 8, 12)).toEqual({ colli: 8, peso: 12 });
   });
 
   it("raggruppa in una riga Corriere A tutti i vaccini della stessa persona", () => {
-    const righe = preparaRigheEsportazione([spedizioneCorriere A()], "carrai");
+    const righe = preparaRigheEsportazione([spedizioneCorriereA()], "corriere_a");
 
     expect(righe).toHaveLength(2);
     expect(righe.map((riga) => riga.numero)).toEqual(["LOT-1 + LOT-2", "LOT-3"]);
@@ -82,14 +82,14 @@ describe("numeri lotto nelle distinte corriere", () => {
   });
 
   it("accorpa nella stessa riga Excel colli Corriere A distinti della stessa persona", () => {
-    const prima = spedizioneCorriere A();
+    const prima = spedizioneCorriereA();
     prima.id = "spedizione-1";
     prima.righe = [{ ...prima.righe[0], numero: "5078989" }];
-    const seconda = spedizioneCorriere A();
+    const seconda = spedizioneCorriereA();
     seconda.id = "spedizione-2";
     seconda.righe = [{ ...seconda.righe[1], numero: "5078990" }];
 
-    const righe = preparaRigheEsportazione([prima, seconda], "carrai");
+    const righe = preparaRigheEsportazione([prima, seconda], "corriere_a");
 
     expect(righe).toHaveLength(1);
     expect(righe[0].numero).toBe("5078989 + 5078990");
@@ -98,10 +98,10 @@ describe("numeri lotto nelle distinte corriere", () => {
   });
 
   it("mantiene la riga Corriere A della persona anche quando non ha numeri lotto", () => {
-    const spedizione = spedizioneCorriere A();
+    const spedizione = spedizioneCorriereA();
     spedizione.righe = spedizione.righe.slice(0, 2).map((riga) => ({ ...riga, numero: "" }));
 
-    const righe = preparaRigheEsportazione([spedizione], "carrai");
+    const righe = preparaRigheEsportazione([spedizione], "corriere_a");
 
     expect(righe).toHaveLength(1);
     expect(righe[0].numero).toBe("");
@@ -110,14 +110,14 @@ describe("numeri lotto nelle distinte corriere", () => {
   });
 
   it("usa il destinatario per accorpare righe Corriere A senza paziente", () => {
-    const prima = spedizioneCorriere A();
+    const prima = spedizioneCorriereA();
     prima.id = "spedizione-1";
     prima.righe = [{ ...prima.righe[0], paziente: "", numero: "5078989" }];
-    const seconda = spedizioneCorriere A();
+    const seconda = spedizioneCorriereA();
     seconda.id = "spedizione-2";
     seconda.righe = [{ ...seconda.righe[1], paziente: "", numero: "5078990" }];
 
-    const righe = preparaRigheEsportazione([prima, seconda], "carrai");
+    const righe = preparaRigheEsportazione([prima, seconda], "corriere_a");
 
     expect(righe).toHaveLength(1);
     expect(righe[0].numero).toBe("5078989 + 5078990");

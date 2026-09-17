@@ -56,6 +56,7 @@ fn influenza_ricerca(entity: &str) -> bool {
 pub fn emetti_entita_modificate(app: &tauri::AppHandle, entities: &[String]) {
     if let Some(notificatore) = app.try_state::<std::sync::Arc<crate::notifiche::Notificatore>>() {
         notificatore.invalida_suggerimenti(entities);
+        notificatore.segnala_modifica();
     }
     let mut eventi_visti = BTreeSet::new();
     let mut ricerca_sporca = false;

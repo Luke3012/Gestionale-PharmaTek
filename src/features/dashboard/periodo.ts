@@ -10,18 +10,22 @@ export interface Intervallo {
 
 /** Converte un periodo nella finestra `[dal, al]` (inclusiva) rispetto a oggi. */
 export function intervalloPeriodo(p: PeriodoDash, oggi = new Date(), annoG = 0): Intervallo {
-  const y = oggi.getFullYear();
+  const y = annoG !== 0 ? annoG : oggi.getFullYear();
+  const riferimento = new Date(y, oggi.getMonth(), oggi.getDate());
   switch (p) {
     case "giorno":
-      return { dal: isoLocale(oggi), al: isoLocale(oggi) };
+      return { dal: isoLocale(riferimento), al: isoLocale(riferimento) };
     case "settimana": {
       // Settimana lun–dom (getDay: 0=dom).
-      const g = oggi.getDay();
-      const lun = new Date(oggi);
-      lun.setDate(oggi.getDate() - ((g + 6) % 7));
+      const g = riferimento.getDay();
+      const lun = new Date(riferimento);
+      lun.setDate(riferimento.getDate() - ((g + 6) % 7));
       const dom = new Date(lun);
       dom.setDate(lun.getDate() + 6);
-      return { dal: isoLocale(lun), al: isoLocale(dom) };
+      return {
+        dal: annoG !== 0 && lun.getFullYear() < y ? `${y}-01-01` : isoLocale(lun),
+        al: annoG !== 0 && dom.getFullYear() > y ? `${y}-12-31` : isoLocale(dom),
+      };
     }
     case "mese":
       return {
@@ -33,7 +37,9 @@ export function intervalloPeriodo(p: PeriodoDash, oggi = new Date(), annoG = 0):
       return { dal: `${a}-01-01`, al: `${a}-12-31` };
     }
     case "tutto":
-      return { dal: null, al: null };
+      return annoG !== 0
+        ? { dal: `${y}-01-01`, al: `${y}-12-31` }
+        : { dal: null, al: null };
   }
 }
 
@@ -57,7 +63,7 @@ export function descrizionePeriodo(p: PeriodoDash, annoG = 0): string {
     case "anno":
       return `${annoG !== 0 ? annoG : new Date().getFullYear()}`;
     case "tutto":
-      return "sempre";
+      return annoG !== 0 ? `${annoG}` : "sempre";
   }
 }
 

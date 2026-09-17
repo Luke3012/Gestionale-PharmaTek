@@ -329,6 +329,7 @@ function DettaglioModal({
                   idAccessor="id"
                   storeColumnsKey="contabilita-distinta-dettaglio"
                   emptyState={caricamento ? <Box /> : <Text size="sm" c="dimmed" py="md" ta="center">Nessun pagamento nella distinta.</Text>}
+                  disattivaChunking
                 />
               </Box>
             </Stack>

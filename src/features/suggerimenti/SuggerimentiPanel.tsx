@@ -23,13 +23,13 @@ import {
   IconChevronDown,
   IconClockHour4,
   IconEyeOff,
+  IconFileInvoice,
   IconFlask2,
   IconReceiptRefund,
   IconSettings,
   IconSparkle,
   IconSparkles,
   IconTruckDelivery,
-  IconUsersGroup,
   IconX,
   type Icon,
 } from "@tabler/icons-react";
@@ -43,13 +43,11 @@ import {
 } from "../../lib/tauri";
 import type { DeepLink } from "../../shell/navigazione";
 import { usePrefs } from "../../lib/prefs";
+import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { dur, easeOut, useAnimazioniRidotte } from "../../ui/motion";
 import { toast } from "../../ui/toast/store";
-import { VirtualStack } from "../../ui/VirtualStack";
-import { calcolaLayoutVirtuale } from "../../ui/virtualizzazione";
 import {
   avviaControlloManualeSuggerimenti,
-  caricaSuggerimentoDuplicati,
   combinaSuggerimenti,
   invalidaControlloManualeSuggerimenti,
   ordinaSuggerimenti,
@@ -59,6 +57,7 @@ import {
 } from "./suggerimenti";
 import { deepLinkSuggerimento } from "./collegamento";
 import {
+  PREFERENZE_SUGGERIMENTI_DEFAULT,
   TIPI_SUGGERIMENTO,
   type PreferenzeSuggerimenti,
 } from "./preferenze";
@@ -69,9 +68,7 @@ const VUOTO: SuggerimentiBundle = {
   tipiInPausa: [],
 };
 const LIMITE_COMPATTO = 5;
-const ALTEZZA_SCHEDA = 58;
 const GAP_SCHEDE = 7;
-const ALTEZZA_EXTRA_MAX = 360;
 const DURATA_USCITA_MS = 170;
 
 const ASPETTO: Record<
@@ -87,17 +84,15 @@ const ASPETTO: Record<
     colore: "indigo",
     Icona: IconTruckDelivery,
   },
-  duplicati: {
-    label: "Anagrafiche",
+  preventivo: {
+    label: "Preventivi",
     colore: "cyan",
-    Icona: IconUsersGroup,
+    Icona: IconFileInvoice,
   },
 };
-const chiaveSuggerimento = (suggerimento: Suggerimento) => suggerimento.id;
 
 const SchedaSuggerimento = memo(function SchedaSuggerimento({
   suggerimento,
-  virtuale = false,
   temporaneo = false,
   ridotte,
   onApri,
@@ -105,7 +100,6 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
 }: {
   suggerimento: Suggerimento;
   indice?: number;
-  virtuale?: boolean;
   temporaneo?: boolean;
   ridotte: boolean;
   onApri: (suggerimento: Suggerimento) => void;
@@ -117,9 +111,9 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
   return (
     <motion.div
       className="pt-suggerimento-card-shell"
-      layout={!ridotte && !virtuale}
+      layout={!ridotte}
       initial={
-        ridotte || virtuale
+        ridotte
           ? false
           : {
               opacity: 0,
@@ -138,7 +132,7 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
         marginBottom: 0,
       }}
       exit={
-        ridotte || virtuale
+        ridotte
           ? { opacity: 0, transition: { duration: 0 } }
           : {
               opacity: 0,
@@ -160,22 +154,22 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
         ease: easeOut,
         opacity: {
           duration: ridotte ? 0 : 0.2,
-          delay: ridotte || virtuale ? 0 : 0.08,
+          delay: ridotte ? 0 : 0.08,
           ease: "easeOut",
         },
         y: {
           duration: ridotte ? 0 : 0.22,
-          delay: ridotte || virtuale ? 0 : 0.06,
+          delay: ridotte ? 0 : 0.06,
           ease: [0.22, 1, 0.36, 1],
         },
         height: {
           duration: ridotte ? 0 : 0.22,
-          delay: ridotte || virtuale ? 0 : 0.06,
+          delay: ridotte ? 0 : 0.06,
           ease: [0.22, 1, 0.36, 1],
         },
         marginBottom: {
           duration: ridotte ? 0 : 0.22,
-          delay: ridotte || virtuale ? 0 : 0.06,
+          delay: ridotte ? 0 : 0.06,
           ease: [0.22, 1, 0.36, 1],
         },
         layout: {
@@ -246,7 +240,11 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
           {suggerimento.azioneLabel}
         </Button>
         <Tooltip
-          label="Nascondi e sospendi questa categoria per 24 ore"
+          label={
+            suggerimento.tipo === "spedizione"
+              ? "Ignora avviso"
+              : "Nascondi e sospendi questa categoria per 24 ore"
+          }
           withArrow
           openDelay={350}
         >
@@ -274,14 +272,25 @@ export function SuggerimentiPanel({
 }) {
   const ridotte = useAnimazioniRidotte();
   const {
+    anno,
     preferenzeSuggerimenti,
     setPreferenzeSuggerimenti,
   } = usePrefs();
+  const preferenzePerCaricamento = useDebouncedValue(
+    preferenzeSuggerimenti,
+  );
+  const preferenzeConAnno = useMemo(
+    () => ({ ...preferenzePerCaricamento, anno }),
+    [anno, preferenzePerCaricamento],
+  );
+  // Il controllo manuale sopravvive alla navigazione, ma mai al cambio del
+  // contesto annuale: una fotografia di un altro anno non deve essere fusa.
+  const statoManuale = statoControlloManualeSuggerimenti(anno);
   const [bundle, setBundle] = useState<SuggerimentiBundle | null>(
-    () => statoControlloManualeSuggerimenti().bundle,
+    () => statoManuale.bundle,
   );
   const [temporanei, setTemporanei] = useState<ReadonlySet<string>>(
-    () => statoControlloManualeSuggerimenti().temporanei,
+    () => statoManuale.temporanei,
   );
   const [nascostiLocali, setNascostiLocali] = useState<Set<string>>(new Set());
   const usciteInCorsoRef = useRef<Set<string>>(new Set());
@@ -289,10 +298,10 @@ export function SuggerimentiPanel({
   const [ignorandoTutti, setIgnorandoTutti] = useState(false);
   const [uscitaTutti, setUscitaTutti] = useState(false);
   const [scansionando, setScansionando] = useState(
-    () => statoControlloManualeSuggerimenti().inCorso !== null,
+    () => statoManuale.inCorso !== null,
   );
   const [controlloManualeCompletato, setControlloManualeCompletato] =
-    useState(() => statoControlloManualeSuggerimenti().bundle !== null);
+    useState(() => statoManuale.bundle !== null);
   const [impostazioniAperte, setImpostazioniAperte] = useState(false);
   const [preferenzeBozza, setPreferenzeBozza] =
     useState<PreferenzeSuggerimenti>(preferenzeSuggerimenti);
@@ -310,7 +319,7 @@ export function SuggerimentiPanel({
       return;
     }
     let vivo = true;
-    const manuale = statoControlloManualeSuggerimenti();
+    const manuale = statoControlloManualeSuggerimenti(anno);
     if (manuale.inCorso) {
       setBundle(VUOTO);
       setNascostiLocali(new Set());
@@ -319,11 +328,11 @@ export function SuggerimentiPanel({
       void manuale.inCorso
         .then(async (value) => {
           if (!vivo || !value) return;
-          const correnti = await api.suggerimentiLista();
+          const correnti = await api.suggerimentiLista(preferenzeConAnno);
           if (!vivo) return;
           const riconciliato = riconciliaControlloManualeSuggerimenti(correnti);
           setBundle(riconciliato);
-          setTemporanei(statoControlloManualeSuggerimenti().temporanei);
+          setTemporanei(statoControlloManualeSuggerimenti(anno).temporanei);
           setEspanso(false);
           setControlloManualeCompletato(true);
         })
@@ -344,11 +353,11 @@ export function SuggerimentiPanel({
       setControlloManualeCompletato(true);
       setScansionando(false);
       void api
-        .suggerimentiLista()
+        .suggerimentiLista(preferenzeConAnno)
         .then((correnti) => {
           if (!vivo) return;
           setBundle(riconciliaControlloManualeSuggerimenti(correnti));
-          setTemporanei(statoControlloManualeSuggerimenti().temporanei);
+          setTemporanei(statoControlloManualeSuggerimenti(anno).temporanei);
         })
         .catch((error) => {
           if (vivo) console.error("Aggiornamento suggerimenti non riuscito", error);
@@ -359,7 +368,7 @@ export function SuggerimentiPanel({
     }
     setScansionando(false);
     api
-      .suggerimentiLista()
+      .suggerimentiLista(preferenzeConAnno)
       .then((value) => {
         if (vivo) {
           setBundle(value);
@@ -377,7 +386,7 @@ export function SuggerimentiPanel({
     return () => {
       vivo = false;
     };
-  }, [haCategorieAttive, nonce]);
+  }, [anno, haCategorieAttive, nonce, preferenzeConAnno]);
 
   const forzaControllo = useCallback(async () => {
     if (!haCategorieAttive || scansionando) return;
@@ -386,25 +395,21 @@ export function SuggerimentiPanel({
     const durataMinima = ridotte ? 0 : 1_350;
     try {
       const value = await avviaControlloManualeSuggerimenti(async () => {
-        const [rigenerato, duplicati] = await Promise.all([
-          api.suggerimentiRigeneraCompleta(),
-          caricaSuggerimentoDuplicati(),
+        const [rigenerato] = await Promise.all([
+          api.suggerimentiRigeneraCompleta(anno),
           new Promise<void>((resolve) =>
             window.setTimeout(resolve, durataMinima),
           ),
         ]);
         return {
-          suggerimenti: ordinaSuggerimenti([
-            ...rigenerato.suggerimenti,
-            ...(duplicati ? [duplicati] : []),
-          ]),
+          suggerimenti: ordinaSuggerimenti([...rigenerato.suggerimenti]),
           nascosti: [],
           tipiInPausa: [],
         };
       });
       if (!value) return;
       setBundle(value);
-      setTemporanei(statoControlloManualeSuggerimenti().temporanei);
+      setTemporanei(statoControlloManualeSuggerimenti(anno).temporanei);
       setNascostiLocali(new Set());
       setEspanso(false);
       setControlloManualeCompletato(true);
@@ -413,14 +418,15 @@ export function SuggerimentiPanel({
     } finally {
       setScansionando(false);
     }
-  }, [haCategorieAttive, ridotte, scansionando]);
+  }, [anno, haCategorieAttive, ridotte, scansionando]);
 
   const suggerimenti = useMemo(
     () =>
       combinaSuggerimenti(
         bundle ?? VUOTO,
-        null,
         preferenzeSuggerimenti.tipiAbilitati,
+        preferenzeSuggerimenti.giorniAvviso,
+        temporanei,
       ).filter(
         (suggerimento) => !nascostiLocali.has(suggerimento.id),
       ),
@@ -428,6 +434,8 @@ export function SuggerimentiPanel({
       bundle,
       nascostiLocali,
       preferenzeSuggerimenti.tipiAbilitati,
+      preferenzeSuggerimenti.giorniAvviso,
+      temporanei,
     ],
   );
   const principali = useMemo(
@@ -438,21 +446,6 @@ export function SuggerimentiPanel({
     () => suggerimenti.slice(LIMITE_COMPATTO),
     [suggerimenti],
   );
-  const altezzaNaturaleUlteriori = useMemo(
-    () =>
-      calcolaLayoutVirtuale(
-        ulteriori.map(chiaveSuggerimento),
-        {},
-        ALTEZZA_SCHEDA,
-        GAP_SCHEDE,
-      ).totale,
-    [ulteriori],
-  );
-  const virtualizzaUlteriori =
-    altezzaNaturaleUlteriori > ALTEZZA_EXTRA_MAX;
-  const altezzaEspansaUlteriori =
-    GAP_SCHEDE +
-    Math.min(altezzaNaturaleUlteriori, ALTEZZA_EXTRA_MAX);
 
   const nascondi = useCallback(
     async (suggerimento: Suggerimento) => {
@@ -494,18 +487,28 @@ export function SuggerimentiPanel({
   );
 
   const apri = useCallback(
-    (suggerimento: Suggerimento) =>
-      onApri(deepLinkSuggerimento(suggerimento.collegamento)),
-    [onApri],
+    (suggerimento: Suggerimento) => {
+      if (suggerimento.tipo === "spedizione") {
+        void api.suggerimentoNascondi(suggerimento.id).catch(() => {});
+      }
+      const link = deepLinkSuggerimento(suggerimento.collegamento);
+      if (
+        suggerimento.tipo === "preventivo" &&
+        temporanei.has(suggerimento.id)
+      ) {
+        link.azione = "solleciti_preventivi_tutti";
+      }
+      onApri(link);
+    },
+    [onApri, temporanei],
   );
 
-  const renderVirtuale = useCallback(
+  const renderScheda = useCallback(
     (suggerimento: Suggerimento, indice: number) => (
       <SchedaSuggerimento
         key={suggerimento.id}
         suggerimento={suggerimento}
         indice={indice}
-        virtuale
         temporaneo={temporanei.has(suggerimento.id)}
         ridotte={ridotte}
         onApri={apri}
@@ -749,12 +752,7 @@ export function SuggerimentiPanel({
                   id="pt-suggerimenti-extra"
                   key="suggerimenti-extra"
                   initial={ridotte ? false : { height: 0, opacity: 0 }}
-                  animate={{
-                    height: virtualizzaUlteriori
-                      ? altezzaEspansaUlteriori
-                      : "auto",
-                    opacity: 1,
-                  }}
+                  animate={{ height: "auto", opacity: 1 }}
                   exit={ridotte ? { height: 0 } : { height: 0, opacity: 0 }}
                   transition={
                     ridotte
@@ -767,24 +765,13 @@ export function SuggerimentiPanel({
                   style={{ overflow: "hidden" }}
                 >
                   <Box pt={GAP_SCHEDE}>
-                    {virtualizzaUlteriori ? (
-                      <VirtualStack
-                        items={ulteriori}
-                        getKey={chiaveSuggerimento}
-                        maxHeight={ALTEZZA_EXTRA_MAX}
-                        gap={GAP_SCHEDE}
-                        estimateHeight={ALTEZZA_SCHEDA}
-                        fixedItemHeight={ALTEZZA_SCHEDA}
-                        overscan={2}
-                        renderItem={renderVirtuale}
-                      />
-                    ) : (
-                      <Stack gap={GAP_SCHEDE}>
-                        <AnimatePresence initial={false}>
-                          {ulteriori.map(renderVirtuale)}
-                        </AnimatePresence>
-                      </Stack>
-                    )}
+                    <Stack gap={GAP_SCHEDE}>
+                      <AnimatePresence initial={false}>
+                        {ulteriori.map((suggerimento, i) =>
+                          renderScheda(suggerimento, LIMITE_COMPATTO + i),
+                        )}
+                      </AnimatePresence>
+                    </Stack>
                   </Box>
                 </motion.div>
               )}
@@ -851,9 +838,9 @@ export function SuggerimentiPanel({
           <div className="pt-modal-scroll">
             <Stack gap="md">
               <Text size="sm" c="dimmed">
-                Queste preferenze valgono soltanto su questo PC. Le azioni
-                compaiono subito nella Dashboard; il ritardo riguarda
-                campanella, suono e pop-up.
+                Queste preferenze valgono soltanto su questo PC. Le azioni e le
+                relative notifiche compaiono solo dopo che sono trascorsi i giorni
+                di attesa impostati, a meno che non si prema «Controlla ora».
               </Text>
               <Paper withBorder p="sm">
                 <Switch
@@ -949,9 +936,7 @@ export function SuggerimentiPanel({
                               ? " giorno"
                               : " giorni"
                           }
-                          disabled={
-                            !abilitato || !preferenzeBozza.notificheAttive
-                          }
+                          disabled={!abilitato}
                           w={132}
                         />
                       </Group>
@@ -961,19 +946,38 @@ export function SuggerimentiPanel({
               </Stack>
             </Stack>
           </div>
-          <Group justify="flex-end" className="pt-modal-footer">
+          <Group justify="space-between" className="pt-modal-footer">
             <Button
-              variant="default"
-              onClick={() => setImpostazioniAperte(false)}
+              variant="subtle"
+              color="gray"
+              onClick={() =>
+                setPreferenzeBozza({
+                  ...PREFERENZE_SUGGERIMENTI_DEFAULT,
+                  tipiAbilitati: [
+                    ...PREFERENZE_SUGGERIMENTI_DEFAULT.tipiAbilitati,
+                  ],
+                  giorniAvviso: {
+                    ...PREFERENZE_SUGGERIMENTI_DEFAULT.giorniAvviso,
+                  },
+                })
+              }
             >
-              Annulla
+              Ripristina predefiniti
             </Button>
-            <Button
-              color="accent"
-              onClick={salvaImpostazioni}
-            >
-              Salva
-            </Button>
+            <Group gap="sm">
+              <Button
+                variant="default"
+                onClick={() => setImpostazioniAperte(false)}
+              >
+                Annulla
+              </Button>
+              <Button
+                color="accent"
+                onClick={salvaImpostazioni}
+              >
+                Salva
+              </Button>
+            </Group>
           </Group>
         </div>
       </Modal>

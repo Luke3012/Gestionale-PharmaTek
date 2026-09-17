@@ -1,9 +1,18 @@
-import { Badge, Box, Group, Paper, Stack, Text, ThemeIcon } from "@mantine/core";
+import { Box, Group, Paper, Stack, Text, ThemeIcon } from "@mantine/core";
 import { IconArrowMerge, IconArrowRight, IconUserPlus } from "@tabler/icons-react";
 import { api, type Campi, type RecordDto } from "../../lib/tauri";
 import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
-import { normalizzaNome, pulisciCap, pulisciTelefono } from "./deduplicazione";
+import {
+  type DatiIndirizzoConfronto,
+  indirizzoStrutturatoCompatibile,
+  normalizzaNome,
+  pulisciCap,
+  pulisciTelefono,
+  scegliPiuCompleto,
+  sonoIndirizziCompatibili,
+  telefonoCompatibile,
+} from "./deduplicazione";
 
 const CAMPI_CLIENTE = [
   ["nome", "Nome / Ragione sociale"],
@@ -20,6 +29,14 @@ const CAMPI_CLIENTE = [
 
 function testo(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function pulisciEmail(s: unknown): string {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+function cfValido(s: string): boolean {
+  return s.trim().toUpperCase().length === 16;
 }
 
 function confronto(value: unknown): string {
@@ -70,10 +87,12 @@ function cfNormalizzato(value: unknown): string {
 function stessoRecapito(candidato: Campi, esistente: RecordDto): boolean {
   const telefono = pulisciTelefono(testo(candidato.telefono));
   const telefonoEsistente = pulisciTelefono(testo(esistente.data.telefono));
-  const email = testo(candidato.email).toLowerCase();
-  const emailEsistente = testo(esistente.data.email).toLowerCase();
+  const email = pulisciEmail(candidato.email);
+  const emailEsistente = pulisciEmail(esistente.data.email);
   return Boolean(
-    (telefono && telefonoEsistente && telefono === telefonoEsistente) ||
+    (telefono &&
+      telefonoEsistente &&
+      (telefono === telefonoEsistente || telefonoCompatibile(telefono, telefonoEsistente))) ||
       (email && emailEsistente && email === emailEsistente),
   );
 }
@@ -94,48 +113,142 @@ export interface ClienteSimile {
   affinita: number;
 }
 
-/** Matcher prudente per il salvataggio interattivo: richiede nome e almeno un'altra prova. */
+/** Matcher prudente allineato con deduplicazione.ts: richiede compatibilità su nome e recapito/indirizzo, escludendo CF diversi. */
 export function trovaClienteSimile(
   candidato: Campi,
   clienti: RecordDto[],
 ): ClienteSimile | null {
   const nome = normalizzaNome(testo(candidato.nome));
   const indirizzo = confronto(candidato.indirizzo);
+  const cfCandidato = cfNormalizzato(candidato.cf);
   if (!nome) return null;
+
+  const datiCandidato: DatiIndirizzoConfronto = {
+    indirizzo: testo(candidato.indirizzo),
+    cap: pulisciCap(testo(candidato.cap)),
+    citta: testo(candidato.citta),
+    prov: testo(candidato.prov),
+  };
+
+  const telCandidato = testo(candidato.telefono);
+  const emailCandidato = pulisciEmail(candidato.email);
 
   const risultati = clienti.flatMap((cliente) => {
     if (cliente.deleted) return [];
+
+    const cfEsistente = cfNormalizzato(cliente.data.cf);
+    // Esclusione rigorosa: se entrambi hanno un Codice Fiscale valido di 16 car. e sono diversi, non sono la stessa persona
+    if (cfValido(cfCandidato) && cfValido(cfEsistente) && cfCandidato !== cfEsistente) {
+      return [];
+    }
+
     const nomeEsistente = normalizzaNome(testo(cliente.data.nome));
     const indirizzoEsistente = confronto(cliente.data.indirizzo);
-    const nomeScore = Math.max(
-      similaritaTesto(nome, nomeEsistente),
-      similaritaToken(nome, nomeEsistente),
-    );
+
+    // Corrispondenza nome: identico normalizzato o tolleranza fuzzy su refusi
+    const nomeEsatto = nome === nomeEsistente;
+    const nomeScore = nomeEsatto
+      ? 1
+      : Math.max(
+          similaritaTesto(nome, nomeEsistente),
+          similaritaToken(nome, nomeEsistente),
+        );
+
     const indirizzoScore = Math.max(
       similaritaTesto(indirizzo, indirizzoEsistente),
       similaritaToken(indirizzo, indirizzoEsistente),
     );
-    const recapito = stessoRecapito(candidato, cliente);
+
+    // Controlli strutturati derivati da deduplicazione.ts
+    const datiEsistente: DatiIndirizzoConfronto = {
+      indirizzo: testo(cliente.data.indirizzo),
+      cap: pulisciCap(testo(cliente.data.cap)),
+      citta: testo(cliente.data.citta),
+      prov: testo(cliente.data.prov),
+    };
+    const indirizzoStrutturatoOk = sonoIndirizziCompatibili(datiCandidato, datiEsistente);
+
+    const telEsistente = testo(cliente.data.telefono);
+    const emailEsistente = pulisciEmail(cliente.data.email);
+    const telefonoOk = telefonoCompatibile(telCandidato, telEsistente);
+    const emailOk = Boolean(emailCandidato && emailEsistente && emailCandidato === emailEsistente);
+    const recapito = telefonoOk || emailOk || stessoRecapito(candidato, cliente);
     const luogo = stessoLuogo(candidato, cliente);
+
     const compatibile =
-      (nomeScore >= 0.98 && (recapito || (luogo && indirizzoScore >= 0.55))) ||
-      (nomeScore >= 0.82 && luogo && indirizzoScore >= 0.72) ||
-      (nomeScore >= 0.72 && recapito && (luogo || indirizzoScore >= 0.55));
+      (nomeScore >= 0.98 && (indirizzoStrutturatoOk || recapito || (luogo && indirizzoScore >= 0.55))) ||
+      (nomeScore >= 0.82 && (indirizzoStrutturatoOk || (luogo && indirizzoScore >= 0.72))) ||
+      (nomeScore >= 0.72 && recapito && (luogo || indirizzoStrutturatoOk || indirizzoScore >= 0.55));
+
     if (!compatibile) return [];
-    const affinita = nomeScore * 0.55 + indirizzoScore * 0.25 + Number(luogo) * 0.1 + Number(recapito) * 0.1;
+
+    const affinita =
+      nomeScore * 0.5 +
+      (indirizzoStrutturatoOk ? 0.3 : indirizzoScore * 0.25) +
+      Number(luogo) * 0.1 +
+      Number(recapito) * 0.1;
+
     return [{ cliente, affinita }];
   });
+
   return risultati.sort((a, b) => b.affinita - a.affinita)[0] ?? null;
 }
 
+/** Prepara la patch di unione completando i campi vuoti e preservando il dato più completo per indirizzo e telefono. */
 export function campiUnificazioneCliente(esistente: RecordDto, candidato: Campi): Campi {
   const patch: Campi = {};
-  for (const [campo] of CAMPI_CLIENTE) {
-    let prossimo = testo(candidato[campo]);
-    if (!prossimo) continue;
-    if (campo === "cf") prossimo = cfNormalizzato(prossimo);
-    if (prossimo !== testo(esistente.data[campo])) patch[campo] = prossimo;
+  const base = { ...esistente.data };
+
+  function current(campo: string): string {
+    return String(patch[campo] ?? base[campo] ?? "").trim();
   }
+
+  function setIfChanged(campo: string, value: string) {
+    const pulito = value.trim();
+    if (pulito && pulito !== current(campo)) patch[campo] = pulito;
+  }
+
+  // 1. Completa tutti i campi attualmente vuoti dell'anagrafica esistente
+  for (const [campo] of CAMPI_CLIENTE) {
+    const valoreCandidato = testo(candidato[campo]);
+    if (!valoreCandidato) continue;
+    if (!current(campo)) {
+      setIfChanged(campo, campo === "cf" ? cfNormalizzato(valoreCandidato) : valoreCandidato);
+    }
+  }
+
+  // 2. CF: se l'anagrafica esistente non ha un CF valido e il candidato ne ha uno valido di 16 car., aggiorna
+  const cfCand = cfNormalizzato(candidato.cf);
+  if (cfValido(cfCand) && !cfValido(current("cf"))) {
+    setIfChanged("cf", cfCand);
+  }
+
+  // 3. Indirizzo: se compatibili e strutturati, scegli la formulazione più completa
+  const indAttuale = current("indirizzo");
+  const indCand = testo(candidato.indirizzo);
+  if (indAttuale && indCand && indirizzoStrutturatoCompatibile(indAttuale, indCand)) {
+    setIfChanged("indirizzo", scegliPiuCompleto(indAttuale, indCand));
+  }
+
+  // 4. Telefono: se compatibile e il candidato è più completo/lungo, aggiorna
+  const telAttuale = current("telefono");
+  const telCand = testo(candidato.telefono);
+  if (
+    telAttuale &&
+    telCand &&
+    pulisciTelefono(telCand).length > pulisciTelefono(telAttuale).length &&
+    telefonoCompatibile(telAttuale, telCand)
+  ) {
+    setIfChanged("telefono", telCand);
+  }
+
+  // 5. Note spedizione: se le note candidate includono e ampliano quelle attuali, aggiorna
+  const noteAttuali = current("note_spedizione");
+  const noteCand = testo(candidato.note_spedizione);
+  if (noteAttuali && noteCand && noteCand.length > noteAttuali.length && noteCand.includes(noteAttuali)) {
+    setIfChanged("note_spedizione", noteCand);
+  }
+
   return patch;
 }
 
@@ -152,68 +265,94 @@ function AnteprimaUnificazione({
   return (
     <Stack gap="md">
       <Group grow align="stretch">
-        <Paper withBorder radius="md" p="sm">
-          <Group gap="xs" mb={5}>
-            <ThemeIcon variant="light" color="blue" radius="xl" size={28}>
-              <IconArrowMerge size={15} />
+        <Paper withBorder radius="md" p="sm" style={{ flex: 1 }}>
+          <Group gap="xs" mb={6}>
+            <ThemeIcon variant="light" color="blue" radius="xl" size={30}>
+              <IconArrowMerge size={16} />
             </ThemeIcon>
-            <Box>
-              <Text size="xs" c="dimmed">Cliente già presente</Text>
-              <Text size="sm" fw={700}>{testo(esistente.data.nome) || "(senza nome)"}</Text>
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Text size="xs" c="dimmed" fw={500}>Cliente già presente</Text>
+              <Text size="sm" fw={700} truncate>{testo(esistente.data.nome) || "(senza nome)"}</Text>
             </Box>
           </Group>
-          <Text size="xs" c="dimmed">
-            {[testo(esistente.data.indirizzo), testo(esistente.data.citta), testo(esistente.data.cap)]
-              .filter(Boolean)
-              .join(" · ") || "Nessun indirizzo"}
-          </Text>
+          <Stack gap={2} mt={4}>
+            <Text size="xs" c="dimmed">
+              {[testo(esistente.data.indirizzo), testo(esistente.data.citta), testo(esistente.data.cap)]
+                .filter(Boolean)
+                .join(" · ") || "Nessun indirizzo"}
+            </Text>
+            {(testo(esistente.data.telefono) || testo(esistente.data.cf)) && (
+              <Text size="xs" c="dimmed">
+                {[testo(esistente.data.telefono), testo(esistente.data.cf)].filter(Boolean).join(" · ")}
+              </Text>
+            )}
+          </Stack>
         </Paper>
-        <Paper withBorder radius="md" p="sm">
-          <Group gap="xs" mb={5}>
-            <ThemeIcon variant="light" color="yellow" radius="xl" size={28}>
-              <IconUserPlus size={15} />
+
+        <Paper withBorder radius="md" p="sm" style={{ flex: 1 }}>
+          <Group gap="xs" mb={6}>
+            <ThemeIcon variant="light" color="yellow" radius="xl" size={30}>
+              <IconUserPlus size={16} />
             </ThemeIcon>
-            <Box>
-              <Text size="xs" c="dimmed">Dati appena inseriti</Text>
-              <Text size="sm" fw={700}>{testo(candidato.nome) || "(senza nome)"}</Text>
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Text size="xs" c="dimmed" fw={500}>Dati appena inseriti</Text>
+              <Text size="sm" fw={700} truncate>{testo(candidato.nome) || "(senza nome)"}</Text>
             </Box>
           </Group>
-          <Text size="xs" c="dimmed">
-            {[testo(candidato.indirizzo), testo(candidato.citta), testo(candidato.cap)]
-              .filter(Boolean)
-              .join(" · ") || "Nessun indirizzo"}
-          </Text>
+          <Stack gap={2} mt={4}>
+            <Text size="xs" c="dimmed">
+              {[testo(candidato.indirizzo), testo(candidato.citta), testo(candidato.cap)]
+                .filter(Boolean)
+                .join(" · ") || "Nessun indirizzo"}
+            </Text>
+            {(testo(candidato.telefono) || testo(candidato.cf)) && (
+              <Text size="xs" c="dimmed">
+                {[testo(candidato.telefono), testo(candidato.cf)].filter(Boolean).join(" · ")}
+              </Text>
+            )}
+          </Stack>
         </Paper>
       </Group>
 
       <Box>
-        <Group justify="space-between" mb="xs">
-          <Text size="sm" fw={700}>Dati che cambieranno</Text>
-          <Badge variant="light" color={cambiamenti.length ? "yellow" : "gray"}>
-            {cambiamenti.length}
-          </Badge>
-        </Group>
+        <Text size="sm" fw={700} mb="xs">
+          Dati che verranno aggiornati
+        </Text>
         {cambiamenti.length ? (
           <Stack gap={6}>
             {cambiamenti.map(([campo, label]) => (
-              <Paper key={campo} withBorder radius="sm" px="sm" py={7}>
-                <Text size="xs" fw={600} mb={3}>{label}</Text>
-                <Group gap="xs" wrap="nowrap">
-                  <Text size="xs" c="dimmed" style={{ flex: 1, wordBreak: "break-word" }}>
-                    {testo(esistente.data[campo]) || "—"}
-                  </Text>
-                  <IconArrowRight size={14} color="var(--mantine-color-yellow-7)" />
-                  <Text size="xs" fw={600} style={{ flex: 1, wordBreak: "break-word" }}>
-                    {testo(patch[campo])}
-                  </Text>
-                </Group>
+              <Paper
+                key={campo}
+                withBorder
+                radius="sm"
+                px="sm"
+                py={8}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "130px minmax(0, 1fr) auto minmax(0, 1fr)",
+                  alignItems: "center",
+                  gap: 12,
+                }}
+              >
+                <Text size="xs" fw={600} c="dimmed">
+                  {label}
+                </Text>
+                <Text size="xs" c="dimmed" style={{ wordBreak: "break-word" }}>
+                  {testo(esistente.data[campo]) || "— (vuoto)"}
+                </Text>
+                <IconArrowRight size={14} color="var(--mantine-color-yellow-7)" style={{ flexShrink: 0 }} />
+                <Text size="xs" fw={700} style={{ wordBreak: "break-word" }}>
+                  {testo(patch[campo])}
+                </Text>
               </Paper>
             ))}
           </Stack>
         ) : (
-          <Text size="sm" c="dimmed">
-            I dati coincidono: puoi usare il cliente esistente senza modificarlo.
-          </Text>
+          <Paper withBorder radius="sm" p="sm" bg="var(--mantine-color-default-hover)">
+            <Text size="xs" c="dimmed">
+              I dati coincidono: puoi confermare l'unione per utilizzare l'anagrafica esistente senza modifiche.
+            </Text>
+          </Paper>
         )}
       </Box>
     </Stack>
@@ -225,7 +364,7 @@ export interface SalvataggioClienteRisultato {
   modalita: "creato" | "unificato";
 }
 
-/** Flusso unico usato da Anagrafiche, Ordini e quindi dalla creazione Preventivi. */
+/** Flusso unico usato da Anagrafiche, Ordini e creazione Preventivi. */
 export async function salvaNuovoClienteConControllo(
   fields: Campi,
 ): Promise<SalvataggioClienteRisultato | null> {
@@ -250,6 +389,9 @@ export async function salvaNuovoClienteConControllo(
   }
 
   const patch = campiUnificazioneCliente(simile.cliente, fields);
+  const haModifiche = Object.keys(patch).length > 0;
+  const labelUnifica = haModifiche ? "Usa e aggiorna cliente" : "Usa cliente esistente";
+
   const scelta = await dialog.open<"annulla" | "nuovo" | "unisci">({
     tipo: "question",
     titolo: "Potrebbe essere lo stesso cliente",
@@ -263,8 +405,8 @@ export async function salvaNuovoClienteConControllo(
     valoreAnnulla: "annulla",
     bottoni: [
       { label: "Annulla", variante: "secondario", value: "annulla" },
-      { label: "Salva come nuovo", variante: "ignora", value: "nuovo" },
-      { label: "Unifica i dati", variante: "primario", value: "unisci", autofocus: true },
+      { label: "Salva come nuovo", variante: "informativo", value: "nuovo" },
+      { label: labelUnifica, variante: "primario", value: "unisci", autofocus: true },
     ],
   });
   if (scelta === "annulla") return null;

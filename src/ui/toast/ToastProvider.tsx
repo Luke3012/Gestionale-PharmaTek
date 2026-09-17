@@ -207,7 +207,7 @@ export function ToastProvider({
         position: "fixed",
         top: 16,
         right: 16,
-        // Sopra OGNI modale/dialog (Modal ~1300, DialogProvider 4000): i toast non
+        // Sopra OGNI modale/dialog (Modal ~1300, DialogProvider 6000): i toast non
         // devono mai finire oscurati quando è aperto un modale.
         zIndex: 9000,
         pointerEvents: "none",

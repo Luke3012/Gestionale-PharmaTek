@@ -1,6 +1,6 @@
 import { formattaDataIsoItaliana, oggiIso as oggi } from "../../lib/date";
 export { aggiungiGiorniDaOggiIso as aggiungiGiorniScadenzario } from "../../lib/date";
-import type { Pagamento } from "../../lib/tauri";
+import type { Pagamento, RecordDto } from "../../lib/tauri";
 import { èContoTransito } from "../contabilita/contoPreferito";
 
 export function scaduta(scadenza: string): boolean {
@@ -100,8 +100,59 @@ export function confrontaPagamentiAperti(a: Pagamento, b: Pagamento): number {
   const prioritaA = a.tipo === "acconto" ? 0 : 1;
   const prioritaB = b.tipo === "acconto" ? 0 : 1;
   if (prioritaA !== prioritaB) return prioritaA - prioritaB;
+  if (a.scadDaSpedizione && b.scadDaSpedizione) {
+    const relA = a.scadRelGiorni ?? 0;
+    const relB = b.scadRelGiorni ?? 0;
+    if (relA !== relB) return relA - relB;
+  }
   return (a.scadenza || "9999-12-31").localeCompare(b.scadenza || "9999-12-31")
     || a.id.localeCompare(b.id);
+}
+
+/**
+ * Confronta due pagamenti da saldare (es. per "Registra pagamento" o "Salda prossima rata").
+ * Regole di precedenza:
+ * 1. L'acconto ha precedenza assoluta (è l'anticipo dell'ordine).
+ * 2. Tra saldo e rate aperti, hanno priorità i conti bancari/ordinari rispetto a contrassegno/transito
+ *    (il contrassegno viene normalmente riscosso alla consegna dal corriere, mentre l'incasso registrato
+ *    a mano è tipicamente un bonifico o saldo diretto).
+ * 3. Se rimangono solo voci a contrassegno, viene proposta la prima di esse.
+ * 4. A parità di canale di incasso, ordine cronologico di scadenza (e tie-break su id).
+ */
+export function confrontaPagamentiDaSaldare(
+  a: Pagamento,
+  b: Pagamento,
+  conti?: RecordDto[]
+): number {
+  const prioritaAccontoA = a.tipo === "acconto" ? 0 : 1;
+  const prioritaAccontoB = b.tipo === "acconto" ? 0 : 1;
+  if (prioritaAccontoA !== prioritaAccontoB) return prioritaAccontoA - prioritaAccontoB;
+
+  const tipoA = a.contoTipo || (conti && a.contoId ? (conti.find((c) => c.id === a.contoId)?.data.tipo as string) : "");
+  const tipoB = b.contoTipo || (conti && b.contoId ? (conti.find((c) => c.id === b.contoId)?.data.tipo as string) : "");
+
+  const transitoA = èContoTransito(tipoA) ? 1 : 0;
+  const transitoB = èContoTransito(tipoB) ? 1 : 0;
+  if (transitoA !== transitoB) return transitoA - transitoB;
+
+  return (a.scadenza || "9999-12-31").localeCompare(b.scadenza || "9999-12-31")
+    || (a.id || "").localeCompare(b.id || "");
+}
+
+/**
+ * Seleziona il prossimo pagamento aperto da saldare per un ordine.
+ * Esclude le preview puramente locali e privilegia i conti bancari/ordinari
+ * prima del contrassegno (se è presente solo contrassegno, propone quello).
+ */
+export function selezionaProssimoPagamentoDaSaldare(
+  pagamenti: Pagamento[],
+  conti?: RecordDto[]
+): Pagamento | null {
+  const aperti = pagamenti.filter(
+    (p) => !pagamentoPreviewLocale(p) && pagamentoApertoDaSaldare(p)
+  );
+  if (aperti.length === 0) return null;
+  return aperti.sort((a, b) => confrontaPagamentiDaSaldare(a, b, conti))[0] ?? null;
 }
 
 export function firmaScadenzario(pagamenti: Pagamento[]): string {
@@ -136,6 +187,11 @@ export function confrontaRigheScadenzario<T extends RigaScadenzarioOrdinabile>(a
   const prioritaA = a.tipo === "acconto" ? 0 : 1;
   const prioritaB = b.tipo === "acconto" ? 0 : 1;
   if (prioritaA !== prioritaB) return prioritaA - prioritaB;
+  if (a.scadDaSpedizione && b.scadDaSpedizione) {
+    const relA = a.scadRelGiorni ?? 0;
+    const relB = b.scadRelGiorni ?? 0;
+    if (relA !== relB) return relA - relB;
+  }
   const dataA = a.scadenza
     || (a.scadDaSpedizione
       ? `spedizione:${String(a.scadRelGiorni ?? 0).padStart(5, "0")}`
@@ -150,6 +206,25 @@ export function confrontaRigheScadenzario<T extends RigaScadenzarioOrdinabile>(a
 export function offsetScadenzaDaSpedizione(contoTipo: string, rel = 0): number {
   const base = èContoTransito(contoTipo) ? 30 : 7;
   return base + Math.max(0, Math.floor(rel));
+}
+
+/**
+ * Calcola l'offset per tutte le righe legate alla spedizione in base al conto
+ * effettivo della riga (base 30gg per contrassegno/assegno, base 7gg per conti ordinari)
+ * sommato alla cadenza relativa (es. 0, +30gg, +60gg...).
+ */
+export function calcolaOffsetSpedizRighe<T extends { key: string; contoTipo?: string; scadDaSpedizione?: boolean; scadRelGiorni?: number }>(
+  righe: T[]
+): Map<string, number> {
+  const righeSpediz = righe.filter((r) => r.scadDaSpedizione);
+  const out = new Map<string, number>();
+  if (righeSpediz.length === 0) return out;
+  righeSpediz.forEach((r, idx) => {
+    const rel = r.scadRelGiorni !== undefined && r.scadRelGiorni >= 0 ? r.scadRelGiorni : idx * 30;
+    const base = èContoTransito(r.contoTipo) ? 30 : 7;
+    out.set(r.key, base + rel);
+  });
+  return out;
 }
 
 export function formatDataScadenzario(iso: string): string {

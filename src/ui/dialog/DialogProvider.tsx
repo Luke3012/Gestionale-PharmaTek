@@ -1,5 +1,5 @@
 // Render del dialog corrente (Mantine Modal) con animazione e scorciatoie.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Group, Modal, SimpleGrid, Text, ThemeIcon, UnstyledButton } from "@mantine/core";
 import {
   IconAlertTriangle,
@@ -33,7 +33,11 @@ function buttonProps(variante: BottoneVariante = "secondario") {
     case "ghost":
       return { variant: "subtle" as const, color: "gray" };
     case "informativo":
-      return { variant: "light" as const, color: "blue" };
+      return {
+        variant: "light" as const,
+        color: "blue",
+        className: "pt-dialog-btn-informativo",
+      };
     case "ignora":
       return { variant: "outline" as const, color: "gray" };
     default:
@@ -43,6 +47,9 @@ function buttonProps(variante: BottoneVariante = "secondario") {
 
 export function DialogProvider() {
   const [dlg, setDlg] = useState<DialogAttivo | null>(null);
+  const dlgRef = useRef<DialogAttivo | null>(null);
+  dlgRef.current = dlg;
+
   // Contenuto mostrato: resta visibile durante l'animazione di chiusura (altrimenti
   // la modale "collassa" su un riquadro vuoto). Si azzera a transizione finita.
   const [mostrato, clearMostrato] = useModalSnapshot(dlg);
@@ -58,14 +65,16 @@ export function DialogProvider() {
   }, [dlg]);
 
   // Enter = bottone primario/autofocus; Esc = annulla anche se il focus non è dentro il modal.
+  // Capture montato a livello globale: gira PRIMA dei listener window/document delle modali sottostanti.
   useEffect(() => {
-    if (!dlg) return;
     const onKey = (e: KeyboardEvent) => {
+      const attivo = dlgRef.current;
+      if (!attivo) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        dialogStore.close(dlg.id, dlg.valoreAnnulla);
+        dialogStore.close(attivo.id, attivo.valoreAnnulla);
         return;
       }
       if (e.key === "Enter") {
@@ -73,18 +82,19 @@ export function DialogProvider() {
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "TEXTAREA" || t.isContentEditable)) return;
         const primario =
-          dlg.bottoni.find((b) => b.autofocus) ??
-          dlg.bottoni.find((b) => b.variante === "primario" || b.variante === "pericolo");
+          attivo.bottoni.find((b) => b.autofocus) ??
+          attivo.bottoni.find((b) => b.variante === "primario" || b.variante === "pericolo");
         if (primario) {
           e.preventDefault();
-          dialogStore.close(dlg.id, primario.value);
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          dialogStore.close(attivo.id, primario.value);
         }
       }
     };
-    // Capture: il dialog globale intercetta Esc prima delle eventuali modali sottostanti.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dlg]);
+  }, []);
 
   const meta = mostrato ? META[mostrato.tipo ?? "info"] : null;
   const azioniContenuto = mostrato?.bottoni.filter((b) => b.posizione === "contenuto") ?? [];
@@ -106,7 +116,7 @@ export function DialogProvider() {
             ? "lg"
             : "md"
       }
-      zIndex={4000}
+      zIndex={6000}
       data-mantine-stop-propagation="true"
       transitionProps={{ transition: "fade", duration: 150, onExited: clearMostrato }}
       title={

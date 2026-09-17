@@ -8,6 +8,7 @@
 
 use super::cleanup::oggi_iso;
 use super::*;
+use chrono::{Local, TimeZone};
 
 const ENTITA_STATO_SUGGERIMENTO: &str = "suggerimento_stato";
 const PREFISSO_SUGGERIMENTO: &str = "s14:";
@@ -18,7 +19,7 @@ pub(crate) const TIPI_SUGGERIMENTO: [&str; 6] = [
     "provvigione",
     "produzione",
     "spedizione",
-    "duplicati",
+    "preventivo",
 ];
 
 pub(crate) fn entita_influenza_suggerimenti(entity: &str) -> bool {
@@ -39,6 +40,8 @@ pub(crate) fn entita_influenza_suggerimenti(entity: &str) -> bool {
             | "corriere"
             | "suggerimento_stato"
             | "snapshot"
+            | "preventivo"
+            | "comunicazione"
     )
 }
 
@@ -75,6 +78,43 @@ fn testo_importo(centesimi: i64) -> String {
         .collect::<Vec<_>>()
         .join(".");
     format!("{segno}€ {gruppi},{decimali:02}")
+}
+
+fn u64_field(data: &serde_json::Map<String, serde_json::Value>, key: &str) -> u64 {
+    data.get(key)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Copy)]
+enum SelezionePreventivi {
+    Tutti,
+    Maturi(i64),
+}
+
+fn oggi_iso_locale() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn data_epoch_ms_locale(ms: u64) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(|valore| Local.timestamp_millis_opt(valore).single())
+        .map(|data| data.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+fn preventivo_maturo(data: &str, selezione: SelezionePreventivi, oggi: &str) -> bool {
+    match selezione {
+        SelezionePreventivi::Tutti => true,
+        SelezionePreventivi::Maturi(giorni) => {
+            giorni <= 0 || giorni_tra(data, oggi) >= giorni.clamp(0, 90)
+        }
+    }
+}
+
+fn nello_anno_di_lavoro(data: &str, anno: i32) -> bool {
+    anno == 0 || data.get(..4).and_then(|valore| valore.parse::<i32>().ok()) == Some(anno)
 }
 
 fn data_it(iso: &str) -> String {
@@ -134,7 +174,151 @@ pub(super) fn fingerprint_spedizione_comunicazione<'a>(
     format!("spedizione-v1:{}", firma_sorgenti(parti))
 }
 
-fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
+pub(crate) struct SpedizioneDaAvvisare {
+    pub id: String,
+    pub data: String,
+    pub cliente_id: String,
+    pub fingerprint: String,
+    pub aggiornato_ms: i64,
+}
+
+pub(crate) fn spedizioni_da_avvisare_per_lotto(
+    p: &crate::projection::Projection,
+    ordini: &HashMap<String, crate::projection::Record>,
+    oggi: &str,
+) -> HashMap<String, Vec<SpedizioneDaAvvisare>> {
+    let ord_clienti: HashMap<String, String> = ordini
+        .iter()
+        .map(|(id, ordine)| (id.clone(), str_field(&ordine.data, "cliente_id")))
+        .collect();
+    let clienti_contattabili: HashSet<String> = p
+        .list("cliente")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|cliente| {
+            !str_field(&cliente.data, "email").is_empty()
+                || !str_field(&cliente.data, "telefono").is_empty()
+        })
+        .map(|cliente| cliente.id)
+        .collect();
+    let mut righe_per_spedizione: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for riga in p.list("riga_ordine").unwrap_or_default() {
+        let spedizione_id = str_field(&riga.data, "spedizione_id");
+        if spedizione_id.is_empty() {
+            continue;
+        }
+        righe_per_spedizione
+            .entry(spedizione_id)
+            .or_default()
+            .push((
+                riga.id,
+                str_field(&riga.data, "numero"),
+                str_field(&riga.data, "ordine_id"),
+            ));
+    }
+
+    let mut per_lotto: HashMap<String, Vec<SpedizioneDaAvvisare>> = HashMap::new();
+    for spedizione in p.list("spedizione").unwrap_or_default() {
+        if !str_field(&spedizione.data, "dest_unito_in").is_empty() {
+            continue;
+        }
+        let data = str_field(&spedizione.data, "data");
+        let eta = giorni_tra(&data, oggi);
+        if data.is_empty() || !(0..=14).contains(&eta) {
+            continue;
+        }
+        let righe = righe_per_spedizione
+            .get(&spedizione.id)
+            .cloned()
+            .unwrap_or_default();
+        let cliente_id = righe
+            .iter()
+            .find_map(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
+            .cloned()
+            .unwrap_or_default();
+        if cliente_id.is_empty() || !clienti_contattabili.contains(&cliente_id) {
+            continue;
+        }
+        let fingerprint = fingerprint_spedizione_comunicazione(
+            &spedizione.id,
+            &data,
+            &str_field(&spedizione.data, "corriere_id"),
+            &cliente_id,
+            righe
+                .iter()
+                .map(|(riga_id, numero, _)| (riga_id.as_str(), numero.as_str())),
+        );
+        if str_field(&spedizione.data, "ultimo_avviso_fingerprint") == fingerprint {
+            continue;
+        }
+        let lotto = str_field(&spedizione.data, "lotto");
+        let aggiornato_ms = aggiornato_record_ms(&spedizione);
+        per_lotto
+            .entry(if lotto.is_empty() {
+                spedizione.id.clone()
+            } else {
+                lotto
+            })
+            .or_default()
+            .push(SpedizioneDaAvvisare {
+                id: spedizione.id,
+                data,
+                cliente_id,
+                fingerprint,
+                aggiornato_ms,
+            });
+    }
+    per_lotto
+}
+
+pub(crate) fn spedizioni_per_suggerimento_avviso(
+    p: &crate::projection::Projection,
+) -> HashMap<String, Vec<(String, String)>> {
+    let oggi = oggi_iso();
+    let tutti_ordini: HashMap<String, crate::projection::Record> = p
+        .list("ordine")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+    let mut out = HashMap::new();
+    let anni = std::iter::once(0).chain(
+        tutti_ordini
+            .values()
+            .filter_map(|ordine| str_field(&ordine.data, "data").get(..4)?.parse::<i32>().ok())
+            .collect::<HashSet<_>>(),
+    );
+    for anno in anni {
+        let ordini: HashMap<String, crate::projection::Record> = tutti_ordini
+            .iter()
+            .filter(|(_, ordine)| {
+                anno == 0 || nello_anno_di_lavoro(&str_field(&ordine.data, "data"), anno)
+            })
+            .map(|(id, ordine)| (id.clone(), ordine.clone()))
+            .collect();
+        for (_lotto, spedizioni) in spedizioni_da_avvisare_per_lotto(p, &ordini, &oggi) {
+            let fonti: Vec<String> = spedizioni
+                .iter()
+                .map(|s| format!("{}|{}", s.id, s.fingerprint))
+                .collect();
+            let id = id_suggerimento("spedizione", fonti);
+            out.insert(
+                id,
+                spedizioni
+                    .into_iter()
+                    .map(|s| (s.id, s.fingerprint))
+                    .collect(),
+            );
+        }
+    }
+    out
+}
+
+fn deriva_operativi(
+    p: &crate::projection::Projection,
+    selezione_preventivi: SelezionePreventivi,
+    anno: i32,
+) -> Vec<SuggerimentoDto> {
     let oggi = oggi_iso();
     let mut out = Vec::new();
 
@@ -143,7 +327,10 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
         .list("rimborso")
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| str_field(&r.data, "data_rimborso").is_empty())
+        .filter(|r| {
+            str_field(&r.data, "data_rimborso").is_empty()
+                && nello_anno_di_lavoro(&str_field(&r.data, "data_richiesta"), anno)
+        })
         .collect();
     if !rimborsi.is_empty() {
         let totale: i64 = rimborsi.iter().map(|r| i64_field(&r.data, "importo")).sum();
@@ -187,7 +374,10 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
 
     // Contrassegni/assegni non ancora coperti: riusa lo stesso selettore usato
     // dal modale Distinta, così criteri e importi non possono divergere.
-    let aperti = contrassegni_dto(p, |r| str_field(&r.data, "distinta_id").is_empty());
+    let aperti = contrassegni_dto(p, |r| {
+        str_field(&r.data, "distinta_id").is_empty()
+            && nello_anno_di_lavoro(&str_field(&r.data, "data"), anno)
+    });
     if !aperti.is_empty() {
         let totale: i64 = aperti.iter().map(|r| r.importo).sum();
         let aggiornato_ms = aperti
@@ -233,6 +423,7 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
         .list("ordine")
         .unwrap_or_default()
         .into_iter()
+        .filter(|r| nello_anno_di_lavoro(&str_field(&r.data, "data"), anno))
         .map(|r| (r.id.clone(), r))
         .collect();
     let linee_per_ordine = linee_ordini(p);
@@ -349,95 +540,7 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
     }
 
     {
-        let ord_clienti: HashMap<String, String> = ordini
-            .iter()
-            .map(|(id, ordine)| (id.clone(), str_field(&ordine.data, "cliente_id")))
-            .collect();
-        let clienti_contattabili: HashSet<String> = p
-            .list("cliente")
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|cliente| {
-                !str_field(&cliente.data, "email").is_empty()
-                    || !str_field(&cliente.data, "telefono").is_empty()
-            })
-            .map(|cliente| cliente.id)
-            .collect();
-        let mut righe_per_spedizione: HashMap<String, Vec<(String, String, String)>> =
-            HashMap::new();
-        for riga in p.list("riga_ordine").unwrap_or_default() {
-            let spedizione_id = str_field(&riga.data, "spedizione_id");
-            if spedizione_id.is_empty() {
-                continue;
-            }
-            righe_per_spedizione
-                .entry(spedizione_id)
-                .or_default()
-                .push((
-                    riga.id,
-                    str_field(&riga.data, "numero"),
-                    str_field(&riga.data, "ordine_id"),
-                ));
-        }
-
-        struct SpedizioneDaAvvisare {
-            id: String,
-            data: String,
-            cliente_id: String,
-            fingerprint: String,
-            aggiornato_ms: i64,
-        }
-        let mut per_lotto: HashMap<String, Vec<SpedizioneDaAvvisare>> = HashMap::new();
-        for spedizione in p.list("spedizione").unwrap_or_default() {
-            if !str_field(&spedizione.data, "dest_unito_in").is_empty() {
-                continue;
-            }
-            let data = str_field(&spedizione.data, "data");
-            let eta = giorni_tra(&data, &oggi);
-            if data.is_empty() || !(0..=14).contains(&eta) {
-                continue;
-            }
-            let righe = righe_per_spedizione
-                .get(&spedizione.id)
-                .cloned()
-                .unwrap_or_default();
-            let cliente_id = righe
-                .iter()
-                .find_map(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
-                .cloned()
-                .unwrap_or_default();
-            if cliente_id.is_empty() || !clienti_contattabili.contains(&cliente_id) {
-                continue;
-            }
-            let fingerprint = fingerprint_spedizione_comunicazione(
-                &spedizione.id,
-                &data,
-                &str_field(&spedizione.data, "corriere_id"),
-                &cliente_id,
-                righe
-                    .iter()
-                    .map(|(riga_id, numero, _)| (riga_id.as_str(), numero.as_str())),
-            );
-            if str_field(&spedizione.data, "ultimo_avviso_fingerprint") == fingerprint {
-                continue;
-            }
-            let lotto = str_field(&spedizione.data, "lotto");
-            let aggiornato_ms = aggiornato_record_ms(&spedizione);
-            per_lotto
-                .entry(if lotto.is_empty() {
-                    spedizione.id.clone()
-                } else {
-                    lotto
-                })
-                .or_default()
-                .push(SpedizioneDaAvvisare {
-                    id: spedizione.id,
-                    data,
-                    cliente_id,
-                    fingerprint,
-                    aggiornato_ms,
-                });
-        }
+        let per_lotto = spedizioni_da_avvisare_per_lotto(p, &ordini, &oggi);
 
         for (_lotto, spedizioni) in per_lotto {
             let clienti = spedizioni
@@ -486,6 +589,167 @@ fn deriva_operativi(p: &crate::projection::Projection) -> Vec<SuggerimentoDto> {
                 collegamento: target,
                 riferimento_data: data,
                 aggiornato_ms,
+            });
+        }
+    }
+
+    {
+        let oggi_preventivi = oggi_iso_locale();
+        let mut da_inviare_fonti = Vec::new();
+        let mut da_sollecitare_fonti = Vec::new();
+        let mut data_vecchia_preventivo = String::new();
+        let mut aggiornato_preventivo = 0i64;
+
+        for record in p.list("preventivo").unwrap_or_default() {
+            if record.deleted {
+                continue;
+            }
+            let ordine_id = str_field(&record.data, "ordine_id");
+            if ordine_id.is_empty() {
+                continue;
+            }
+            let Some(ordine) = ordini.get(&ordine_id) else {
+                continue;
+            };
+            if ordine.deleted {
+                continue;
+            }
+            // Filtro: solo ordini con stato "Nuovo" e nessun marcatore (né urgente, né anomalia, né sollecito)
+            if str_field(&ordine.data, "stato") != "Nuovo" {
+                continue;
+            }
+            if !str_field(&ordine.data, "marcatore").is_empty() {
+                continue;
+            }
+
+            let creato_ms = u64_field(&record.data, "creato_ms");
+            let ultima_modifica_ms = u64_field(&record.data, "ultima_modifica_ms");
+            let ultimo_invio_ms = u64_field(&record.data, "ultimo_invio_ms");
+            let ultimo_invio_fingerprint = str_field(&record.data, "ultimo_invio_fingerprint");
+            let fingerprint_corrente = str_field(&record.data, "fingerprint_corrente");
+            let ultimo_sollecito_ms = u64_field(&record.data, "ultimo_sollecito_ms");
+
+            let indicazione_invio = if ultimo_invio_ms == 0 {
+                "mai_inviato"
+            } else if ultimo_invio_fingerprint.is_empty()
+                || ultimo_invio_fingerprint != fingerprint_corrente
+                || ultimo_invio_ms < ultima_modifica_ms
+            {
+                "modificato_dopo_invio"
+            } else {
+                "inviato"
+            };
+
+            let data_rif_ms = match indicazione_invio {
+                "mai_inviato" | "modificato_dopo_invio" => ultima_modifica_ms.max(creato_ms),
+                "inviato" => ultimo_invio_ms.max(ultimo_sollecito_ms),
+                _ => 0,
+            };
+
+            let data_iso = if data_rif_ms > 0 {
+                data_epoch_ms_locale(data_rif_ms)
+            } else {
+                let data_ord = str_field(&ordine.data, "data");
+                if !data_ord.is_empty() {
+                    data_ord
+                } else {
+                    data_epoch_ms_locale(record.updated_hlc.wall)
+                }
+            };
+
+            if !preventivo_maturo(&data_iso, selezione_preventivi, &oggi_preventivi) {
+                continue;
+            }
+
+            let aggiornato_rec = aggiornato_record_ms(&record).max(aggiornato_record_ms(ordine));
+            aggiornato_preventivo = aggiornato_preventivo.max(aggiornato_rec);
+
+            if data_vecchia_preventivo.is_empty()
+                || (!data_iso.is_empty() && data_iso < data_vecchia_preventivo)
+            {
+                data_vecchia_preventivo = data_iso.clone();
+            }
+
+            match indicazione_invio {
+                "mai_inviato" | "modificato_dopo_invio" => {
+                    da_inviare_fonti.push(format!(
+                        "invio:{}|{}|{}",
+                        record.id, fingerprint_corrente, data_iso
+                    ));
+                }
+                "inviato" => {
+                    da_sollecitare_fonti.push(format!(
+                        "sollecito:{}|{}|{}",
+                        record.id, ultimo_sollecito_ms, data_iso
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        let n_inviare = da_inviare_fonti.len();
+        let n_sollecitare = da_sollecitare_fonti.len();
+        let totale_candidati = n_inviare + n_sollecitare;
+
+        if totale_candidati > 0 {
+            let mut fonti = da_inviare_fonti;
+            fonti.extend(da_sollecitare_fonti);
+
+            let (titolo, dettaglio, azione_label) = if n_inviare > 0 && n_sollecitare > 0 {
+                (
+                    "Invia o sollecita preventivi in sospeso".to_string(),
+                    format!("{n_inviare} da inviare · {n_sollecitare} in attesa di risposta"),
+                    "Gestisci preventivi".to_string(),
+                )
+            } else if n_inviare > 0 {
+                (
+                    if n_inviare == 1 {
+                        "Invia il preventivo non trasmesso".to_string()
+                    } else {
+                        format!("Invia {n_inviare} preventivi non trasmessi")
+                    },
+                    format!(
+                        "{n_inviare} {} in attesa di proposta",
+                        if n_inviare == 1 {
+                            "ordine Nuovo"
+                        } else {
+                            "ordini Nuovi"
+                        }
+                    ),
+                    "Invia preventivi".to_string(),
+                )
+            } else {
+                (
+                    if n_sollecitare == 1 {
+                        "Sollecita il preventivo in attesa".to_string()
+                    } else {
+                        format!("Sollecita {n_sollecitare} preventivi in attesa")
+                    },
+                    format!(
+                        "{n_sollecitare} {} senza risposta",
+                        if n_sollecitare == 1 {
+                            "preventivo inviato"
+                        } else {
+                            "preventivi inviati"
+                        }
+                    ),
+                    "Sollecita preventivi".to_string(),
+                )
+            };
+
+            let mut target = collegamento("/preventivi");
+            target.azione = Some("solleciti_preventivi".into());
+
+            out.push(SuggerimentoDto {
+                id: id_suggerimento("preventivo", fonti),
+                tipo: "preventivo".into(),
+                titolo,
+                dettaglio,
+                azione_label,
+                priorita: priorita_con_anzianita(78, &data_vecchia_preventivo, &oggi_preventivi),
+                collegamento: target,
+                riferimento_data: data_vecchia_preventivo,
+                aggiornato_ms: aggiornato_preventivo,
             });
         }
     }
@@ -543,35 +807,80 @@ fn tipo_suggerimento_in_pausa(
     if ts == 0 || ora.saturating_sub(ts) >= PAUSA_TIPO_SUGGERIMENTO_MS {
         return None;
     }
-    if TIPI_SUGGERIMENTO.contains(&tipo_salvato) {
-        return Some(tipo_salvato.to_string());
+    let tipo = if TIPI_SUGGERIMENTO.contains(&tipo_salvato) {
+        tipo_salvato
+    } else {
+        tipo_suggerimento_da_id(suggerimento_id).unwrap_or_default()
+    };
+    // Per "spedizione", l'azione o l'ignora marca permanentemente i singoli colli come avvisati
+    // manualmente, evitando di riproporli. Non dobbiamo mettere in pausa l'intera categoria per 24 ore,
+    // altrimenti eventuali nuove spedizioni create poco dopo non verrebbero suggerite.
+    if tipo == "spedizione" {
+        return None;
     }
-    tipo_suggerimento_da_id(suggerimento_id).map(str::to_owned)
+    if TIPI_SUGGERIMENTO.contains(&tipo) {
+        return Some(tipo.to_string());
+    }
+    None
 }
 
 impl AppState {
-    pub fn suggerimenti_lista(&self) -> AppResult<SuggerimentiBundleDto> {
-        self.suggerimenti_lista_con_esclusioni(true)
+    #[allow(dead_code)]
+    pub fn suggerimenti_lista_con_soglia_preventivi(
+        &self,
+        giorni: i64,
+    ) -> AppResult<SuggerimentiBundleDto> {
+        self.suggerimenti_lista_con_soglia_preventivi_per_anno(giorni, 0)
+    }
+
+    pub fn suggerimenti_lista_con_soglia_preventivi_per_anno(
+        &self,
+        giorni: i64,
+        anno: i32,
+    ) -> AppResult<SuggerimentiBundleDto> {
+        self.suggerimenti_lista_con_esclusioni(
+            true,
+            SelezionePreventivi::Maturi(giorni.clamp(0, 90)),
+            anno,
+        )
     }
 
     /// Ricalcolo esplicito richiesto dall'utente: restituisce anche fotografie
     /// nascoste e categorie in pausa, senza modificare i relativi record.
+    #[allow(dead_code)]
     pub fn suggerimenti_lista_completa(&self) -> AppResult<SuggerimentiBundleDto> {
-        self.suggerimenti_lista_con_esclusioni(false)
+        self.suggerimenti_lista_completa_per_anno(0)
+    }
+
+    pub fn suggerimenti_lista_completa_per_anno(
+        &self,
+        anno: i32,
+    ) -> AppResult<SuggerimentiBundleDto> {
+        self.suggerimenti_lista_con_esclusioni(false, SelezionePreventivi::Tutti, anno)
     }
 
     fn suggerimenti_lista_con_esclusioni(
         &self,
         applica_esclusioni: bool,
+        selezione_preventivi: SelezionePreventivi,
+        anno: i32,
     ) -> AppResult<SuggerimentiBundleDto> {
         crate::premium::ensure_access(self)?;
         // Il report è l'unica fonte autorevole per maturazione, configurazioni,
         // IVA/spedizione e ordini già liquidati: lo riusiamo invece di replicarne
         // le regole nel motore FASE 14.
-        let report = self.provvigioni_report(None, None, None)?;
+        let (dal, al) = if anno == 0 {
+            (None, None)
+        } else {
+            (
+                Some(format!("{anno}-01-01")),
+                Some(format!("{anno}-12-31")),
+            )
+        };
+        let report = self.provvigioni_report(dal, al, None)?;
         self.with_engine(|engine| {
             Ok(engine.with_projection(|p| {
-                let mut suggerimenti = deriva_operativi(p);
+                let mut suggerimenti = deriva_operativi(p, selezione_preventivi, anno);
 
                 for agente in &report.agenti {
                     // Il report resta la fonte autorevole per calcolo e maturazione.
@@ -712,12 +1021,13 @@ impl AppState {
         let ts = now_ms();
         self.with_engine(|engine| {
             engine
-                .emit_built_checked(move |_| {
+                .emit_built_checked(move |p| {
                     let mut mutations = Vec::with_capacity(suggerimenti.len() * 7);
-                    for (suggerimento_id, tipo) in suggerimenti {
+                    let mut spedizioni_mappa: Option<HashMap<String, Vec<(String, String)>>> = None;
+                    for (suggerimento_id, tipo) in &suggerimenti {
                         let record_id = format!(
                             "stato-suggerimento-v1|{}",
-                            &communication::sha256_hex(&suggerimento_id)[..24]
+                            &communication::sha256_hex(suggerimento_id)[..24]
                         );
                         mutations.push(Mutation::new(
                             ENTITA_STATO_SUGGERIMENTO,
@@ -740,6 +1050,29 @@ impl AppState {
                                     value,
                                 },
                             ));
+                        }
+
+                        if tipo == "spedizione" {
+                            let mappa = spedizioni_mappa
+                                .get_or_insert_with(|| spedizioni_per_suggerimento_avviso(p));
+                            if let Some(colli) = mappa.get(suggerimento_id) {
+                                for (sped_id, fp) in colli {
+                                    for (field, val) in [
+                                        ("ultimo_avviso_ms", json!(ts)),
+                                        ("ultimo_avviso_canale", json!("manuale")),
+                                        ("ultimo_avviso_fingerprint", json!(fp)),
+                                    ] {
+                                        mutations.push(Mutation::new(
+                                            "spedizione",
+                                            sped_id.clone(),
+                                            EventBody::FieldSet {
+                                                field: field.into(),
+                                                value: val,
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                     Ok(mutations)
@@ -796,6 +1129,14 @@ mod tests {
     }
 
     #[test]
+    fn filtro_anno_accetta_tutto_o_solo_la_data_coerente() {
+        assert!(nello_anno_di_lavoro("2025-12-31", 0));
+        assert!(nello_anno_di_lavoro("2025-12-31", 2025));
+        assert!(!nello_anno_di_lavoro("2025-12-31", 2026));
+        assert!(!nello_anno_di_lavoro("", 2025));
+    }
+
+    #[test]
     fn categoria_ignorata_resta_in_pausa_per_un_giorno() {
         let ora = 2 * PAUSA_TIPO_SUGGERIMENTO_MS;
         let recente = ora - PAUSA_TIPO_SUGGERIMENTO_MS + 1;
@@ -807,6 +1148,22 @@ mod tests {
         assert_eq!(
             tipo_suggerimento_in_pausa("s14:rimborso:foto-1", "rimborso", scaduto, ora),
             None
+        );
+    }
+
+    #[test]
+    fn categoria_spedizione_ignorata_non_ha_pausa_24h() {
+        let ora = 2 * PAUSA_TIPO_SUGGERIMENTO_MS;
+        let recente = ora - PAUSA_TIPO_SUGGERIMENTO_MS + 1;
+        assert_eq!(
+            tipo_suggerimento_in_pausa("s14:spedizione:foto-1", "", recente, ora),
+            None,
+            "la categoria spedizione non deve andare in pausa per 24 ore"
+        );
+        assert_eq!(
+            tipo_suggerimento_in_pausa("s14:spedizione:foto-1", "spedizione", recente, ora),
+            None,
+            "anche con tipo esplicito non deve andare in pausa per 24 ore"
         );
     }
 
@@ -879,7 +1236,7 @@ mod tests {
     fn premium_blocca_lista_e_stato_prima_di_qualsiasi_calcolo() {
         let app = tempfile::tempdir().unwrap();
         let state = AppState::init(app.path().to_path_buf()).unwrap();
-        assert!(state.suggerimenti_lista().is_err());
+        assert!(state.suggerimenti_lista_con_soglia_preventivi(0).is_err());
         assert!(state
             .suggerimenti_nascondi(&["s14:rimborso:test".into()])
             .is_err());

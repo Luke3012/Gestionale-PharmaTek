@@ -29,18 +29,17 @@ dominio.
 
 ## 2. Suggerimenti disponibili
 
-| Tipo | Condizione derivata | Azione |
-|---|---|---|
-| Rimborsi | Uno o più rimborsi richiesti non ancora effettuati | Apre Contabilità → Rimborsi filtrata sugli aperti |
-| Distinte | Contrassegni o assegni non ancora inclusi in distinta | Apre Contabilità → Distinte e avvia la distinta esistente |
-| Provvigioni | Un agente ha provvigioni maturate positive | Apre il report dell'agente, ordinato per maturazione |
-| Produzione | Righe Immunoterapia/Diagnostica confermate, con acconto incassato e senza lotto/stato produzione | Apre Produzione → Da produrre con filtro acconto incassato |
-| Spedizioni | Spedizioni recenti e contattabili il cui contenuto non risulta ancora comunicato | Apre la spedizione effettuata da avvisare |
-| Duplicati | Il matcher esistente trova gruppi forti di clienti potenzialmente duplicati | Apre Impostazioni → Ottimizza database |
+| Tipo | Condizione derivata | Azione | Soglia Default |
+|---|---|---|---|
+| Rimborsi | Uno o più rimborsi richiesti non ancora effettuati | Apre Contabilità → Rimborsi filtrata sugli aperti | 3 giorni |
+| Distinte | Contrassegni o assegni non ancora inclusi in distinta | Apre Contabilità → Distinte e avvia la distinta esistente | 20 giorni |
+| Produzione | Righe Immunoterapia/Diagnostica confermate, con acconto incassato e senza lotto/stato produzione | Apre Produzione → Da produrre con filtro acconto incassato | 3 giorni |
+| Spedizioni | Spedizioni recenti (ultimi 14 gg) e contattabili il cui contenuto non risulta ancora comunicato | Apre la spedizione effettuata da avvisare | 3 giorni |
+| Provvigioni | Un agente ha provvigioni maturate positive (disattivata di default) | Apre il report dell'agente, ordinato per maturazione | 7 giorni |
+| Preventivi | Preventivi da inviare o in attesa di risposta dopo l'ultimo invio (stato ordine Nuovo, nessun marcatore attivo, disattivata di default) | Apre Preventivi e avvia il selettore solleciti | 7 giorni |
 
-L'intera FASE 14 è Premium. Senza accesso il pannello non viene montato né caricato, il
-matcher duplicati non parte e tutti i comandi e i processi Rust escono prima di leggere
-report o proiezioni della funzione.
+L'intera FASE 14 è Premium. Senza accesso il pannello non viene montato né caricato, e tutti
+i comandi e i processi Rust escono prima di leggere report o proiezioni della funzione.
 
 ## 3. Ranking e presentazione
 
@@ -54,12 +53,9 @@ Il pannello:
 - presenta categoria, titolo, dettaglio e una singola azione primaria;
 - usa animazioni leggere e brevi;
 - rende immediate le transizioni quando è attivo **Riduci animazioni**;
-- carica il controllo duplicati soltanto quando il browser è libero e lo ricalcola solo al
-  cambiamento dei clienti.
+- include il pulsante **«Controlla ora»** che permette di forzare la visualizzazione di tutte le azioni rilevate anche prima dei giorni di soglia.
 
-KPI e pannelli essenziali della Dashboard vengono caricati prima del matcher anagrafico. Il
-matcher vive nell'overlay sempre attivo, gira una sola volta per PC in idle e pubblica soltanto
-una cache volatile locale riusata da Dashboard e notificatore. Gli altri suggerimenti sono
+KPI e pannelli essenziali della Dashboard vengono caricati per primi. I suggerimenti sono
 memorizzati nella cache Rust e ricalcolati soltanto quando cambia un'entità pertinente: il timer
 notifiche di cinque secondi non rigenera continuamente report contabili o produttivi.
 
@@ -87,16 +83,27 @@ Le impostazioni sono salvate nel `localStorage` applicativo del solo PC e propag
 fra le sue finestre Tauri. Non creano record `impostazioni` e non passano da OneDrive. Il modale
 permette di:
 
-- mostrare o nascondere ciascuna categoria;
+- mostrare o nascondere ciascuna categoria (Provvigioni e Preventivi disattivate di default);
 - abilitare campanella, suono e pop-up per le azioni;
-- scegliere da 0 a 90 giorni di attesa per ogni categoria.
+- scegliere da 0 a 90 giorni di attesa per ogni categoria;
+- ripristinare le soglie predefinite tramite il pulsante **«Ripristina predefiniti»**.
 
-Le card della Dashboard compaiono subito; la soglia vale per le notifiche. Anche con soglia zero
-il core rivalida la condizione per 60 secondi dopo l'ultima modifica sostanziale o la prima
-comparsa locale della nuova fotografia. Questo copre anche le card residue dopo un'azione
-parziale ed evita avvisi durante una transazione ancora in assestamento. La derivazione viene
-ripetuta sullo stato corrente prima dell'avviso: un'azione già risolta non genera quindi
-notifiche tardive.
+Per i preventivi la soglia usa giorni civili locali ed è applicata ai singoli candidati prima
+dell'aggregazione della card; `0` significa disponibilità immediata. «Controlla ora» include
+temporaneamente anche i candidati sotto soglia.
+La stessa soglia è modificabile anche dalle Impostazioni generali, senza richiedere Premium; il
+valore di compatibilità `giorniSollecitoPreventivi` e quello dei suggerimenti vengono aggiornati
+insieme, mentre la classificazione continua a usare un solo valore operativo.
+La marcatura manuale viene proposta soltanto dopo il salvataggio riuscito del preventivo in PDF
+o PNG; la stampa e l'annullamento del salvataggio non modificano lo stato di invio.
+
+Le card della Dashboard e le relative notifiche rispettano i giorni di soglia impostati:
+prima del raggiungimento della soglia la card non compare in Dashboard, a meno che l'operatore
+non forzi il ricalcolo cliccando su «Controlla ora». Anche con soglia zero il core rivalida la
+condizione per 60 secondi dopo l'ultima modifica sostanziale o la prima comparsa locale della
+nuova fotografia. Questo copre anche le card residue dopo un'azione parziale ed evita avvisi
+durante una transazione ancora in assestamento. La derivazione viene ripetuta sullo stato
+corrente prima dell'avviso: un'azione già risolta non genera quindi notifiche tardive.
 
 Le notifiche riusano integralmente il sistema esistente: id stabile, stato letto/scartato
 per utente, campanella, finestra notifiche, suono unico Rust, overlay custom e deep-link. Gli
@@ -130,7 +137,7 @@ Il motore compatto delega deliberatamente:
 - selezione e importi di contrassegni/assegni a `contrassegni_dto`;
 - maturazione e calcolo delle provvigioni a `provvigioni_report`;
 - linee produttive a `linee_ordini`;
-- possibili duplicati a `pianificaDedupClientiAuto`;
+- follow-up e solleciti preventivi a `classificaSollecitiPreventivi` e marcatura con `preventivo_marca_inviato_manuale`;
 - navigazione ai normali deep-link delle pagine;
 - invio e marcatura degli avvisi al motore Comunicazioni.
 

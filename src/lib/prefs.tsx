@@ -78,7 +78,7 @@ interface Prefs {
   /** Giorni dopo la scadenza prima di sollecitare un pagamento (0 = dal giorno stesso). */
   sogliaSolleciti: number;
   setSogliaSolleciti: (v: number) => void;
-  /** Giorni tra invio preventivo e proposta di sollecito (default 7). */
+  /** Soglia preventivi, mantenuta sincronizzata con i suggerimenti smart. */
   giorniSollecitoPreventivi: number;
   setGiorniSollecitoPreventivi: (v: number) => void;
   /** Giorni di avviso anticipato proposti di default per i nuovi promemoria. */
@@ -195,9 +195,27 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
   const [hotkeyGlobale, setHotkeyGlobale] = useState<string>(() => load("pt.hotkeyGlobale", "Alt+P"));
   const [avvisoTrayMostrato, setAvvisoTrayMostrato] = useState<boolean>(() => load("pt.avvisoTrayMostrato", false));
   const [sogliaSolleciti, setSogliaSolleciti] = useState<number>(() => load("pt.sogliaSolleciti", 0));
-  const [giorniSollecitoPreventivi, setGiorniSollecitoPreventivi] = useState<number>(() =>
-    load("pt.giorniSollecitoPreventivi", 7)
-  );
+  const [preferenzeSuggerimenti, setPreferenzeSuggerimenti] =
+    useState<PreferenzeSuggerimenti>(() => {
+      const base = normalizzaPreferenzeSuggerimenti(
+        load("pt.preferenzeSuggerimenti", PREFERENZE_SUGGERIMENTI_DEFAULT),
+      );
+      const salvato = load<number | null>("pt.giorniSollecitoPreventivi", null);
+      if (
+        typeof salvato === "number" &&
+        Number.isFinite(salvato) &&
+        !load<Record<string, unknown> | null>("pt.preferenzeSuggerimenti", null)?.giorniAvviso
+      ) {
+        return {
+          ...base,
+          giorniAvviso: {
+            ...base.giorniAvviso,
+            preventivo: Math.max(0, Math.min(90, Math.round(salvato))),
+          },
+        };
+      }
+      return base;
+    });
   const [anticipoPromemoria, setAnticipoPromemoria] = useState<number>(() => load("pt.anticipoPromemoria", 0));
   const [balloonAttivo, setBalloonAttivo] = useState<boolean>(() => load("pt.balloonAttivo", true));
   const [notifichePrimoPiano, setNotifichePrimoPiano] = useState<boolean>(() => load("pt.notifichePrimoPiano", true));
@@ -212,12 +230,18 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
   const [spedizioniMostraAltre, setSpedizioniMostraAltre] = useState<boolean>(() =>
     load("pt.spedizioniMostraAltre", false)
   );
-  const [preferenzeSuggerimenti, setPreferenzeSuggerimenti] =
-    useState<PreferenzeSuggerimenti>(() =>
-      normalizzaPreferenzeSuggerimenti(
-        load("pt.preferenzeSuggerimenti", PREFERENZE_SUGGERIMENTI_DEFAULT),
-      ),
-    );
+  const giorniSollecitoPreventivi =
+    preferenzeSuggerimenti.giorniAvviso.preventivo;
+  const setGiorniSollecitoPreventivi = useCallback((value: number) => {
+    const giorni = Math.max(0, Math.min(90, Math.round(value)));
+    setPreferenzeSuggerimenti((prev) => {
+      if (prev.giorniAvviso.preventivo === giorni) return prev;
+      return {
+        ...prev,
+        giorniAvviso: { ...prev.giorniAvviso, preventivo: giorni },
+      };
+    });
+  }, []);
 
   const snapshot = useMemo<SnapshotPreferenze>(() => ({
     [CHIAVI_PREFERENZE.sidebar]: sidebar,
@@ -233,7 +257,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     [CHIAVI_PREFERENZE.hotkeyGlobale]: hotkeyGlobale,
     [CHIAVI_PREFERENZE.avvisoTrayMostrato]: avvisoTrayMostrato,
     [CHIAVI_PREFERENZE.sogliaSolleciti]: sogliaSolleciti,
-    [CHIAVI_PREFERENZE.giorniSollecitoPreventivi]: giorniSollecitoPreventivi,
     [CHIAVI_PREFERENZE.anticipoPromemoria]: anticipoPromemoria,
     [CHIAVI_PREFERENZE.balloonAttivo]: balloonAttivo,
     [CHIAVI_PREFERENZE.notifichePrimoPiano]: notifichePrimoPiano,
@@ -255,7 +278,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     hotkeyGlobale,
     avvisoTrayMostrato,
     sogliaSolleciti,
-    giorniSollecitoPreventivi,
     anticipoPromemoria,
     balloonAttivo,
     notifichePrimoPiano,
@@ -264,6 +286,15 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     spedizioniMostraAltre,
     preferenzeSuggerimenti,
   ]);
+
+  // Compatibilità con la pagina Preventivi precedente: il valore viene mantenuto
+  // aggiornato, ma non partecipa alla sincronizzazione come secondo evento.
+  useEffect(() => {
+    localStorage.setItem(
+      CHIAVI_PREFERENZE.giorniSollecitoPreventivi,
+      JSON.stringify(giorniSollecitoPreventivi),
+    );
+  }, [giorniSollecitoPreventivi]);
 
   const sourceRef = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -318,7 +349,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         break;
       case CHIAVI_PREFERENZE.giorniSollecitoPreventivi:
         if (typeof value === "number" && Number.isFinite(value)) {
-          setGiorniSollecitoPreventivi(Math.max(1, Math.min(90, Math.round(value))));
+          setGiorniSollecitoPreventivi(value);
         }
         break;
       case CHIAVI_PREFERENZE.anticipoPromemoria:
@@ -346,7 +377,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
         });
         break;
     }
-  }, []);
+  }, [setGiorniSollecitoPreventivi]);
 
   useEffect(() => {
     const precedente = precedenteRef.current;
@@ -361,9 +392,12 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     );
     precedenteRef.current = snapshot;
     if (!inTauri || cambi.length === 0) return;
-    void import("@tauri-apps/api/event")
-      .then(({ emit }) => Promise.all(cambi.map((cambio) => emit(EVENTO_PREFERENZE_CAMBIATE, cambio))))
-      .catch(() => {});
+    const timer = window.setTimeout(() => {
+      void import("@tauri-apps/api/event")
+        .then(({ emit }) => Promise.all(cambi.map((cambio) => emit(EVENTO_PREFERENZE_CAMBIATE, cambio))))
+        .catch(() => {});
+    }, 180);
+    return () => window.clearTimeout(timer);
   }, [snapshot]);
 
   useEffect(() => {
@@ -392,6 +426,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
     };
     const handleStorage = (e: StorageEvent) => {
       if (!e.key || e.newValue === null) return;
+      if (e.key === CHIAVI_PREFERENZE.giorniSollecitoPreventivi) return;
       try {
         ricevi(e.key, JSON.parse(e.newValue));
       } catch {}
@@ -465,7 +500,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
           return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
         }),
     }),
-    [sidebar, ridurreAnimazioni, zoomUI, ordineFinestra, anno, cestinoGiorni, backupAuto, dashboardPeriodo, filtriModo, densitaTabelle, hotkeyGlobale, avvisoTrayMostrato, sogliaSolleciti, giorniSollecitoPreventivi, anticipoPromemoria, balloonAttivo, notifichePrimoPiano, suonoNotifica, giocoMuto, spedizioniMostraAltre, preferenzeSuggerimenti]
+    [sidebar, ridurreAnimazioni, zoomUI, ordineFinestra, anno, cestinoGiorni, backupAuto, dashboardPeriodo, filtriModo, densitaTabelle, hotkeyGlobale, avvisoTrayMostrato, sogliaSolleciti, giorniSollecitoPreventivi, setGiorniSollecitoPreventivi, anticipoPromemoria, balloonAttivo, notifichePrimoPiano, suonoNotifica, giocoMuto, spedizioniMostraAltre, preferenzeSuggerimenti]
   );
 
   return <PrefsContext.Provider value={value}>{children}</PrefsContext.Provider>;

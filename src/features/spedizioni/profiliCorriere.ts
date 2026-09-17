@@ -45,7 +45,7 @@ export function normalizzaColliPesoCorriere(
   colli: number,
   peso: number = colli
 ): { colli: number; peso: number } {
-  if (profilo === "carrai") return { colli: 1, peso: 1 };
+  if (profilo === "corriere_a") return { colli: 1, peso: 1 };
   return { colli: Math.max(1, colli), peso: Math.max(1, peso) };
 }
 
@@ -96,13 +96,13 @@ function unisciTestoSenzaDuplicati(a: string, b: string): string {
   return `${a} - ${b}`;
 }
 
-interface GruppoCorriere A {
+interface GruppoCorriereA {
   riga: RigaCorriere;
   numeri: string[];
 }
 
-function preparaRigheCorriere A(spedizioni: Spedizione[]): RigaCorriere[] {
-  const gruppi = new Map<string, GruppoCorriere A>();
+function preparaRigheCorriereA(spedizioni: Spedizione[]): RigaCorriere[] {
+  const gruppi = new Map<string, GruppoCorriereA>();
 
   const aggiungi = (s: Spedizione, persona: string, numeri: string[]) => {
     const riga = rigaCorriere(s);
@@ -167,7 +167,7 @@ function preparaRigheCorriere A(spedizioni: Spedizione[]): RigaCorriere[] {
  *  Tutte le righe hanno sempre colli = 1 e peso = 1.
  */
 export function preparaRigheEsportazione(spedizioni: Spedizione[], profilo: string): RigaCorriere[] {
-  if (profilo === "carrai") return preparaRigheCorriere A(spedizioni);
+  if (profilo === "corriere_a") return preparaRigheCorriereA(spedizioni);
 
   // CORRIERE_B / CORRIERE_C / Altro: una riga per spedizione.
   return spedizioni.map((s) => {
@@ -227,7 +227,7 @@ const PROFILO_CORRIERE_C: ColonnaExport<RigaCorriere>[] = [
 
 /** Colonne del profilo del corriere (default CORRIERE_B se non riconosciuto). */
 export function colonneProfilo(profilo: string): ColonnaExport<RigaCorriere>[] {
-  if (profilo === "carrai") return PROFILO_CORRIERE_A;
+  if (profilo === "corriere_a") return PROFILO_CORRIERE_A;
   if (profilo === "mbe") return PROFILO_CORRIERE_C;
   return PROFILO_CORRIERE_B;
 }

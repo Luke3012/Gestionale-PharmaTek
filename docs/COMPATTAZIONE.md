@@ -47,8 +47,19 @@ Risolve il tempo di rebuild **senza cancellare nessun evento**.
 - **Sicurezza idempotenza**: i nuovi snapshot non serializzano piu' tutta la tabella
   `applied_events`. Il fold resta idempotente tramite clock HLC e tombstone `purged`; una
   "conflicted copy" vecchia non sovrascrive dati recenti e non resuscita record svuotati.
+- **Deduplicazione snapshot per dispositivo**: `SnapshotStore::latest()` raggruppa preliminarmente
+  i file di snapshot candidati per `device_id` e seleziona solo quello con sequenza massima
+  (`<device>-<seq>.json`). Evita di rileggere e fondere file storici obsoleti dello stesso dispositivo.
+- **Replay a blocchi e statement caching**: durante il bootstrap o il recupero da gap, `Engine::ingest`
+  processa gli eventi in chunk da 1.000 tramite `Projection::apply_batch`. Con `PRAGMA synchronous = NORMAL`
+  e query SQL preparate e memorizzate in cache (`prepare_cached`), il replay di oltre 60.000 eventi
+  scende da diversi minuti a ~1-2 secondi senza alcuna divergenza di stato.
+- **Segnalazione progresso real-time**: l'ingest emette l'evento Tauri `pt:sync-progress`
+  (`{ current, total, phase }`) aggiornando la progress bar in Onboarding e il toast di riallineamento
+  senza bloccare la reattività della finestra.
 
 Test: `projection::snapshot_include_e_ripristina_gli_offset`,
+`projection::apply_batch_equivale_ad_apply_singolo`,
 `sync::snapshot_con_offset_bootstrap_solo_la_coda`,
 `sync::conflicted_copy_dopo_snapshot_non_duplica`, `app::backup_genera_snapshot_aggiornato`.
 
