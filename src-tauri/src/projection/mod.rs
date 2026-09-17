@@ -262,6 +262,7 @@ impl Projection {
     /// ora, `false` se era già presente (idempotenza tramite `applied_events`).
     ///
     /// Tutto avviene in una transazione: o l'evento è applicato per intero, o niente.
+    #[allow(dead_code)]
     pub fn apply(&mut self, ev: &Event) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let changed = Self::apply_event_tx(&tx, ev)?;

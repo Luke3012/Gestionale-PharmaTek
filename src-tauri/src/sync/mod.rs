@@ -509,9 +509,7 @@ impl Engine {
 
         self.log.append_many(&events)?;
         let mut projection = self.proj.lock().expect("proj poisoned");
-        for event in &events {
-            projection.apply(event)?;
-        }
+        let _ = projection.apply_batch(&events)?;
         if let Some(name) = file_name(&self.log.own_path()) {
             if let Ok(meta) = std::fs::metadata(self.log.own_path()) {
                 projection.set_offset(&name, meta.len())?;
@@ -1796,6 +1794,86 @@ mod tests {
             field: field.into(),
             value,
         }
+    }
+
+    #[test]
+    fn batch_locale_eterogeneo_resta_durevole_ordinato_e_idempotente() {
+        let data = tempfile::tempdir().unwrap();
+        let sq = tempfile::tempdir().unwrap();
+        let a = engine(data.path(), sq.path(), "PC-A");
+
+        let events = a
+            .emit_built_checked(|_| {
+                Ok(vec![
+                    Mutation::new("ordine", "O1", EventBody::Created),
+                    Mutation::new("ordine", "O1", set("numero", json!("O-1"))),
+                    Mutation::new("riga_ordine", "R1", EventBody::Created),
+                    Mutation::new("riga_ordine", "R1", set("ordine_id", json!("O1"))),
+                    Mutation::new("riga_ordine", "R1", set("prodotto_nome", json!("Prodotto"))),
+                ])
+            })
+            .unwrap();
+
+        assert_eq!(events.len(), 5);
+        assert!(events.windows(2).all(|pair| pair[0].ts < pair[1].ts));
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.entity.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ordine",
+                "ordine",
+                "riga_ordine",
+                "riga_ordine",
+                "riga_ordine"
+            ]
+        );
+
+        let ordine = a
+            .with_projection(|p| p.get("ordine", "O1").unwrap())
+            .unwrap();
+        assert_eq!(ordine.data["numero"], json!("O-1"));
+        let riga = a
+            .with_projection(|p| p.get("riga_ordine", "R1").unwrap())
+            .unwrap();
+        assert_eq!(riga.data["ordine_id"], json!("O1"));
+        assert_eq!(riga.data["prodotto_nome"], json!("Prodotto"));
+
+        let log_path = data.path().join("events").join("PC-A.ndjson");
+        let persisted = LogStore::read_from(&log_path, 0).unwrap();
+        assert!(persisted.corruption.is_none());
+        assert_eq!(
+            persisted
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        let log_len = std::fs::metadata(&log_path).unwrap().len();
+        let offset = a.with_projection(|p| p.get_offset("PC-A.ndjson").unwrap());
+        assert_eq!(offset, log_len);
+        assert!(a.ingest().unwrap().is_empty());
+
+        drop(a);
+        let reopened = engine(data.path(), sq.path(), "PC-A");
+        assert_eq!(
+            reopened
+                .with_projection(|p| p.list("ordine").unwrap())
+                .len(),
+            1
+        );
+        assert_eq!(
+            reopened
+                .with_projection(|p| p.list("riga_ordine").unwrap())
+                .len(),
+            1
+        );
+        assert!(reopened.ingest().unwrap().is_empty());
     }
 
     #[test]
