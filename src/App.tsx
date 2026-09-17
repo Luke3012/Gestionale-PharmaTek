@@ -100,6 +100,7 @@ function App({
     if (destinazione === "pronto") return { fase: "pronto", identity: boot.identity! };
     return { fase: "onboarding", boot };
   });
+  const [ripristinoConfigurazioneInCorso, setRipristinoConfigurazioneInCorso] = useState(false);
   const faseRef = useRef(stato.fase);
   faseRef.current = stato.fase;
 
@@ -365,6 +366,24 @@ function App({
       .catch(() => {});
   }, [stato.fase]);
 
+  async function ripristinaConfigurazione() {
+    if (ripristinoConfigurazioneInCorso) return;
+    const ok = window.confirm(
+      "Vuoi davvero ripristinare la configurazione locale di questo PC? I dati di lavoro condivisi non verranno cancellati, ma dovrai scegliere di nuovo cartella e profilo."
+    );
+    if (!ok) return;
+
+    setRipristinoConfigurazioneInCorso(true);
+    try {
+      await api.resetLeggero();
+      completaRicollegamento();
+      location.reload();
+    } catch {
+      toast.error("Impossibile ripristinare la configurazione locale.");
+      setRipristinoConfigurazioneInCorso(false);
+    }
+  }
+
   if (stato.fase === "browser") {
     return (
       <Center style={{ flex: 1, padding: 24 }}>
@@ -389,29 +408,29 @@ function App({
           <Text c="dimmed" size="sm">
             {stato.messaggio}
           </Text>
-          <Button variant="default" onClick={() => location.reload()}>
-            Riprova
-          </Button>
+          <Group gap="sm">
+            <Button
+              variant="default"
+              disabled={ripristinoConfigurazioneInCorso}
+              onClick={() => location.reload()}
+            >
+              Riprova
+            </Button>
+            <Button
+              color="red"
+              variant="light"
+              loading={ripristinoConfigurazioneInCorso}
+              onClick={() => void ripristinaConfigurazione()}
+            >
+              Ripristina configurazione
+            </Button>
+          </Group>
         </Stack>
       </Center>
     );
   }
 
   if (stato.fase === "dataProblem") {
-    async function resetConfigurazione() {
-      const ok = window.confirm(
-        "Vuoi davvero resettare la configurazione locale di questo PC? I dati condivisi non verranno cancellati, ma dovrai scegliere di nuovo cartella e profilo."
-      );
-      if (!ok) return;
-      try {
-        completaRicollegamento();
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("reset_leggero");
-      } finally {
-        location.reload();
-      }
-    }
-
     return (
       <Center style={{ flex: 1, padding: 24 }}>
         <Stack align="center" gap="sm" maw={520} ta="center">
@@ -421,11 +440,20 @@ function App({
             {stato.messaggio}
           </Text>
           <Group gap="sm">
-            <Button variant="default" onClick={() => location.reload()}>
+            <Button
+              variant="default"
+              disabled={ripristinoConfigurazioneInCorso}
+              onClick={() => location.reload()}
+            >
               Riprova
             </Button>
-            <Button color="red" variant="light" onClick={() => void resetConfigurazione()}>
-              Reset configurazione
+            <Button
+              color="red"
+              variant="light"
+              loading={ripristinoConfigurazioneInCorso}
+              onClick={() => void ripristinaConfigurazione()}
+            >
+              Ripristina configurazione
             </Button>
           </Group>
         </Stack>

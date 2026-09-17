@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, Weak};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 
-use crate::projection::Projection;
+use crate::projection::{Projection, SnapshotData};
 use crate::restore_support::{checksum_file, checksum_file_prefix};
 use event::{Event, EventBody};
 use generation::GenerationBarrier;
@@ -381,17 +381,11 @@ impl Engine {
                 ..
             } = &e
             {
-                if self.snapshot_covers_gap(device, first_avail) {
+                if let Some(snapshot) = self.recovery_snapshot_for_gap(device, first_avail) {
                     eprintln!("Gap rilevato all'avvio: ricostruzione automatica della proiezione.");
                     let mut proj_guard = self.proj.lock().expect("proj poisoned");
                     proj_guard.wipe()?;
-                    let snapshot = match self.bootstrap_anchor.as_deref() {
-                        Some(path) => Some(self.snapshots.load(path)?),
-                        None => self.snapshots.latest()?,
-                    };
-                    if let Some(snap) = snapshot {
-                        proj_guard.import(&snap)?;
-                    }
+                    proj_guard.import(&snapshot)?;
                     drop(proj_guard);
                     self.ingest()?;
                 } else {
@@ -583,15 +577,6 @@ impl Engine {
                 }
             };
 
-            let first_effective = match generation.as_ref() {
-                Some(barrier) => rr
-                    .events
-                    .iter()
-                    .find(|event| !barrier.skips(&event.ts))
-                    .cloned(),
-                None => first_in_file.clone(),
-            };
-
             if let Some(ev_first) = first_in_file.as_ref() {
                 let retired = {
                     let proj = self.proj.lock().expect("proj poisoned");
@@ -608,7 +593,7 @@ impl Engine {
             // verifichiamo che il primissimo evento nel log su disco non sia più recente
             // del nostro max_hlc, il che indicherebbe la perdita di eventi intermedi a causa
             // di una compattazione avvenuta mentre eravamo offline.
-            if let Some(ev_first) = first_effective.as_ref() {
+            if let Some(ev_first) = first_in_file.as_ref() {
                 self.check_gap(ev_first, generation.as_ref())?;
             }
 
@@ -897,27 +882,29 @@ impl Engine {
             let proj = self.proj.lock().expect("proj poisoned");
             proj.get_max_hlc_for_device(event_device)?
         };
-        if let Some(max_ts) = max_hlc {
-            if ev_first.ts > max_ts {
-                // Se esiste un cutoff generazionale per questo device e il primo
-                // evento nel file è post-cutoff, il gap non può essere causato da
-                // una compattazione: il file contiene solo eventi della nuova
-                // generazione. Questo copre sia il primo ingest post-ottimizzazione
-                // (max_ts <= cutoff) sia i normali append successivi (max_ts > cutoff).
-                if generation
-                    .and_then(|barrier| barrier.cutoff(event_device))
-                    .is_some_and(|cutoff| ev_first.ts > cutoff)
-                {
-                    return Ok(());
-                }
-                return Err(SyncError::GapDetected {
-                    device: event_device.to_string(),
-                    last_seen: max_ts.to_string(),
-                    first_avail: ev_first.ts.to_string(),
-                });
-            }
+        let Some(max_ts) = max_hlc else {
+            return Ok(());
+        };
+        if ev_first.ts <= max_ts {
+            return Ok(());
         }
-        Ok(())
+
+        // Un log che parte oltre il cutoff è una normale coda della nuova
+        // generazione soltanto quando la proiezione è esattamente sull'anchor.
+        // Se max_ts è già post-cutoff, un primo evento ancora successivo prova
+        // invece che è stato perso un prefisso dentro la generazione corrente.
+        if generation
+            .and_then(|barrier| barrier.cutoff(event_device))
+            .is_some_and(|cutoff| max_ts == cutoff && ev_first.ts > cutoff)
+        {
+            return Ok(());
+        }
+
+        Err(SyncError::GapDetected {
+            device: event_device.to_string(),
+            last_seen: max_ts.to_string(),
+            first_avail: ev_first.ts.to_string(),
+        })
     }
 
     fn generation_barrier(&self) -> Result<Option<GenerationBarrier>> {
@@ -962,33 +949,43 @@ impl Engine {
     }
 
     pub(crate) fn snapshot_covers_gap(&self, device: &str, first_avail: &str) -> bool {
-        let snapshot = match self.bootstrap_anchor.as_deref() {
+        self.recovery_snapshot_for_gap(device, first_avail)
+            .is_some()
+    }
+
+    /// Restituisce esattamente lo snapshot autorevole da importare per colmare il
+    /// gap. Verifica e consumo condividono così la stessa istanza, senza approvare
+    /// un anchor per poi caricarne accidentalmente un altro.
+    fn recovery_snapshot_for_gap(&self, device: &str, first_avail: &str) -> Option<SnapshotData> {
+        let first_avail = first_avail.parse::<Hlc>().ok()?;
+        if first_avail.device != device {
+            return None;
+        }
+
+        let primary = match self.bootstrap_anchor.as_deref() {
             Some(path) => self.snapshots.load(path).ok(),
             None => self.snapshots.latest().ok().flatten(),
         };
-        if snapshot
-            .and_then(|snap| snap.watermarks.get(device).cloned())
-            .map(|watermark| watermark.as_str() >= first_avail)
-            .unwrap_or(false)
-        {
-            return true;
+        if primary.as_ref().is_some_and(|snapshot| {
+            snapshot_watermark(snapshot, device).is_some_and(|watermark| watermark >= first_avail)
+        }) {
+            return primary;
         }
-        // Fallback: dopo l'ottimizzazione gli snapshot ordinari sono stati rimossi;
-        // l'anchor generazionale è l'unico checkpoint disponibile.
-        if let Ok(Some(barrier)) = self.generation_barrier() {
-            if let Some(data_dir) = self.data_dir() {
-                if let Ok(anchor_path) = barrier.anchor(&data_dir) {
-                    if let Ok(snap) = self.snapshots.load(&anchor_path) {
-                        return snap
-                            .watermarks
-                            .get(device)
-                            .map(|watermark| watermark.as_str() >= first_avail)
-                            .unwrap_or(false);
-                    }
-                }
-            }
+
+        // Dopo una compattazione l'anchor arriva fino al cutoff, mentre il log
+        // riparte dal primo evento strettamente successivo. Non deve quindi
+        // raggiungere first_avail, ma deve coprire integralmente il cutoff.
+        let barrier = self.generation_barrier().ok().flatten()?;
+        let cutoff = barrier.cutoff(device)?;
+        if first_avail <= cutoff {
+            return None;
         }
-        false
+        let data_dir = self.data_dir()?;
+        let anchor_path = barrier.anchor(&data_dir).ok()?;
+        let anchor = self.snapshots.load(&anchor_path).ok()?;
+        snapshot_watermark(&anchor, device)
+            .is_some_and(|watermark| watermark >= cutoff)
+            .then_some(anchor)
     }
 
     fn data_dir(&self) -> Option<PathBuf> {
@@ -1757,6 +1754,10 @@ fn safe_manifest_path(data_dir: &Path, rel: &str) -> Option<PathBuf> {
     Some(data_dir.join(rel_path))
 }
 
+fn snapshot_watermark(snapshot: &SnapshotData, device: &str) -> Option<Hlc> {
+    snapshot.watermarks.get(device)?.parse::<Hlc>().ok()
+}
+
 fn hostname_best_effort() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -1794,6 +1795,254 @@ mod tests {
             field: field.into(),
             value,
         }
+    }
+
+    fn empty_snapshot() -> SnapshotData {
+        SnapshotData {
+            records: Vec::new(),
+            clocks: Vec::new(),
+            applied: std::collections::BTreeMap::new(),
+            offsets: std::collections::BTreeMap::new(),
+            purged: Vec::new(),
+            watermarks: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn publish_generation(
+        data_dir: &Path,
+        created_at: u64,
+        mut snapshot: SnapshotData,
+    ) -> GenerationBarrier {
+        snapshot.applied.clear();
+        snapshot.offsets.clear();
+        snapshot.purged.clear();
+        let generation_id = "TEST-GENERATION";
+        let store = SnapshotStore::new(
+            data_dir.join("snapshots"),
+            format!("generation-anchor-{generation_id}"),
+        )
+        .unwrap();
+        let anchor = store.save(&snapshot, 1).unwrap();
+        let anchor_path = anchor
+            .strip_prefix(data_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let barrier = GenerationBarrier {
+            protocol_version: 1,
+            generation_id: generation_id.into(),
+            created_at,
+            device_id: "PC-GENERATION".into(),
+            anchor_path,
+            anchor_bytes: fs::metadata(&anchor).unwrap().len(),
+            anchor_checksum: checksum_file(&anchor).unwrap(),
+            cutoffs: snapshot.watermarks.clone(),
+        };
+        barrier.write_atomic(data_dir).unwrap();
+        barrier
+    }
+
+    #[test]
+    fn nuovo_device_post_generazione_gestisce_append_successivi_senza_falso_gap() {
+        let data = tempfile::tempdir().unwrap();
+        let sq = tempfile::tempdir().unwrap();
+        let barrier = publish_generation(data.path(), 100, empty_snapshot());
+        assert!(barrier.cutoff("PC-POST").is_none());
+
+        let post = engine(data.path(), sq.path(), "PC-POST");
+        let observer = engine(data.path(), sq.path(), "PC-OBSERVER");
+        for i in 0..10 {
+            post.emit("order", format!("O{i}"), EventBody::Created)
+                .unwrap();
+        }
+        observer.ingest().unwrap();
+        let offset_before = observer.with_projection(|p| p.get_offset("PC-POST.ndjson").unwrap());
+        assert!(
+            offset_before > 0,
+            "il secondo ingest deve essere incrementale"
+        );
+
+        let mut last = None;
+        for i in 10..27 {
+            last = Some(
+                post.emit("order", format!("O{i}"), EventBody::Created)
+                    .unwrap(),
+            );
+        }
+        observer.ingest().unwrap();
+
+        let log_path = data.path().join("events/PC-POST.ndjson");
+        let offset_after = observer.with_projection(|p| p.get_offset("PC-POST.ndjson").unwrap());
+        assert_eq!(offset_after, fs::metadata(log_path).unwrap().len());
+        assert!(offset_after > offset_before);
+        assert_eq!(
+            observer
+                .with_projection(|p| p.get_max_hlc_for_device("PC-POST").unwrap())
+                .unwrap(),
+            last.unwrap().ts
+        );
+        assert_eq!(
+            observer.with_projection(|p| p.list("order").unwrap().len()),
+            27
+        );
+    }
+
+    #[test]
+    fn nuovo_device_post_generazione_con_prefisso_perso_segnala_gap_reale() {
+        let data = tempfile::tempdir().unwrap();
+        let sq = tempfile::tempdir().unwrap();
+        publish_generation(data.path(), 100, empty_snapshot());
+        let post = engine(data.path(), sq.path(), "PC-POST");
+        let observer = engine(data.path(), sq.path(), "PC-OBSERVER");
+
+        for i in 0..10 {
+            post.emit("order", format!("O{i}"), EventBody::Created)
+                .unwrap();
+        }
+        observer.ingest().unwrap();
+        let offset_before = observer.with_projection(|p| p.get_offset("PC-POST.ndjson").unwrap());
+        for i in 10..20 {
+            post.emit("order", format!("O{i}"), EventBody::Created)
+                .unwrap();
+        }
+
+        let log_path = data.path().join("events/PC-POST.ndjson");
+        let complete = LogStore::read_from(&log_path, 0).unwrap().events;
+        let truncated = complete
+            .into_iter()
+            .skip(14)
+            .map(|event| format!("{}\n", event.to_ndjson().unwrap()))
+            .collect::<String>();
+        fs::write(&log_path, truncated).unwrap();
+
+        let error = observer.ingest().unwrap_err();
+        let (device, first_avail) = match error {
+            SyncError::GapDetected {
+                device,
+                first_avail,
+                ..
+            } => (device, first_avail),
+            other => panic!("atteso GapDetected, ricevuto {other}"),
+        };
+        assert_eq!(device, "PC-POST");
+        assert!(!observer.snapshot_covers_gap(&device, &first_avail));
+        assert_eq!(
+            observer.with_projection(|p| p.get_offset("PC-POST.ndjson").unwrap()),
+            offset_before,
+            "un gap reale non deve avanzare l'offset"
+        );
+    }
+
+    #[test]
+    fn transizione_generazionale_richiede_cutoff_locale_e_riusa_lo_stesso_anchor() {
+        let data = tempfile::tempdir().unwrap();
+        let sq = tempfile::tempdir().unwrap();
+        let seed = engine(data.path(), sq.path(), "PC-A");
+        let base = seed.emit("client", "BASE", EventBody::Created).unwrap();
+        let anchor_snapshot = seed.with_projection(|p| p.export().unwrap());
+        drop(seed);
+        fs::remove_file(data.path().join("events/PC-A.ndjson")).unwrap();
+        let barrier = publish_generation(data.path(), base.ts.wall, anchor_snapshot.clone());
+        let cutoff = barrier.cutoff("PC-A").unwrap();
+
+        let observer = engine(data.path(), sq.path(), "PC-OBSERVER");
+        let tail = Event::new(
+            Hlc::new(cutoff.wall.saturating_add(1), 0, "PC-A"),
+            "PC-A",
+            "PC-A",
+            "client",
+            "TAIL",
+            EventBody::Created,
+        );
+        assert!(observer.check_gap(&tail, Some(&barrier)).is_ok());
+
+        // Dopo aver già visto eventi post-cutoff, un file che inizi ancora più
+        // avanti non è più una transizione generazionale: ha perso un prefisso.
+        {
+            let mut projection = observer.proj.lock().expect("proj poisoned");
+            projection.apply(&tail).unwrap();
+        }
+        let later = Event::new(
+            Hlc::new(cutoff.wall.saturating_add(2), 0, "PC-A"),
+            "PC-A",
+            "PC-A",
+            "client",
+            "LATER",
+            EventBody::Created,
+        );
+        assert!(matches!(
+            observer.check_gap(&later, Some(&barrier)),
+            Err(SyncError::GapDetected { .. })
+        ));
+
+        let old = Event::new(
+            Hlc::new(cutoff.wall.saturating_sub(1), 0, "PC-A"),
+            "PC-A",
+            "PC-A",
+            "client",
+            "OLD-ONLY",
+            EventBody::Created,
+        );
+        {
+            let mut projection = observer.proj.lock().expect("proj poisoned");
+            projection.wipe().unwrap();
+            projection.apply(&old).unwrap();
+        }
+        let gap = observer.check_gap(&tail, Some(&barrier)).unwrap_err();
+        assert!(matches!(gap, SyncError::GapDetected { .. }));
+
+        let recovered = observer
+            .recovery_snapshot_for_gap("PC-A", &tail.ts.to_string())
+            .expect("l'anchor deve coprire il cutoff");
+        let mut expected_anchor = anchor_snapshot;
+        expected_anchor.applied.clear();
+        expected_anchor.offsets.clear();
+        expected_anchor.purged.clear();
+        assert_eq!(recovered, expected_anchor);
+
+        fs::write(
+            data.path().join("events/PC-A.ndjson"),
+            format!("{}\n", tail.to_ndjson().unwrap()),
+        )
+        .unwrap();
+        observer.ingest_bootstrap().unwrap();
+        assert!(observer
+            .with_projection(|p| p.get("client", "BASE").unwrap())
+            .is_some());
+        assert!(observer
+            .with_projection(|p| p.get("client", "TAIL").unwrap())
+            .is_some());
+        assert!(observer
+            .with_projection(|p| p.get("client", "OLD-ONLY").unwrap())
+            .is_none());
+    }
+
+    #[test]
+    fn snapshot_insufficiente_o_assente_non_autorizza_il_rebuild() {
+        let data = tempfile::tempdir().unwrap();
+        let sq = tempfile::tempdir().unwrap();
+        let mut snapshot = empty_snapshot();
+        snapshot
+            .watermarks
+            .insert("PC-A".into(), Hlc::new(100, 0, "PC-A").to_string());
+        SnapshotStore::new(data.path().join("snapshots"), "PC-SNAPSHOT")
+            .unwrap()
+            .save(&snapshot, 1)
+            .unwrap();
+        let observer = engine(data.path(), sq.path(), "PC-OBSERVER");
+        let first = Hlc::new(200, 0, "PC-A").to_string();
+        assert!(observer.recovery_snapshot_for_gap("PC-A", &first).is_none());
+        assert!(observer.recovery_snapshot_for_gap("PC-B", &first).is_none());
+        assert!(observer
+            .recovery_snapshot_for_gap("PC-A", "hlc-non-valido")
+            .is_none());
+
+        let empty_data = tempfile::tempdir().unwrap();
+        let empty_sq = tempfile::tempdir().unwrap();
+        let empty_observer = engine(empty_data.path(), empty_sq.path(), "PC-EMPTY");
+        assert!(empty_observer
+            .recovery_snapshot_for_gap("PC-A", &first)
+            .is_none());
     }
 
     #[test]

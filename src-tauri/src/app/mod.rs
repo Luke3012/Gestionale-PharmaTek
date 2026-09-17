@@ -820,18 +820,28 @@ impl AppState {
         // liste operative. Il profilo viene rimosso solo se non è condiviso.
         let cfg = self.config();
         if let (Some(dir), Some(uid)) = (cfg.data_dir.clone(), cfg.user_id.clone()) {
-            let condiviso = self.with_engine(|engine| {
-                engine.ingest().map_err(es)?;
-                let condiviso = profilo_usato_da_altro_device(engine, &uid, &cfg.device_id);
-                set_fields(engine, "device", &cfg.device_id, &[("user_id", json!(""))])?;
-                if !condiviso {
-                    // Dopo lo scollegamento il profilo è già fuori dalle liste;
-                    // la pulizia dei suoi artefatti non deve impedire il reset.
-                    let _ = elimina_profilo_con_engine(engine, &uid);
-                }
-                Ok(condiviso)
-            })?;
-            if !condiviso {
+            // Se il bootstrap non è riuscito (per esempio per un gap), il motore
+            // può non essere aperto: il ripristino deve comunque poter cancellare
+            // la sola configurazione locale e tornare all'onboarding.
+            let condiviso = {
+                let runtime = self.runtime.lock().expect("rt poisoned");
+                runtime
+                    .as_ref()
+                    .map(|rt| {
+                        let engine = &rt.engine;
+                        engine.ingest().map_err(es)?;
+                        let condiviso = profilo_usato_da_altro_device(engine, &uid, &cfg.device_id);
+                        set_fields(engine, "device", &cfg.device_id, &[("user_id", json!(""))])?;
+                        if !condiviso {
+                            // Dopo lo scollegamento il profilo è già fuori dalle liste;
+                            // la pulizia dei suoi artefatti non deve impedire il reset.
+                            let _ = elimina_profilo_con_engine(engine, &uid);
+                        }
+                        Ok::<bool, String>(condiviso)
+                    })
+                    .transpose()?
+            };
+            if condiviso == Some(false) {
                 rimuovi_avatar(Path::new(&dir), &uid);
             }
         }

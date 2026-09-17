@@ -5375,6 +5375,37 @@ fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
 }
 
 #[test]
+fn reset_leggero_torna_all_onboarding_anche_se_il_bootstrap_non_apre_il_motore() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    let device = state.config().device_id;
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.data_dir = Some(data.path().to_string_lossy().into_owned());
+        cfg.user_id = Some("utente-non-caricato".into());
+    }
+    fs::write(app.path().join("stato-locale.tmp"), b"locale").unwrap();
+    assert!(state.runtime.lock().unwrap().is_none());
+
+    state.reset_leggero().unwrap();
+
+    let boot = state.bootstrap();
+    assert!(!boot.onboarded);
+    assert!(boot.data_dir.is_none());
+    assert!(!boot.reconnect_required);
+    assert_eq!(boot.device_id, device);
+    assert!(
+        !app.path().exists(),
+        "la cartella locale deve essere rimossa"
+    );
+    assert!(
+        data.path().exists(),
+        "i dati condivisi non devono essere toccati"
+    );
+}
+
+#[test]
 fn reset_leggero_non_cancella_un_profilo_condiviso_con_un_altro_device() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
