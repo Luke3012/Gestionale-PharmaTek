@@ -146,7 +146,7 @@ describe("contratto condiviso derivazione notifiche", () => {
     ).toBe(0);
   });
 
-  it("porta le azioni mature nel normale flusso con il deep-link completo", () => {
+  it("esclude i suggerimenti dalla campanella (vivono nella Dashboard e nei pop-up custom)", () => {
     const suggerimento: Suggerimento = {
       id: "s14:provvigione:agente-1:rev-7",
       tipo: "provvigione",
@@ -172,13 +172,6 @@ describe("contratto condiviso derivazione notifiche", () => {
       sogliaSolleciti: 0,
     });
 
-    expect(notifiche).toHaveLength(1);
-    expect(notifiche[0]).toMatchObject({
-      id: suggerimento.id,
-      tipo: "suggerimento",
-      urgenza: "oggi",
-      ts: suggerimento.aggiornatoMs,
-      suggerimento: suggerimento.collegamento,
-    });
+    expect(notifiche).toHaveLength(0);
   });
 });

@@ -7,6 +7,8 @@ const OGGI = Date.UTC(2026, 6, 26, 12);
 function preventivo(
   overrides: Partial<{
     id: string;
+    ordineAttivo: boolean;
+    ordineData: string;
     ordineStato: string;
     ordineMarcatore?: string;
     indicazioneInvio: string;
@@ -18,6 +20,8 @@ function preventivo(
 ) {
   return {
     id: "p1",
+    ordineAttivo: true,
+    ordineData: "2026-07-01",
     ordineStato: "Nuovo",
     indicazioneInvio: "inviato",
     ultimoInvioMs: OGGI - 8 * GIORNO_MS,
@@ -78,6 +82,41 @@ describe("classificaSollecitiPreventivi", () => {
     );
     expect(candidati.daSollecitare).toEqual([]);
     expect(candidati.totale).toBe(0);
+  });
+
+  it("esclude i preventivi mantenuti su un ordine eliminato di supporto", () => {
+    const candidati = classificaSollecitiPreventivi(
+      [preventivo({ ordineAttivo: false })],
+      7,
+      OGGI,
+    );
+    expect(candidati.totale).toBe(0);
+  });
+
+  it("per i documenti legacy senza timestamp usa la data dell'ordine", () => {
+    const candidati = classificaSollecitiPreventivi(
+      [
+        preventivo({
+          id: "recente",
+          indicazioneInvio: "mai_inviato",
+          creatoMs: 0,
+          ultimaModificaMs: 0,
+          ultimoInvioMs: 0,
+          ordineData: "2026-07-24",
+        }),
+        preventivo({
+          id: "maturo",
+          indicazioneInvio: "mai_inviato",
+          creatoMs: 0,
+          ultimaModificaMs: 0,
+          ultimoInvioMs: 0,
+          ordineData: "2026-07-10",
+        }),
+      ],
+      7,
+      OGGI,
+    );
+    expect(candidati.daInviare.map((item) => item.id)).toEqual(["maturo"]);
   });
 
   it("esclude ordini che hanno una segnalazione attiva", () => {

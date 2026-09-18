@@ -838,9 +838,10 @@ export function SuggerimentiPanel({
           <div className="pt-modal-scroll">
             <Stack gap="md">
               <Text size="sm" c="dimmed">
-                Queste preferenze valgono soltanto su questo PC. Le azioni e le
-                relative notifiche compaiono solo dopo che sono trascorsi i giorni
-                di attesa impostati, a meno che non si prema «Controlla ora».
+                Queste preferenze valgono soltanto su questo PC. Per ciascuna categoria puoi
+                impostare la cadenza di notifica: stabilisce ogni quanti giorni ripetere l'avviso
+                pop-up se l'azione è ancora da compiere (0 = avviso immediato). Nella Dashboard le
+                azioni abilitate restano sempre consultabili.
               </Text>
               <Paper withBorder p="sm">
                 <Switch
@@ -859,8 +860,7 @@ export function SuggerimentiPanel({
                         Notifiche delle azioni
                       </Text>
                       <Text size="xs" c="dimmed">
-                        Mostra le azioni mature nella campanella e nei pop-up
-                        custom.
+                        Invia notifiche pop-up custom per le azioni da compiere.
                       </Text>
                     </Box>
                   }
@@ -910,7 +910,7 @@ export function SuggerimentiPanel({
                           }
                         />
                         <NumberInput
-                          aria-label={`Giorni di attesa per ${aspetto.label}`}
+                          aria-label={`Cadenza di notifica per ${aspetto.label}`}
                           value={preferenzeBozza.giorniAvviso[tipo]}
                           onChange={(value) =>
                             setPreferenzeBozza((correnti) => ({

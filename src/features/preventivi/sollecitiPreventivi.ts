@@ -1,6 +1,8 @@
 import { aggiungiGiorniIso, isoLocale } from "../../lib/date";
 
 export interface PreventivoSollecitabile {
+  ordineAttivo?: boolean;
+  ordineData?: string;
   ordineStato: string;
   ordineMarcatore?: string;
   indicazioneInvio: string;
@@ -30,6 +32,7 @@ export function classificaSollecitiPreventivi<T extends PreventivoSollecitabile>
 
   for (const preventivo of preventivi) {
     // Solo ordini Nuovi e senza segnalazioni manuali attive (urgente, anomalia, sollecito)
+    if (preventivo.ordineAttivo === false) continue;
     if (preventivo.ordineStato !== "Nuovo") continue;
     if (preventivo.ordineMarcatore && preventivo.ordineMarcatore.trim() !== "") {
       continue;
@@ -43,9 +46,12 @@ export function classificaSollecitiPreventivi<T extends PreventivoSollecitabile>
         preventivo.ultimaModificaMs ?? 0,
         preventivo.creatoMs ?? 0,
       );
+      const dataRiferimento = riferimento > 0
+        ? isoLocale(new Date(riferimento))
+        : preventivo.ordineData?.trim() ?? "";
       if (
-        riferimento === 0 ||
-        aggiungiGiorniIso(isoLocale(new Date(riferimento)), giorniNormalizzati) <= oggi
+        !dataRiferimento ||
+        aggiungiGiorniIso(dataRiferimento, giorniNormalizzati) <= oggi
       ) {
         daInviare.push(preventivo);
       }

@@ -103,10 +103,10 @@ const PAD_X = 40;
 const PAD_TOP = 28;
 const PAD_BOT = 46;
 const GAP_BASSO = 56; // spazio per la barra delle applicazioni
-const DURATA_MS = 30_000;
-const DURATA_SUGGERIMENTO_MS = 45_000;
-const DURATA_URGENTE_MS = 45_000;
-const DURATA_MESSAGGIO_MS = 180_000;
+const DURATA_MS = 300_000;
+const DURATA_SUGGERIMENTO_MS = 300_000;
+const DURATA_URGENTE_MS = 300_000;
+const DURATA_MESSAGGIO_MS = 300_000;
 const MAX_TOAST = 99; // cap di sicurezza: il mazzo mostra una card e mette il resto in coda
 const CARD_W = LARGHEZZA - PAD_X * 2;
 

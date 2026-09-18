@@ -344,15 +344,6 @@ export function PreventiviView({ identity }: { identity: Identity }) {
     [preventiviConBlob],
   );
 
-  const disponibiliAnno = useMemo(
-    () =>
-      disponibili.filter(
-        (preventivo) =>
-          anno === 0 || Number(preventivo.ordineData.slice(0, 4)) === anno,
-      ),
-    [disponibili, anno],
-  );
-
   const filtrati = useMemo(() => {
     const query = cerca.trim().toLocaleLowerCase("it");
     return preventiviConBlob.filter((preventivo) => {
@@ -565,7 +556,7 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
   async function continuaNuovoDaOrdine(ordineId: string) {
     setSelettoreOpened(false);
-    const ordine = disponibiliAnno.find((item) => item.ordineId === ordineId);
+    const ordine = disponibili.find((item) => item.ordineId === ordineId);
     if (
       ordineFinestra === "sempre" &&
       (await apriFinestraPreventivo(ordineId, ordine?.ordineNumero, identity))
@@ -1310,7 +1301,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
       <NuovoPreventivoModal
         opened={selettoreOpened}
-        disponibili={disponibiliAnno}
+        disponibili={disponibili}
+        anno={anno}
+        onRefreshDisponibili={caricaRiferimenti}
         onClose={() => setSelettoreOpened(false)}
         onOrdinePreparato={(ordineId) => void continuaNuovoDaOrdine(ordineId)}
         onBozzaPreparata={(bozza) => void continuaNuovoDaZero(bozza)}

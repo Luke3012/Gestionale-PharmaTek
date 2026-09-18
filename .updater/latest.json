@@ -1,11 +1,11 @@
 {
-    "version":  "0.7.7",
-    "notes":  "",
-    "pub_date":  "2026-09-15T13:44:51Z",
+    "version":  "0.8.0",
+    "notes":  "Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.",
+    "pub_date":  "2026-09-17T15:33:51Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM25qNjlHcUVhTkZIMUZiRDlzVXREdFRDQm40dHZRaDU2dVFaMXJzZXVkdSs1bGZkbER6dm9neDA2U3lSSzhFZWY2YXhqazVLQzF3K2dnUUlIWElzbmc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NDc5ODgxCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC43LjdfeDY0LXNldHVwLmV4ZQpvemxObUl3eWIrV0VHZDRKVDU3alVvSFNiSEpEUW9XVEswcU1BbE9LYnNlMHB5azFzZEZPZEVBOWJYOFNvbEI2N0lwdXN6RGhFZC9JVTEwR0ladHREdz09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/565788765"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2szc1lBUkU5a2lLa2Q3SWt0WlA2eVlkVUpBZnQ3QUlsZFNXSmZCazMvQlRBOVJkQ1IrSEFwNEc2bmFybDNEVUZTeXhBM1dZUUp2MVI5YVZqbDlNREE0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NjU5MjE5CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjBfeDY0LXNldHVwLmV4ZQo0dkdtOHF2WDVWdzhFR0tjQUdKOXV3Kzl2d0NWMmhwR2N0TW4wcjFjOG1WSzVjbzNYSFo3SG8ySlpJVUJ6bUhvYzcrc3kzZ3BxZFNMWUh2QnFzbkFCUT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/570545468"
                                          }
                   }
 }

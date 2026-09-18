@@ -285,7 +285,12 @@ pub(crate) fn spedizioni_per_suggerimento_avviso(
     let anni = std::iter::once(0).chain(
         tutti_ordini
             .values()
-            .filter_map(|ordine| str_field(&ordine.data, "data").get(..4)?.parse::<i32>().ok())
+            .filter_map(|ordine| {
+                str_field(&ordine.data, "data")
+                    .get(..4)?
+                    .parse::<i32>()
+                    .ok()
+            })
             .collect::<HashSet<_>>(),
     );
     for anno in anni {
@@ -790,7 +795,7 @@ fn valida_id_suggerimento(suggerimento_id: &str) -> AppResult<&str> {
     Ok(suggerimento_id)
 }
 
-fn tipo_suggerimento_da_id(suggerimento_id: &str) -> Option<&str> {
+pub(crate) fn tipo_suggerimento_da_id(suggerimento_id: &str) -> Option<&str> {
     let tipo = suggerimento_id
         .strip_prefix(PREFISSO_SUGGERIMENTO)?
         .split(':')
@@ -872,10 +877,7 @@ impl AppState {
         let (dal, al) = if anno == 0 {
             (None, None)
         } else {
-            (
-                Some(format!("{anno}-01-01")),
-                Some(format!("{anno}-12-31")),
-            )
+            (Some(format!("{anno}-01-01")), Some(format!("{anno}-12-31")))
         };
         let report = self.provvigioni_report(dal, al, None)?;
         self.with_engine(|engine| {

@@ -41,6 +41,10 @@ import {
 } from "../giornaliero/righeOrdine";
 import { SelettoreCategoriaNuovoOrdine } from "../giornaliero/categoriaOrdine";
 import {
+  DatiFatturazionePanel,
+  type DatiFatturazione,
+} from "../giornaliero/DatiFatturazionePanel";
+import {
   suggerimentiDiagnostica,
   suggerimentiProduzione,
 } from "../produzione/datiProduzione";
@@ -93,6 +97,7 @@ import { preventivoDaBozza, type BozzaPreventivoDaZero } from "./bozzaPreventivo
 import {
   applicaPatchPagamentoVirtuale,
   campiContoPagamentoVirtuale,
+  fatturazioneDaPreventivo,
   rigaVuotaPreventivo as rigaVuota,
   righeDaPreventivo,
   snapshotPreventivoEditor as snapshot,
@@ -156,6 +161,15 @@ export function PreventivoEditorModal({
   const [scontoPercentuale, setScontoPercentuale] = useState(0);
   const [acconto, setAcconto] = useState(0);
   const [linea, setLinea] = useState("Immunoterapia");
+  const [fatturazioneDiversa, setFatturazioneDiversa] = useState(false);
+  const [fatturazione, setFatturazione] = useState<DatiFatturazione>({
+    ragione_sociale: "",
+    indirizzo: "",
+    citta: "",
+    prov: "",
+    cap: "",
+    piva: "",
+  });
   const [baseline, setBaseline] = useState("");
   const [caricamento, setCaricamento] = useState(false);
   const [azioneSalvataggio, setAzioneSalvataggio] = useState<
@@ -244,12 +258,9 @@ export function PreventivoEditorModal({
         if (!documento) {
           throw new Error("bozza del preventivo non disponibile");
         }
-        const righeIniziali = bozzaIniziale
-          ? bozzaIniziale.righe.map((riga) => ({
-              ...riga,
-              allergeni: [...riga.allergeni],
-            }))
-          : righeDaPreventivo(documento);
+        // La conversione condivisa garantisce sempre almeno "Preparazione 1".
+        // Per le bozze già compilate conserva gli stessi id e riconverte i prezzi.
+        const righeIniziali = righeDaPreventivo(documento);
         const medico = mediciCaricati.find(
           (record) => record.id === documento.medicoId,
         );
@@ -345,6 +356,8 @@ export function PreventivoEditorModal({
         setScontoPercentuale(documento.scontoPercentuale);
         setAcconto(accontoIniziale);
         setLinea(lineaIniziale);
+        setFatturazioneDiversa(Boolean(documento.fatturazioneDiversa));
+        setFatturazione(fatturazioneDaPreventivo(documento));
         setDatiProduzioneAperti(
           new Set(
             righeIniziali
@@ -369,6 +382,8 @@ export function PreventivoEditorModal({
             documento.scontoPercentuale,
             accontoIniziale,
             lineaIniziale,
+            Boolean(documento.fatturazioneDiversa),
+            fatturazioneDaPreventivo(documento),
           ),
         );
         baselineTestataRef.current = {
@@ -435,6 +450,8 @@ export function PreventivoEditorModal({
         scontoPercentuale,
         acconto,
         linea,
+        fatturazioneDiversa,
+        fatturazione,
       ) !== baseline ||
       Object.keys(patchPagamentiVirtuali).length > 0 ||
       pianoRateVirtuale !== null ||
@@ -478,6 +495,8 @@ export function PreventivoEditorModal({
         scontoPercentuale,
         acconto,
         linea,
+        fatturazioneDiversa,
+        fatturazione,
       };
       const mergeTestata = mergeRealtimeSelettivo(
         baseTestata,
@@ -499,6 +518,8 @@ export function PreventivoEditorModal({
       setScontoPercentuale(mergeTestata.valori.scontoPercentuale);
       setAcconto(mergeTestata.valori.acconto);
       setLinea(mergeTestata.valori.linea);
+      setFatturazioneDiversa(mergeTestata.valori.fatturazioneDiversa);
+      setFatturazione(mergeTestata.valori.fatturazione);
       setRighe(righeUnite);
       baselineTestataRef.current = testataRemota;
       baselineRigheRef.current = righeRemote;
@@ -513,6 +534,8 @@ export function PreventivoEditorModal({
           testataRemota.scontoPercentuale,
           testataRemota.acconto,
           testataRemota.linea,
+          testataRemota.fatturazioneDiversa,
+          testataRemota.fatturazione,
         ),
       );
       if (mergeTestata.aggiornati.length > 0 || mergeRighe.aggiornate.length > 0) {
@@ -1284,6 +1307,15 @@ export function PreventivoEditorModal({
         note: note.trim(),
         scontoPercentuale,
         acconto: codTutto ? 0 : acconto,
+        fatturazione: {
+          attiva: fatturazioneDiversa,
+          ragioneSociale: fatturazione.ragione_sociale,
+          indirizzo: fatturazione.indirizzo,
+          citta: fatturazione.citta,
+          prov: fatturazione.prov,
+          cap: fatturazione.cap,
+          piva: fatturazione.piva,
+        },
         righe: inputRighe,
       });
       preventivoPersistito = true;
@@ -1299,6 +1331,8 @@ export function PreventivoEditorModal({
       setPreventivo(finale);
       setRighe(righeSalvate);
       setLinea(finale.linee[0] || linea);
+      setFatturazioneDiversa(Boolean(finale.fatturazioneDiversa));
+      setFatturazione(fatturazioneDaPreventivo(finale));
       setBaseline(
         snapshot(
           finale,
@@ -1310,6 +1344,8 @@ export function PreventivoEditorModal({
           finale.scontoPercentuale,
           finale.acconto,
           finale.linee[0] || linea,
+          Boolean(finale.fatturazioneDiversa),
+          fatturazioneDaPreventivo(finale),
         ),
       );
       baselineTestataRef.current = testataDaPreventivo(finale);
@@ -1466,6 +1502,15 @@ export function PreventivoEditorModal({
                     )}
                   </Group>
                 </Paper>
+
+                <DatiFatturazionePanel
+                  expanded={fatturazioneDiversa}
+                  value={fatturazione}
+                  onToggle={() =>
+                    setFatturazioneDiversa((aperta) => !aperta)
+                  }
+                  onChange={setFatturazione}
+                />
 
                 <SimpleGrid
                   cols={{ base: 1, sm: 3 }}

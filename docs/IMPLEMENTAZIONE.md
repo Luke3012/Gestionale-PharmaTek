@@ -1236,22 +1236,21 @@ vanno provati a mano.
 - Ranking deterministico e identificativi firmati sulla fotografia minima delle sorgenti. Il
   completamento fa sparire la card; una modifica sostanziale ne genera una nuova.
 - Lo stato persistente delle fotografie ignorate è `suggerimento_stato`; «Ignora tutte» scrive
-  più stati con un solo batch e converge fra PC. Categorie, notifiche e giorni di attesa vivono
+  più stati con un solo batch e converge fra PC. Categorie, notifiche e cadenza di notifica vivono
   invece esclusivamente nelle preferenze locali del PC e vengono condivisi soltanto fra le sue
   finestre.
 - Riuso diretto di `contrassegni_dto`, `provvigioni_report`, `linee_ordini` e `classificaSollecitiPreventivi`: nessuna replica delle regole contabili, produttive o commerciali.
 - `SuggerimentiPanel` nella Dashboard con massimo cinque card compatte, espansione misurata
-  senza scatti, virtualizzazione della coda, «Ignora tutte», pulsante «Controlla ora» (override per visualizzare azioni sotto soglia),
-  impostazioni locali con soglie configurabili (e pulsante «Ripristina predefiniti»), deep-link contestuali (incluso `solleciti_preventivi`) e animazioni compatibili con **Riduci animazioni**.
+  senza scatti, virtualizzazione della coda, «Ignora tutte», pulsante «Controlla ora» (forza ricalcolo immediato della fotografia),
+  impostazioni locali con cadenza configurabile per categoria (0–90 gg, con pulsante «Ripristina predefiniti»), deep-link contestuali (incluso `solleciti_preventivi`) e animazioni compatibili con **Riduci animazioni**.
 - La soglia operativa dei preventivi resta unica in `preferenzeSuggerimenti.giorniAvviso.preventivo`, ma è esposta anche nelle Impostazioni generali tramite `giorniSollecitoPreventivi`: il provider aggiorna e persiste contemporaneamente entrambi i formati per compatibilità con la pagina Preventivi e con le installazioni senza funzioni premium.
 - Dopo il salvataggio riuscito del preventivo in PDF o PNG viene richiesta la conferma per marcare l'invio manuale (`preventivo_marca_inviato_manuale` con canale `"manuale"`). Stampa, Escape, annullamento del dialog o del selettore file non alterano lo stato.
 - L'intera FASE 14 è protetta dal gate Premium prima di UI, API e report. Gli avvisi di
   spedizione e preventivo usano un fingerprint condiviso unico fra elenchi, suggerimenti
   e comunicazioni. Dopo un invio multiplo riuscito, tutte le spedizioni correlate ricevono il
   proprio marcatore; coda e cronologia continuano a essere locali al PC d'origine.
-- I suggerimenti maturi riusano campanella, finestra notifiche, stato letto/scartato, suono Rust
-  e overlay custom. La visualizzazione in Dashboard e le notifiche rispettano le soglie in giorni impostate. Una
-  rivalidazione di 60 secondi impedisce pop-up immediati durante salvataggi ancora in corso.
+- I suggerimenti non compaiono nella lista della campanella (riservata a promemoria, scadenze e messaggi), ma attivano l'overlay custom con durata impostata a 5 minuti (300.000 ms).
+- L'emissione della notifica custom persiste l'evento su SQLite (`notifica_avvisata` con chiave `suggerimento:<tipo>`), garantendo che al riavvio dell'app la notifica non si ripeta prima che sia trascorsa la cadenza in giorni configurata per quella specifica categoria. Nella Dashboard le azioni abilitate rimangono sempre consultabili. Una rivalidazione di 60 secondi impedisce pop-up immediati durante transazioni in assestamento.
 - Deep-link fino a filtri Contabilità/Produzione e al selettore solleciti Preventivi, senza nuove pagine o modali parallele.
 - Test automatici su fingerprint, ranking, deduplicazione frontend, classificazione preventivi e invio multiplo; verifica
   finale con suite complete, typecheck, build, formattazione e Clippy `-D warnings`.

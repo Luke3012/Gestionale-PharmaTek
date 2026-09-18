@@ -361,6 +361,43 @@ fn ultime_riattivazioni_dashboard(
         .collect()
 }
 
+/// Recupera l'ultimo timestamp di avviso (pop-up/suono) emesso per ciascuna chiave.
+/// Consente di rispettare la cadenza di re-invio configurata anche dopo il riavvio dell'app.
+fn ultimi_avvisi(recs: Vec<crate::app::RecordDto>, user_id: &str) -> HashMap<String, i64> {
+    let mut out: HashMap<String, i64> = HashMap::new();
+    for r in recs {
+        if r.data.get("user_id").and_then(|v| v.as_str()) != Some(user_id) {
+            continue;
+        }
+        let Some(chiave) = r.data.get("chiave").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let ts = r.data.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let entry = out.entry(chiave.to_string()).or_insert(0);
+        if ts > *entry {
+            *entry = ts;
+        }
+    }
+    out
+}
+
+fn chiave_stato_suggerimento(prefisso: &str, tipo: &str, anno: i32) -> String {
+    format!("{prefisso}:{anno}:{tipo}")
+}
+
+fn chiave_stato_appartiene_al_tipo(chiave: &str, tipo: &str) -> bool {
+    chiave == format!("suggerimento:{tipo}")
+        || chiave == format!("primo_rilevato:{tipo}")
+        || chiave
+            .strip_prefix("suggerimento:")
+            .and_then(|resto| resto.split_once(':'))
+            .is_some_and(|(_, tipo_chiave)| tipo_chiave == tipo)
+        || chiave
+            .strip_prefix("primo_rilevato:")
+            .and_then(|resto| resto.split_once(':'))
+            .is_some_and(|(_, tipo_chiave)| tipo_chiave == tipo)
+}
+
 pub struct Notificatore {
     app: AppHandle,
     cfg: Mutex<Option<Cfg>>,
@@ -433,11 +470,14 @@ impl Notificatore {
         if !ready {
             return;
         }
-        if let Some(cfg) = self.cfg.lock().expect("cfg poisoned").clone() {
+        let cfg_opt = self.cfg.lock().expect("cfg poisoned").clone();
+        if let Some(cfg) = cfg_opt {
             if !self.sessione_app_disponibile(&cfg) {
                 self.sospendi_avvisi_per_app_non_disponibile();
                 return;
             }
+            let correnti = self.deriva(&cfg);
+            pota_overlay_non_corrente(&self.overlay_in_attesa, &correnti);
         }
         let in_attesa = {
             let mut coda = self
@@ -466,10 +506,69 @@ impl Notificatore {
         if cfg.as_ref() == Some(&prossima) {
             return;
         }
-        *cfg = Some(prossima);
+        let precedente = cfg.clone();
+        *cfg = Some(prossima.clone());
         drop(cfg);
+
+        // Se le notifiche dei suggerimenti sono state disattivate globalmente o per singola categoria,
+        // azzera lo stato persistente per far ripartire pulito il conteggio di attesa alla riattivazione.
+        if let Some(ref prec) = precedente {
+            let disattivazione_globale =
+                prec.suggerimenti.notifiche_attive && !prossima.suggerimenti.notifiche_attive;
+            if disattivazione_globale {
+                self.azzera_avvisi_suggerimenti(&prossima.user_id, None);
+            } else {
+                let rimosse: Vec<String> = prec
+                    .suggerimenti
+                    .tipi_abilitati
+                    .iter()
+                    .filter(|tipo| !prossima.suggerimenti.tipi_abilitati.contains(*tipo))
+                    .cloned()
+                    .collect();
+                if !rimosse.is_empty() {
+                    self.azzera_avvisi_suggerimenti(&prossima.user_id, Some(&rimosse));
+                }
+            }
+        }
+
         self.segnala_modifica();
         self.scansiona();
+    }
+
+    /// Azzera lo storico degli avvisi emessi per i suggerimenti (e i relativi timer di primo rilevamento).
+    pub fn azzera_avvisi_suggerimenti(&self, user_id: &str, tipi: Option<&[String]>) {
+        if let Some(state) = self.app.try_state::<AppState>() {
+            let tipi_da_azzerare: Vec<String> = match tipi {
+                Some(t) => t.to_vec(),
+                None => vec![
+                    "rimborso".into(),
+                    "distinta".into(),
+                    "provvigione".into(),
+                    "produzione".into(),
+                    "spedizione".into(),
+                    "preventivo".into(),
+                ],
+            };
+            for record in state.records_list("notifica_avvisata").unwrap_or_default() {
+                if record.data.get("user_id").and_then(|value| value.as_str()) != Some(user_id) {
+                    continue;
+                }
+                let Some(chiave) = record.data.get("chiave").and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                if tipi_da_azzerare
+                    .iter()
+                    .any(|tipo| chiave_stato_appartiene_al_tipo(chiave, tipo))
+                {
+                    let _ = state.record_delete("notifica_avvisata", &record.id);
+                }
+            }
+        }
+        *self
+            .suggerimenti_cache
+            .lock()
+            .expect("suggerimenti cache poisoned") = CacheSuggerimenti::default();
     }
 
     /// Scollega il notificatore dall'utente precedente e azzera la deduplicazione.
@@ -541,10 +640,7 @@ impl Notificatore {
         }
         if cache.sporca {
             cache.bundle = state
-                .suggerimenti_lista_con_soglia_preventivi_per_anno(
-                    soglia_preventivo,
-                    anno,
-                )
+                .suggerimenti_lista_con_soglia_preventivi_per_anno(soglia_preventivo, anno)
                 .ok();
             cache.sporca = false;
         }
@@ -606,34 +702,111 @@ impl Notificatore {
     fn suggerimenti_notificabili(
         &self,
         state: &AppState,
+        user_id: &str,
         preferenze: &PreferenzeSuggerimenti,
+        ultimi_avvisi: &HashMap<String, i64>,
+        riattivazioni_dashboard: &HashMap<String, i64>,
     ) -> Vec<SuggerimentoDto> {
         if !preferenze.notifiche_attive || preferenze.tipi_abilitati.is_empty() {
             return Vec::new();
         }
         let ora = ora_ms();
-        let bundle = self.bundle_suggerimenti(
-            state,
-            soglia_preventivo(preferenze),
-            preferenze.anno,
-        );
-        let rilevati_ms = self
-            .suggerimenti_cache
-            .lock()
-            .expect("suggerimenti cache poisoned")
-            .rilevati_ms
-            .clone();
+        let bundle =
+            self.bundle_suggerimenti(state, soglia_preventivo(preferenze), preferenze.anno);
+
         bundle
             .map(|bundle| {
+                // Tipi di suggerimento presenti in questo momento
+                let tipi_presenti: HashSet<&str> = bundle
+                    .suggerimenti
+                    .iter()
+                    .map(|s| s.tipo.as_str())
+                    .collect();
+
+                // Pulisci lo stato di eventuali tipi risolti/scomparsi
+                for tipo in [
+                    "rimborso",
+                    "distinta",
+                    "provvigione",
+                    "produzione",
+                    "spedizione",
+                    "preventivo",
+                ] {
+                    if !tipi_presenti.contains(tipo) && !user_id.is_empty() {
+                        let chiave_avviso =
+                            chiave_stato_suggerimento("suggerimento", tipo, preferenze.anno);
+                        let chiave_primo =
+                            chiave_stato_suggerimento("primo_rilevato", tipo, preferenze.anno);
+                        if ultimi_avvisi.contains_key(&chiave_avviso)
+                            || ultimi_avvisi.contains_key(&chiave_primo)
+                        {
+                            let id_avviso = format!("avviso-v1|{user_id}|{chiave_avviso}");
+                            let id_primo = format!("avviso-v1|{user_id}|{chiave_primo}");
+                            let _ = state.record_delete("notifica_avvisata", &id_avviso);
+                            let _ = state.record_delete("notifica_avvisata", &id_primo);
+                        }
+                    }
+                }
+
                 bundle
                     .suggerimenti
                     .into_iter()
                     .filter(|suggerimento| {
+                        let chiave = chiave_stato_suggerimento(
+                            "suggerimento",
+                            &suggerimento.tipo,
+                            preferenze.anno,
+                        );
+                        let ultimo_avviso = ultimi_avvisi.get(&chiave).copied().unwrap_or(0);
+                        let chiave_primo = chiave_stato_suggerimento(
+                            "primo_rilevato",
+                            &suggerimento.tipo,
+                            preferenze.anno,
+                        );
+                        let primo_rilevato = match ultimi_avvisi.get(&chiave_primo).copied() {
+                            Some(ts) if ts > 0 => ts,
+                            _ => {
+                                if !user_id.is_empty() {
+                                    let stato_id = format!("avviso-v1|{user_id}|{chiave_primo}");
+                                    let mut campi = serde_json::Map::new();
+                                    campi.insert(
+                                        "chiave".into(),
+                                        serde_json::Value::String(chiave_primo.clone()),
+                                    );
+                                    campi.insert(
+                                        "user_id".into(),
+                                        serde_json::Value::String(user_id.to_string()),
+                                    );
+                                    campi.insert(
+                                        "ts".into(),
+                                        serde_json::Value::Number(serde_json::Number::from(ora)),
+                                    );
+                                    campi.insert(
+                                        "tipo".into(),
+                                        serde_json::Value::String(suggerimento.tipo.clone()),
+                                    );
+                                    let _ = state.record_create_with_id(
+                                        "notifica_avvisata",
+                                        &stato_id,
+                                        campi,
+                                    );
+                                }
+                                ora
+                            }
+                        };
+
+                        let forzato = riattivazioni_dashboard
+                            .get(&suggerimento.id)
+                            .copied()
+                            .unwrap_or(0)
+                            > ultimo_avviso;
                         suggerimento_notificabile(
                             suggerimento,
                             preferenze,
                             ora,
-                            rilevati_ms.get(&suggerimento.id).copied().unwrap_or(ora),
+                            primo_rilevato,
+                            ultimo_avviso,
+                            forzato,
                         )
                     })
                     .collect()
@@ -641,16 +814,12 @@ impl Notificatore {
             .unwrap_or_default()
     }
 
+    /// I suggerimenti vivono nella Dashboard e nei pop-up custom; non compaiono nella lista della campanella.
     pub fn suggerimenti_notifiche_lista(
         &self,
-        preferenze: SuggerimentiPreferenzeInput,
+        _preferenze: SuggerimentiPreferenzeInput,
     ) -> Result<Vec<SuggerimentoDto>, String> {
-        let state = self
-            .app
-            .try_state::<AppState>()
-            .ok_or_else(|| "stato applicativo non disponibile".to_string())?;
-        crate::premium::ensure_access(&state)?;
-        Ok(self.suggerimenti_notificabili(&state, &normalizza_preferenze_suggerimenti(preferenze)))
+        Ok(Vec::new())
     }
 
     /// Rideriva le notifiche correnti e avvisa per quelle nuove non ancora viste.
@@ -746,6 +915,7 @@ impl Notificatore {
         }
 
         let correnti = self.deriva(&cfg);
+        pota_overlay_non_corrente(&self.overlay_in_attesa, &correnti);
         let reatt = self.reattivazioni(&cfg.user_id);
         let reatt_dashboard = self.riattivazioni_dashboard(&cfg.user_id);
         self.ultimo_controllo_ms.store(ora, Ordering::Release);
@@ -826,6 +996,14 @@ impl Notificatore {
             .try_state::<AppState>()
             .and_then(|state| state.records_list("notifica_letta").ok())
             .map(|recs| ultime_riattivazioni_dashboard(recs, user_id))
+            .unwrap_or_default()
+    }
+
+    fn ultime_notifiche_avvisate(&self, user_id: &str) -> HashMap<String, i64> {
+        self.app
+            .try_state::<AppState>()
+            .and_then(|state| state.records_list("notifica_avvisata").ok())
+            .map(|recs| ultimi_avvisi(recs, user_id))
             .unwrap_or_default()
     }
 
@@ -1062,7 +1240,15 @@ impl Notificatore {
         // FASE 14: usa lo stesso bundle Premium della Dashboard, già in cache e
         // filtrato dalle preferenze locali. Nessun report viene duplicato nel
         // notificatore e nessun calcolo parte sui PC senza accesso.
-        for suggerimento in self.suggerimenti_notificabili(&state, &cfg.suggerimenti) {
+        let ultimi_avvisi = self.ultime_notifiche_avvisate(&cfg.user_id);
+        let reatt_dashboard = self.riattivazioni_dashboard(&cfg.user_id);
+        for suggerimento in self.suggerimenti_notificabili(
+            &state,
+            &cfg.user_id,
+            &cfg.suggerimenti,
+            &ultimi_avvisi,
+            &reatt_dashboard,
+        ) {
             out.push(Notif {
                 id: suggerimento.id,
                 tipo: "suggerimento".into(),
@@ -1109,6 +1295,35 @@ impl Notificatore {
     /// letto/scartato. Le card custom sono l'unico canale visivo: se WebView2 non è
     /// ancora pronto le accodiamo e le consegniamo al successivo handshake dell'overlay.
     fn avvisa(&self, cfg: &Cfg, nuove: &[Notif]) {
+        // Registra l'avvenuto invio su storage persistente SQLite (notifica_avvisata).
+        // Questo impedisce a ogni riavvio dell'app di ri-emettere immediatamente il pop-up/suono,
+        // garantendo il rispetto della cadenza di re-invio configurata.
+        if let Some(state) = self.app.try_state::<AppState>() {
+            let ora = ora_ms();
+            for n in nuove {
+                let chiave = if n.tipo == "suggerimento" {
+                    let tipo = crate::app::suggestions::tipo_suggerimento_da_id(&n.id)
+                        .unwrap_or(n.id.as_str());
+                    chiave_stato_suggerimento("suggerimento", tipo, cfg.suggerimenti.anno)
+                } else {
+                    n.id.clone()
+                };
+                let stato_id = format!("avviso-v1|{}|{}", cfg.user_id, chiave);
+                let mut campi = serde_json::Map::new();
+                campi.insert("chiave".into(), serde_json::Value::String(chiave));
+                campi.insert(
+                    "user_id".into(),
+                    serde_json::Value::String(cfg.user_id.clone()),
+                );
+                campi.insert(
+                    "ts".into(),
+                    serde_json::Value::Number(serde_json::Number::from(ora)),
+                );
+                campi.insert("tipo".into(), serde_json::Value::String(n.tipo.clone()));
+                let _ = state.record_create_with_id("notifica_avvisata", &stato_id, campi);
+            }
+        }
+
         // Il fuoco arriva dai window event (atomico), MAI interrogando lo stato finestra
         // cross-thread: su Windows quelle chiamate dal thread di fondo possono bloccarsi e
         // facevano «morire» gli avvisi dopo il primo. L'eventuale `show()` viene
@@ -1199,6 +1414,17 @@ impl Notificatore {
     }
 }
 
+fn pota_overlay_non_corrente(overlay_in_attesa: &Mutex<Vec<Notif>>, correnti: &[Notif]) {
+    let correnti_ids: HashSet<&str> = correnti
+        .iter()
+        .map(|notifica| notifica.id.as_str())
+        .collect();
+    overlay_in_attesa
+        .lock()
+        .expect("overlay queue poisoned")
+        .retain(|notifica| correnti_ids.contains(notifica.id.as_str()));
+}
+
 /// Percorso di affidabilità quando WebView2 non è pronto: l'audio continua a usare
 /// rodio, mentre gli avvisi visivi restano accodati per l'overlay custom. Gli id
 /// stabili evitano duplicati anche se più tentativi di consegna falliscono.
@@ -1283,35 +1509,38 @@ fn suggerimento_notificabile(
     suggerimento: &SuggerimentoDto,
     preferenze: &PreferenzeSuggerimenti,
     ora: i64,
-    rilevato_ms: i64,
+    primo_rilevato_ms: i64,
+    ultimo_avviso_ms: i64,
+    forzato_da_dashboard: bool,
 ) -> bool {
     if !preferenze.tipi_abilitati.contains(&suggerimento.tipo) {
         return false;
     }
-    // I preventivi sono già filtrati candidato per candidato dal motore usando
-    // giorni civili locali; non riapplicare qui la soglia all'aggregato.
-    let giorni = if suggerimento.tipo == "preventivo" {
-        0
-    } else {
-        preferenze
-            .giorni_avviso
-            .get(&suggerimento.tipo)
-            .copied()
-            .unwrap_or(0)
-            .clamp(0, 90)
-    };
-    let da_data = giorni_civili(&suggerimento.riferimento_data)
-        .map(|giorno| giorno.saturating_add(giorni).saturating_mul(GIORNO_MS))
-        .unwrap_or_else(|| {
-            suggerimento
-                .aggiornato_ms
-                .saturating_add(giorni.saturating_mul(GIORNO_MS))
-        });
+    if forzato_da_dashboard {
+        return ora >= suggerimento.aggiornato_ms;
+    }
+    let giorni = preferenze
+        .giorni_avviso
+        .get(&suggerimento.tipo)
+        .copied()
+        .unwrap_or(0)
+        .clamp(0, 90);
+    if giorni > 0 {
+        let intervallo_ms = giorni.saturating_mul(GIORNO_MS);
+        let base_ms = if ultimo_avviso_ms > 0 {
+            ultimo_avviso_ms
+        } else {
+            primo_rilevato_ms
+        };
+        if ora.saturating_sub(base_ms) < intervallo_ms {
+            return false;
+        }
+    }
     let dopo_rivalidazione = suggerimento
         .aggiornato_ms
-        .max(rilevato_ms)
+        .max(primo_rilevato_ms)
         .saturating_add(RIVALIDAZIONE_SUGGERIMENTO_MS);
-    ora >= da_data.max(dopo_rivalidazione)
+    ora >= dopo_rivalidazione
 }
 
 fn soglia_preventivo(preferenze: &PreferenzeSuggerimenti) -> i64 {
@@ -1662,6 +1891,65 @@ mod tests {
         assert!(normale.is_empty());
     }
 
+    #[test]
+    fn ultimi_avvisi_filtra_per_utente_e_tiene_il_piu_recente() {
+        let record = |id: &str, user_id: &str, chiave: &str, ts: i64| {
+            let data: serde_json::Map<String, serde_json::Value> = [
+                ("user_id".to_string(), serde_json::json!(user_id)),
+                ("chiave".to_string(), serde_json::json!(chiave)),
+                ("ts".to_string(), serde_json::json!(ts)),
+            ]
+            .into_iter()
+            .collect();
+            crate::app::RecordDto {
+                id: id.to_string(),
+                revision: String::new(),
+                data,
+                deleted: false,
+            }
+        };
+
+        let make_recs = || {
+            vec![
+                record("a1", "u1", "suggerimento:produzione", 100),
+                record("a2", "u1", "suggerimento:produzione", 250),
+                record("a3", "u1", "suggerimento:rimborso", 150),
+                record("a4", "u2", "suggerimento:produzione", 500),
+            ]
+        };
+
+        let mappa_u1 = ultimi_avvisi(make_recs(), "u1");
+        assert_eq!(mappa_u1.get("suggerimento:produzione"), Some(&250));
+        assert_eq!(mappa_u1.get("suggerimento:rimborso"), Some(&150));
+        assert_eq!(mappa_u1.len(), 2);
+
+        let mappa_u2 = ultimi_avvisi(make_recs(), "u2");
+        assert_eq!(mappa_u2.get("suggerimento:produzione"), Some(&500));
+        assert_eq!(mappa_u2.get("suggerimento:rimborso"), None);
+    }
+
+    #[test]
+    fn stato_suggerimenti_e_isolato_per_anno() {
+        let preventivo_2025 = chiave_stato_suggerimento("suggerimento", "preventivo", 2025);
+        let preventivo_2026 = chiave_stato_suggerimento("suggerimento", "preventivo", 2026);
+        let preventivo_tutti = chiave_stato_suggerimento("suggerimento", "preventivo", 0);
+
+        assert_ne!(preventivo_2025, preventivo_2026);
+        assert_ne!(preventivo_2026, preventivo_tutti);
+        assert!(chiave_stato_appartiene_al_tipo(
+            &preventivo_2025,
+            "preventivo"
+        ));
+        assert!(chiave_stato_appartiene_al_tipo(
+            "suggerimento:preventivo",
+            "preventivo"
+        ));
+        assert!(!chiave_stato_appartiene_al_tipo(
+            &preventivo_2025,
+            "produzione"
+        ));
+    }
+
     /// Notif minima per i test del diff (solo l'id conta).
     fn notif(id: &str) -> Notif {
         Notif {
@@ -1710,41 +1998,93 @@ mod tests {
             priorita: 90,
             collegamento: SuggerimentoCollegamentoDto::default(),
             riferimento_data: "2026-08-01".into(),
-            aggiornato_ms: giorno + 1_000,
+            aggiornato_ms: giorno,
         };
         let subito = preferenze_suggerimenti_test(&["rimborso"], 0);
         assert!(!suggerimento_notificabile(
             &suggerimento,
             &subito,
-            giorno + 60_999,
-            giorno + 1_000,
+            giorno + 59_999,
+            giorno,
+            0,
+            false,
         ));
         assert!(suggerimento_notificabile(
             &suggerimento,
             &subito,
-            giorno + 61_000,
-            giorno + 1_000,
+            giorno + 60_000,
+            giorno,
+            0,
+            false,
         ));
 
-        let domani = preferenze_suggerimenti_test(&["rimborso"], 1);
+        let ogni_3_giorni = preferenze_suggerimenti_test(&["rimborso"], 3);
+        // Primo avviso: prima dei 3 giorni dalla prima rilevazione, la notifica attende
         assert!(!suggerimento_notificabile(
             &suggerimento,
-            &domani,
-            giorno + GIORNO_MS - 1,
-            giorno + 1_000,
+            &ogni_3_giorni,
+            giorno + 60_000,
+            giorno,
+            0,
+            false,
         ));
+        assert!(!suggerimento_notificabile(
+            &suggerimento,
+            &ogni_3_giorni,
+            giorno + 3 * GIORNO_MS - 1,
+            giorno,
+            0,
+            false,
+        ));
+        // Al compimento del 3° giorno: scatta il primo avviso
+        let primo_avviso = giorno + 3 * GIORNO_MS;
         assert!(suggerimento_notificabile(
             &suggerimento,
-            &domani,
-            giorno + GIORNO_MS,
-            giorno + 1_000,
+            &ogni_3_giorni,
+            primo_avviso,
+            giorno,
+            0,
+            false,
         ));
+
+        // Secondo avviso dopo che è già stato inviato un avviso al tempo `primo_avviso`:
+        let intervallo = 3 * GIORNO_MS;
+        // Prima dei 3 giorni dal primo avviso: soppresso
+        assert!(!suggerimento_notificabile(
+            &suggerimento,
+            &ogni_3_giorni,
+            primo_avviso + intervallo - 1,
+            giorno,
+            primo_avviso,
+            false,
+        ));
+        // Trascorsi i 3 giorni dal primo avviso: notificabile
+        assert!(suggerimento_notificabile(
+            &suggerimento,
+            &ogni_3_giorni,
+            primo_avviso + intervallo,
+            giorno,
+            primo_avviso,
+            false,
+        ));
+        // Se forzato da dashboard (anche se entro i 3 giorni): notificabile
+        assert!(suggerimento_notificabile(
+            &suggerimento,
+            &ogni_3_giorni,
+            primo_avviso + 1_000,
+            giorno,
+            primo_avviso,
+            true,
+        ));
+
         let disabilitato = preferenze_suggerimenti_test(&[], 0);
         assert!(!suggerimento_notificabile(
             &suggerimento,
             &disabilitato,
             i64::MAX,
-            giorno + 1_000,
+            giorno,
+            0,
+            false,
         ));
 
         // Una nuova fotografia residua deve attendere anche se le sorgenti
@@ -1755,18 +2095,22 @@ mod tests {
             &subito,
             molto_dopo,
             molto_dopo - 30_000,
+            0,
+            false,
         ));
         assert!(suggerimento_notificabile(
             &suggerimento,
             &subito,
             molto_dopo,
             molto_dopo - RIVALIDAZIONE_SUGGERIMENTO_MS,
+            0,
+            false,
         ));
     }
 
     #[test]
     fn suggerimento_preventivo_non_riapplica_la_soglia_all_aggregato() {
-        let giorno = giorni_civili("2026-08-08").unwrap() * GIORNO_MS;
+        let t0 = giorni_civili("2026-08-01").unwrap() * GIORNO_MS;
         let suggerimento = SuggerimentoDto {
             id: "s14:preventivo:test".into(),
             tipo: "preventivo".into(),
@@ -1775,8 +2119,8 @@ mod tests {
             azione_label: String::new(),
             priorita: 80,
             collegamento: SuggerimentoCollegamentoDto::default(),
-            riferimento_data: "2026-08-08".into(),
-            aggiornato_ms: giorno,
+            riferimento_data: "2026-08-01".into(),
+            aggiornato_ms: t0,
         };
         let preferenze = PreferenzeSuggerimenti {
             tipi_abilitati: ["preventivo".to_string()].into_iter().collect(),
@@ -1784,11 +2128,42 @@ mod tests {
             giorni_avviso: [("preventivo".to_string(), 7)].into_iter().collect(),
             anno: 0,
         };
+        // Primo avviso: prima dei 7 giorni dalla prima rilevazione (t0), non notifica
+        assert!(!suggerimento_notificabile(
+            &suggerimento,
+            &preferenze,
+            t0 + 6 * GIORNO_MS,
+            t0,
+            0,
+            false,
+        ));
+        // A 7 giorni dalla prima rilevazione: primo avviso
+        let primo_avviso = t0 + 7 * GIORNO_MS;
         assert!(suggerimento_notificabile(
             &suggerimento,
             &preferenze,
-            giorno + RIVALIDAZIONE_SUGGERIMENTO_MS,
-            giorno,
+            primo_avviso,
+            t0,
+            0,
+            false,
+        ));
+        // Secondo avviso prima di 7 giorni: soppresso
+        assert!(!suggerimento_notificabile(
+            &suggerimento,
+            &preferenze,
+            primo_avviso + 2 * GIORNO_MS,
+            t0,
+            primo_avviso,
+            false,
+        ));
+        // Secondo avviso dopo 7 giorni: consentito
+        assert!(suggerimento_notificabile(
+            &suggerimento,
+            &preferenze,
+            primo_avviso + 7 * GIORNO_MS,
+            t0,
+            primo_avviso,
+            false,
         ));
     }
 
@@ -1827,6 +2202,13 @@ mod tests {
             coda.lock().expect("coda test poisoned").len(),
             MAX_NOTIFICHE_OVERLAY_IN_ATTESA,
         );
+    }
+
+    #[test]
+    fn coda_overlay_elimina_suggerimenti_non_piu_correnti() {
+        let coda = Mutex::new(vec![notif("rimasto"), notif("ordine-eliminato")]);
+        pota_overlay_non_corrente(&coda, &[notif("rimasto")]);
+        assert_eq!(ids(&coda.lock().unwrap()), ["rimasto"]);
     }
 
     /// Regressione storica «si ferma dopo la prima»: dopo la semina, OGNI nuova notifica

@@ -55,6 +55,11 @@ export function PreventivoWindow() {
   const documentoRef = useRef<DocumentoA4 | null>(null);
   useRicordaGeometria("preventivo");
 
+  const caricaDisponibili = useCallback(async () => {
+    const ordini = await api.preventivoOrdiniDisponibili();
+    setDisponibili(ordini);
+  }, []);
+
   const chiudi = useCallback(async () => {
     // Non smonta prima il contenuto: se Windows impiega qualche istante a
     // distruggere la Webview, l'utente continua a vedere la schermata corrente
@@ -234,6 +239,8 @@ export function PreventivoWindow() {
       <NuovoPreventivoModal
         opened={nuovoAperto}
         disponibili={disponibili}
+        anno={0}
+        onRefreshDisponibili={caricaDisponibili}
         dentroFinestra
         onClose={() => void chiudi()}
         onOrdinePreparato={(id) => {

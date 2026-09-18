@@ -9,7 +9,7 @@
 //! La scrittura è atomica (file temporaneo + `rename`). Ogni dispositivo scrive i
 //! propri snapshot `snapshots/<device>-<seq>.json`; al bootstrap tutti gli snapshot
 //! validi vengono fusi per campo e i log completi colmano la coda.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -229,6 +229,14 @@ fn validate_snapshot(snapshot: &SnapshotData) -> std::result::Result<(), String>
             .parse::<crate::sync::hlc::Hlc>()
             .map_err(|err| err.to_string())?;
     }
+    for purged in &snapshot.purged {
+        if !purged.purged_hlc.is_empty() {
+            purged
+                .purged_hlc
+                .parse::<crate::sync::hlc::Hlc>()
+                .map_err(|err| err.to_string())?;
+        }
+    }
     for hlc in snapshot
         .applied
         .values()
@@ -251,6 +259,49 @@ struct MergedRecord {
     deleted: Option<(String, bool)>,
 }
 
+fn entity_ricreabile(entity: &str) -> bool {
+    matches!(entity, "preventivo" | "scheda_cliente")
+}
+
+fn created_successiva_al_purge(
+    entity: &str,
+    id: &str,
+    created_hlc: &str,
+    purged: &BTreeMap<(String, String), String>,
+    legacy_purge_watermarks: &BTreeMap<(String, String), Vec<BTreeMap<String, String>>>,
+) -> bool {
+    if !entity_ricreabile(entity) {
+        return false;
+    }
+    let key = (entity.to_string(), id.to_string());
+    let Some(purged_hlc) = purged.get(&key) else {
+        return true;
+    };
+    if !purged_hlc.is_empty() {
+        return created_hlc > purged_hlc.as_str();
+    }
+
+    // Gli snapshot legacy non registravano l'HLC della purge. Un record può
+    // prevalere soltanto se la sua Created è certamente successiva a ciascuno
+    // snapshot che porta quella tombstone: il device non era ancora noto, oppure
+    // il suo watermark era precedente. Senza watermarks restiamo conservativi.
+    let Ok(created) = created_hlc.parse::<crate::sync::hlc::Hlc>() else {
+        return false;
+    };
+    legacy_purge_watermarks.get(&key).is_some_and(|sources| {
+        !sources.is_empty()
+            && sources.iter().all(|source| {
+                if source.is_empty() {
+                    return false;
+                }
+                source
+                    .get(&created.device)
+                    .map(|watermark| created_hlc > watermark.as_str())
+                    .unwrap_or(true)
+            })
+    })
+}
+
 fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotData>> {
     if snapshots.is_empty() {
         return Ok(None);
@@ -258,7 +309,29 @@ fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotDa
 
     let mut records: BTreeMap<(String, String), MergedRecord> = BTreeMap::new();
     let mut clocks: BTreeMap<(String, String, String), RawClock> = BTreeMap::new();
-    let mut purged: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut purged: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut legacy_purge_watermarks: BTreeMap<(String, String), Vec<BTreeMap<String, String>>> =
+        BTreeMap::new();
+    for snap in &snapshots {
+        for pg in &snap.purged {
+            let key = (pg.entity.clone(), pg.id.clone());
+            if pg.purged_hlc.is_empty() {
+                legacy_purge_watermarks
+                    .entry(key.clone())
+                    .or_default()
+                    .push(snap.watermarks.clone());
+            }
+            purged
+                .entry(key)
+                .and_modify(|current| {
+                    if current.is_empty() || (!pg.purged_hlc.is_empty() && pg.purged_hlc > *current)
+                    {
+                        *current = pg.purged_hlc.clone();
+                    }
+                })
+                .or_insert_with(|| pg.purged_hlc.clone());
+        }
+    }
     let mut applied = BTreeMap::new();
     let mut offsets = BTreeMap::new();
     let mut watermarks = BTreeMap::new();
@@ -274,9 +347,6 @@ fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotDa
             })
             .collect();
 
-        for pg in snap.purged {
-            purged.insert((pg.entity, pg.id));
-        }
         for (event_id, hlc) in snap.applied {
             applied
                 .entry(event_id)
@@ -327,6 +397,17 @@ fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotDa
 
         for raw in snap.records {
             let key = (raw.entity.clone(), raw.id.clone());
+            if purged.contains_key(&key)
+                && !created_successiva_al_purge(
+                    &raw.entity,
+                    &raw.id,
+                    &raw.created_hlc,
+                    &purged,
+                    &legacy_purge_watermarks,
+                )
+            {
+                continue;
+            }
             let data = serde_json::from_str::<serde_json::Value>(&raw.data)
                 .ok()
                 .and_then(|value| value.as_object().cloned())
@@ -391,7 +472,20 @@ fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotDa
 
     let records = records
         .into_iter()
-        .filter(|(key, _)| !purged.contains(key))
+        .filter(|(key, merged)| {
+            let Some(_) = purged.get(key) else {
+                return true;
+            };
+            merged.created_hlc.as_ref().is_some_and(|created| {
+                created_successiva_al_purge(
+                    &key.0,
+                    &key.1,
+                    created,
+                    &purged,
+                    &legacy_purge_watermarks,
+                )
+            })
+        })
         .map(|((entity, id), merged)| {
             let data = serde_json::Map::from_iter(
                 merged
@@ -413,12 +507,29 @@ fn merge_snapshots(snapshots: Vec<SnapshotData>) -> io::Result<Option<SnapshotDa
         .collect::<io::Result<Vec<_>>>()?;
     let clocks = clocks
         .into_iter()
-        .filter(|((entity, id, _), _)| !purged.contains(&(entity.clone(), id.clone())))
+        .filter(|((entity, id, _), clock)| {
+            let Some(purged_hlc) = purged.get(&(entity.clone(), id.clone())) else {
+                return true;
+            };
+            records
+                .iter()
+                .any(|record| record.entity == *entity && record.id == *id)
+                && (purged_hlc.is_empty() || clock.hlc > *purged_hlc)
+        })
         .map(|(_, clock)| clock)
         .collect();
     let purged = purged
         .into_iter()
-        .map(|(entity, id)| crate::projection::RawPurged { entity, id })
+        .filter_map(|((entity, id), purged_hlc)| {
+            let recreated = records
+                .iter()
+                .any(|record| record.entity == entity && record.id == id);
+            (!recreated).then_some(crate::projection::RawPurged {
+                entity,
+                id,
+                purged_hlc,
+            })
+        })
         .collect();
 
     Ok(Some(SnapshotData {
@@ -489,6 +600,18 @@ mod tests {
         a.prune(1).unwrap();
         assert_eq!(conta(dir.path(), "PC-A-"), 1);
         assert_eq!(conta(dir.path(), "PC-B-"), 3, "i file di PC-B sono intatti");
+    }
+
+    #[test]
+    fn snapshot_con_hlc_purge_non_valido_viene_rifiutato() {
+        let mut snapshot = vuoto();
+        snapshot.purged.push(crate::projection::RawPurged {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            purged_hlc: "non-un-hlc".into(),
+        });
+
+        assert!(validate_snapshot(&snapshot).is_err());
     }
 
     #[test]
@@ -586,6 +709,83 @@ mod tests {
         assert!(merged.records.iter().any(|record| record.id == "SOLO-B"));
         assert_eq!(merged.offsets.get("PC-A.ndjson"), Some(&0));
         assert_eq!(merged.offsets.get("PC-B.ndjson"), Some(&0));
+    }
+
+    #[test]
+    fn latest_tiene_la_ricreazione_successiva_alla_tombstone() {
+        let mut eliminato = vuoto();
+        eliminato.purged.push(crate::projection::RawPurged {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            purged_hlc: "0000000000000010-00000000-PC-A".into(),
+        });
+        let mut ricreato = vuoto();
+        ricreato.records.push(RawRecord {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            data: json!({"ordine_id":"O1"}).to_string(),
+            deleted: false,
+            created_hlc: "0000000000000020-00000000-PC-B".into(),
+            updated_hlc: "0000000000000021-00000000-PC-B".into(),
+        });
+        ricreato.clocks.push(RawClock {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            field: "ordine_id".into(),
+            hlc: "0000000000000021-00000000-PC-B".into(),
+        });
+
+        let merged = merge_snapshots(vec![eliminato, ricreato]).unwrap().unwrap();
+        assert!(merged
+            .records
+            .iter()
+            .any(|record| record.id == "preventivo/O1"));
+        assert!(merged.purged.is_empty());
+    }
+
+    #[test]
+    fn latest_distingue_ricreazione_da_record_vecchio_con_tombstone_legacy() {
+        let mut eliminato = vuoto();
+        eliminato
+            .watermarks
+            .insert("PC-A".into(), "0000000000000010-00000000-PC-A".into());
+        eliminato.purged.push(crate::projection::RawPurged {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            purged_hlc: String::new(),
+        });
+
+        let mut vecchio = vuoto();
+        vecchio.records.push(RawRecord {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            data: json!({"ordine_id":"VECCHIO"}).to_string(),
+            deleted: false,
+            created_hlc: "0000000000000005-00000000-PC-A".into(),
+            updated_hlc: "0000000000000006-00000000-PC-A".into(),
+        });
+
+        let mut ricreato = vuoto();
+        ricreato.records.push(RawRecord {
+            entity: "preventivo".into(),
+            id: "preventivo/O1".into(),
+            data: json!({"ordine_id":"NUOVO"}).to_string(),
+            deleted: false,
+            created_hlc: "0000000000000020-00000000-PC-B".into(),
+            updated_hlc: "0000000000000021-00000000-PC-B".into(),
+        });
+
+        let merged = merge_snapshots(vec![eliminato, vecchio, ricreato])
+            .unwrap()
+            .unwrap();
+        let record = merged
+            .records
+            .iter()
+            .find(|record| record.id == "preventivo/O1")
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_str(&record.data).unwrap();
+        assert_eq!(data["ordine_id"], json!("NUOVO"));
+        assert!(merged.purged.is_empty());
     }
 
     #[test]

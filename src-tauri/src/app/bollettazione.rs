@@ -570,13 +570,11 @@ fn first_name_initial_compatible(a: &str, b: &str) -> bool {
 
 fn patient_similarity(a: &str, b: &str) -> f64 {
     name_similarity(a, b)
-        .max(
-            if first_name_initial_compatible(a, b) {
-                0.95
-            } else {
-                0.0
-            },
-        )
+        .max(if first_name_initial_compatible(a, b) {
+            0.95
+        } else {
+            0.0
+        })
         .clamp(0.0, 1.0)
 }
 

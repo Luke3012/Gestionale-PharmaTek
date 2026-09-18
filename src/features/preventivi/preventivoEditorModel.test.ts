@@ -53,6 +53,15 @@ describe("modello editor preventivo", () => {
       scontoPercentuale: 5,
       acconto: 1000,
       linea: "Diagnostica",
+      fatturazioneDiversa: false,
+      fatturazione: {
+        ragione_sociale: "",
+        indirizzo: "",
+        citta: "",
+        prov: "",
+        cap: "",
+        piva: "",
+      },
     });
     expect(righeDaPreventivo(preventivo)).toEqual([
       expect.objectContaining({
@@ -64,10 +73,23 @@ describe("modello editor preventivo", () => {
     ]);
   });
 
+  it("crea Preparazione 1 quando il preventivo non contiene prodotti", () => {
+    const righe = righeDaPreventivo({ ...preventivo, righe: [] });
+    expect(righe).toHaveLength(1);
+    expect(righe[0]).toMatchObject({
+      prodottoId: "",
+      prodottoNome: "",
+      qta: 1,
+      prezzo: "",
+      tipoTest: "PRICK TEST",
+    });
+  });
+
   it("esclude la chiave React dalla firma delle modifiche", () => {
     const [riga] = righeDaPreventivo(preventivo);
-    const prima = snapshotPreventivoEditor(preventivo, [riga], 45, "Bonifico", "Introduzione", "Note", 5, 1000, "Diagnostica");
-    const seconda = snapshotPreventivoEditor(preventivo, [{ ...riga, key: "altra-key" }], 45, "Bonifico", "Introduzione", "Note", 5, 1000, "Diagnostica");
+    const fatturazione = { ragione_sociale: "", indirizzo: "", citta: "", prov: "", cap: "", piva: "" };
+    const prima = snapshotPreventivoEditor(preventivo, [riga], 45, "Bonifico", "Introduzione", "Note", 5, 1000, "Diagnostica", false, fatturazione);
+    const seconda = snapshotPreventivoEditor(preventivo, [{ ...riga, key: "altra-key" }], 45, "Bonifico", "Introduzione", "Note", 5, 1000, "Diagnostica", false, fatturazione);
 
     expect(seconda).toBe(prima);
   });

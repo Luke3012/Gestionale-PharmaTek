@@ -64,10 +64,7 @@ impl AppState {
                     if numero.is_empty() {
                         continue;
                     }
-                    numeri_lotto
-                        .entry(ordine_id)
-                        .or_default()
-                        .push(numero);
+                    numeri_lotto.entry(ordine_id).or_default().push(numero);
                 }
                 for nums in numeri_lotto.values_mut() {
                     nums.sort();
@@ -109,16 +106,17 @@ impl AppState {
                             vec![cat]
                         }
                     };
-                    let (ha_righe_da_produrre, ha_righe_in_lavorazione) =
-                        stato_righe_produzione.get(&r.id).copied().unwrap_or_default();
+                    let (ha_righe_da_produrre, ha_righe_in_lavorazione) = stato_righe_produzione
+                        .get(&r.id)
+                        .copied()
+                        .unwrap_or_default();
                     let ha_righe = righe_count.get(&r.id).copied().unwrap_or(0) > 0;
                     let linea_produzione = linee_ordine
                         .iter()
                         .any(|linea| matches!(linea.as_str(), "Immunoterapia" | "Diagnostica"));
                     let produzione_operativa = stato_ordine != "Rifiutato"
                         && linea_produzione
-                        && ((!["Spedito", "Chiuso", "Rifiutato"]
-                            .contains(&stato_ordine.as_str())
+                        && ((!["Spedito", "Chiuso", "Rifiutato"].contains(&stato_ordine.as_str())
                             && (!ha_righe || ha_righe_da_produrre))
                             || ha_righe_in_lavorazione);
 

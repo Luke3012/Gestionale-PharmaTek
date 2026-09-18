@@ -100,7 +100,9 @@ pub struct PreventivoDto {
     pub id: String,
     pub revision: String,
     pub esiste: bool,
+    pub preventivo_nel_cestino: bool,
     pub ordine_id: String,
+    pub ordine_attivo: bool,
     pub ordine_revision: String,
     pub ordine_numero: String,
     pub ordine_data: String,
@@ -130,6 +132,7 @@ pub struct PreventivoDto {
     pub fatturazione_prov: String,
     pub fatturazione_piva: String,
     pub fatturazione_codice_fiscale: String,
+    pub fatturazione_diversa: bool,
     pub medico_id: String,
     pub medico_nome: String,
     pub agente_id: String,
@@ -210,7 +213,27 @@ pub struct PreventivoSalvaInput {
     #[serde(default)]
     pub sconto_percentuale: u64,
     pub acconto: i64,
+    #[serde(default)]
+    pub fatturazione: Option<FatturazioneOrdineInput>,
     pub righe: Vec<PreventivoRigaSalvaInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FatturazioneOrdineInput {
+    pub attiva: bool,
+    #[serde(default)]
+    pub ragione_sociale: String,
+    #[serde(default)]
+    pub indirizzo: String,
+    #[serde(default)]
+    pub citta: String,
+    #[serde(default)]
+    pub prov: String,
+    #[serde(default)]
+    pub cap: String,
+    #[serde(default)]
+    pub piva: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -596,7 +619,7 @@ fn fingerprint_semantico(
             })
         })
         .collect::<Vec<_>>();
-    let semantica = json!({
+    let mut semantica = json!({
         "versione": VERSIONE_MODELLO_DOCUMENTI,
         "ordineId": ordine.id,
         "linea": linea.trim(),
@@ -612,7 +635,55 @@ fn fingerprint_semantico(
         "acconto": acconto,
         "righe": righe,
     });
+    let fatturazione = [
+        "fatt_ragione_sociale",
+        "fatt_indirizzo",
+        "fatt_citta",
+        "fatt_prov",
+        "fatt_cap",
+        "fatt_piva",
+    ];
+    if fatturazione
+        .iter()
+        .any(|field| !str_field(&ordine.data, field).is_empty())
+    {
+        semantica
+            .as_object_mut()
+            .expect("fingerprint object")
+            .insert(
+                "fatturazione".into(),
+                json!({
+                    "ragioneSociale": str_field(&ordine.data, "fatt_ragione_sociale"),
+                    "indirizzo": str_field(&ordine.data, "fatt_indirizzo"),
+                    "citta": str_field(&ordine.data, "fatt_citta"),
+                    "prov": str_field(&ordine.data, "fatt_prov"),
+                    "cap": str_field(&ordine.data, "fatt_cap"),
+                    "piva": str_field(&ordine.data, "fatt_piva"),
+                }),
+            );
+    }
     Ok(sha256_hex(&serde_json::to_vec(&semantica).map_err(es)?))
+}
+
+fn campi_fatturazione_input(fatturazione: &FatturazioneOrdineInput) -> [(&'static str, String); 6] {
+    let valore = |testo: &str| {
+        if fatturazione.attiva {
+            testo.trim().to_string()
+        } else {
+            String::new()
+        }
+    };
+    [
+        (
+            "fatt_ragione_sociale",
+            valore(&fatturazione.ragione_sociale),
+        ),
+        ("fatt_indirizzo", valore(&fatturazione.indirizzo)),
+        ("fatt_citta", valore(&fatturazione.citta)),
+        ("fatt_prov", valore(&fatturazione.prov).to_uppercase()),
+        ("fatt_cap", valore(&fatturazione.cap)),
+        ("fatt_piva", valore(&fatturazione.piva).to_uppercase()),
+    ]
 }
 
 fn ultimo_invio_preventivo(
@@ -644,14 +715,18 @@ fn preventivo_dto(
     includi_utilizzi: bool,
 ) -> AppResult<PreventivoDto> {
     let id = preventivo_id(ordine_id);
-    let preventivo = p
-        .get("preventivo", &id)
-        .map_err(es)?
-        .filter(|record| !record.deleted);
+    let preventivo_record = p.get("preventivo", &id).map_err(es)?;
+    let preventivo_nel_cestino = preventivo_record
+        .as_ref()
+        .is_some_and(|record| record.deleted);
+    let preventivo = preventivo_record
+        .as_ref()
+        .filter(|record| !record.deleted)
+        .cloned();
     let esiste = preventivo.is_some();
-    let ordine = p
-        .get("ordine", ordine_id)
-        .map_err(es)?
+    let ordine_record = p.get("ordine", ordine_id).map_err(es)?;
+    let ordine_attivo = ordine_record.as_ref().is_some_and(|record| !record.deleted);
+    let ordine = ordine_record
         .filter(|record| {
             !record.deleted || (esiste && bool_field(&record.data, "supporto_preventivo_eliminato"))
         })
@@ -840,12 +915,14 @@ fn preventivo_dto(
     };
     Ok(PreventivoDto {
         id,
-        revision: preventivo
+        revision: preventivo_record
             .as_ref()
             .map(|record| record.updated_hlc.to_string())
             .unwrap_or_default(),
         esiste,
+        preventivo_nel_cestino,
         ordine_id: ordine_id.to_string(),
+        ordine_attivo,
         ordine_revision: ordine.updated_hlc.to_string(),
         ordine_numero: numero_ordine.clone(),
         ordine_data: str_field(&ordine.data, "data"),
@@ -875,6 +952,7 @@ fn preventivo_dto(
         fatturazione_prov,
         fatturazione_piva,
         fatturazione_codice_fiscale,
+        fatturazione_diversa: fatturazione_separata,
         medico_id,
         medico_nome: str_field(&medico, "nome"),
         agente_id,
@@ -1139,7 +1217,6 @@ impl AppState {
                     .list("preventivo")
                     .unwrap_or_default()
                     .into_iter()
-                    .chain(p.list_deleted("preventivo").unwrap_or_default())
                     .map(|record| str_field(&record.data, "ordine_id"))
                     .collect::<HashSet<_>>();
                 let mut result = p
@@ -1383,10 +1460,11 @@ impl AppState {
                         .map_err(es)?
                         .ok_or_else(|| "l'ordine non è più disponibile".to_string())?;
 
-                    let preventivo = p
-                        .get("preventivo", &id)
-                        .map_err(es)?
-                        .filter(|record| !record.deleted);
+                    let preventivo_record = p.get("preventivo", &id).map_err(es)?;
+                    let preventivo = preventivo_record
+                        .as_ref()
+                        .filter(|record| !record.deleted)
+                        .cloned();
                     if ordine.deleted
                         && !(preventivo.is_some()
                             && bool_field(&ordine.data, "supporto_preventivo_eliminato"))
@@ -1394,7 +1472,7 @@ impl AppState {
                         return Err("l'ordine non è più disponibile".into());
                     }
                     valida_revision(&ordine, &input.ordine_revision, "L'ordine")?;
-                    match preventivo.as_ref() {
+                    match preventivo_record.as_ref() {
                         Some(record) => {
                             valida_revision(record, &input.preventivo_revision, "Il preventivo")?;
                         }
@@ -1465,8 +1543,14 @@ impl AppState {
                     if input.acconto < 0 || input.acconto > totale {
                         return Err("l'acconto deve essere compreso fra zero e il totale".into());
                     }
+                    let mut ordine_prospettico = ordine.clone();
+                    if let Some(fatturazione) = input.fatturazione.as_ref() {
+                        for (field, value) in campi_fatturazione_input(fatturazione) {
+                            ordine_prospettico.data.insert(field.into(), json!(value));
+                        }
+                    }
                     let fingerprint = fingerprint_semantico(
-                        &ordine,
+                        &ordine_prospettico,
                         &input.linea,
                         input.validita_giorni,
                         &input.condizioni_pagamento,
@@ -1483,7 +1567,16 @@ impl AppState {
                     let modificato = precedente_fingerprint != fingerprint;
                     let mut mutations = Vec::new();
 
-                    if preventivo.is_none() {
+                    if preventivo_record
+                        .as_ref()
+                        .is_some_and(|record| record.deleted)
+                    {
+                        mutations.push(Mutation::new(
+                            "preventivo",
+                            id.clone(),
+                            EventBody::Restored,
+                        ));
+                    } else if preventivo.is_none() {
                         let numero_ordine = numeri_ordini(p)
                             .get(&ordine_id)
                             .cloned()
@@ -1579,6 +1672,21 @@ impl AppState {
                                 value: json!(input.linea.trim()),
                             },
                         ));
+                    }
+                    if let Some(fatturazione) = input.fatturazione.as_ref() {
+                        for (field, value) in campi_fatturazione_input(fatturazione) {
+                            let value = json!(value);
+                            if ordine.data.get(field) != Some(&value) {
+                                mutations.push(Mutation::new(
+                                    "ordine",
+                                    ordine_id.clone(),
+                                    EventBody::FieldSet {
+                                        field: field.into(),
+                                        value,
+                                    },
+                                ));
+                            }
+                        }
                     }
                     for (riga_id, input_riga) in righe_con_id {
                         let corrente = correnti_by_id.get(&riga_id);
@@ -1694,11 +1802,12 @@ impl AppState {
                         .filter(|record| !record.deleted)
                         .ok_or_else(|| "l'ordine non è più disponibile".to_string())?;
                     valida_revision(&ordine, &input.ordine_revision, "L'ordine")?;
-                    let scheda = p
-                        .get("scheda_cliente", &id)
-                        .map_err(es)?
-                        .filter(|record| !record.deleted);
-                    match scheda.as_ref() {
+                    let scheda_record = p.get("scheda_cliente", &id).map_err(es)?;
+                    let scheda = scheda_record
+                        .as_ref()
+                        .filter(|record| !record.deleted)
+                        .cloned();
+                    match scheda_record.as_ref() {
                         Some(record) => {
                             valida_revision(record, &input.scheda_revision, "La scheda cliente")?
                         }
@@ -1711,7 +1820,13 @@ impl AppState {
                         None => {}
                     }
                     let mut mutations = Vec::new();
-                    if scheda.is_none() {
+                    if scheda_record.as_ref().is_some_and(|record| record.deleted) {
+                        mutations.push(Mutation::new(
+                            "scheda_cliente",
+                            id.clone(),
+                            EventBody::Restored,
+                        ));
+                    } else if scheda.is_none() {
                         mutations.push(Mutation::new(
                             "scheda_cliente",
                             id.clone(),
@@ -2057,6 +2172,7 @@ mod tests {
             note: note.into(),
             sconto_percentuale: preventivo.sconto_percentuale,
             acconto: preventivo.acconto,
+            fatturazione: None,
             righe: preventivo
                 .righe
                 .iter()
@@ -2084,6 +2200,102 @@ mod tests {
     fn id_documenti_sono_deterministici_per_ordine() {
         assert_eq!(preventivo_id("ORD-1"), "preventivo/ORD-1");
         assert_eq!(scheda_id("ORD-1"), "scheda_cliente/ORD-1");
+    }
+
+    #[test]
+    fn salvataggio_ripristina_preventivo_nel_cestino_senza_duplicarlo() {
+        let (_app, _data, state) = stato_test(true);
+        let ordine = crea_ordine(&state);
+        let iniziale = state.preventivo_get(&ordine.id).unwrap();
+        let salvato = state
+            .preventivo_salva(input_preventivo(&iniziale, "Prima versione"))
+            .unwrap();
+        state
+            .preventivo_elimina(&salvato.id, &salvato.revision)
+            .unwrap();
+
+        let disponibile = state
+            .preventivo_ordini_disponibili()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.ordine_id == ordine.id)
+            .expect("ordine con preventivo nel Cestino nuovamente disponibile");
+        assert!(disponibile.preventivo_nel_cestino);
+        assert!(!disponibile.revision.is_empty());
+
+        let ripristinato = state
+            .preventivo_salva(input_preventivo(&disponibile, "Versione ripristinata"))
+            .unwrap();
+        assert!(ripristinato.esiste);
+        assert!(!ripristinato.preventivo_nel_cestino);
+        assert_eq!(ripristinato.id, salvato.id);
+        assert_eq!(state.preventivi_lista().unwrap().len(), 1);
+        assert!(state
+            .cestino()
+            .unwrap()
+            .iter()
+            .all(|item| item.id != salvato.id));
+    }
+
+    #[test]
+    fn salvataggio_ricrea_preventivo_dopo_purge_e_preserva_fatturazione_sull_ordine() {
+        let (_app, _data, state) = stato_test(true);
+        let ordine = crea_ordine(&state);
+        let iniziale = state.preventivo_get(&ordine.id).unwrap();
+        let salvato = state
+            .preventivo_salva(input_preventivo(&iniziale, "Prima versione"))
+            .unwrap();
+        state
+            .preventivo_elimina(&salvato.id, &salvato.revision)
+            .unwrap();
+        state.preventivo_purge(&salvato.id).unwrap();
+
+        let disponibile = state
+            .preventivo_ordini_disponibili()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.ordine_id == ordine.id)
+            .expect("ordine senza preventivo attivo");
+        let mut input = input_preventivo(&disponibile, "Ricreato");
+        input.fatturazione = Some(FatturazioneOrdineInput {
+            attiva: true,
+            ragione_sociale: "Menegon Orietta".into(),
+            indirizzo: "Via Roma 1".into(),
+            citta: "Verona".into(),
+            prov: "vr".into(),
+            cap: "37100".into(),
+            piva: "rssmra80a01f205x".into(),
+        });
+        let ricreato = state.preventivo_salva(input).unwrap();
+        assert!(ricreato.esiste);
+        assert_eq!(ricreato.id, salvato.id);
+        assert!(ricreato.fatturazione_diversa);
+        assert_eq!(ricreato.fatturazione_nome, "Menegon Orietta");
+        assert_eq!(ricreato.fatturazione_prov, "VR");
+        assert_eq!(ricreato.fatturazione_piva, "RSSMRA80A01F205X");
+
+        let record_ordine = state.record_get("ordine", &ordine.id).unwrap().unwrap();
+        assert_eq!(
+            str_field(&record_ordine.data, "fatt_ragione_sociale"),
+            "Menegon Orietta"
+        );
+
+        let fingerprint_con_fatturazione = ricreato.fingerprint_corrente.clone();
+        let mut senza = input_preventivo(&ricreato, "Ricreato");
+        senza.fatturazione = Some(FatturazioneOrdineInput {
+            attiva: false,
+            ragione_sociale: String::new(),
+            indirizzo: String::new(),
+            citta: String::new(),
+            prov: String::new(),
+            cap: String::new(),
+            piva: String::new(),
+        });
+        let ripulito = state.preventivo_salva(senza).unwrap();
+        assert!(!ripulito.fatturazione_diversa);
+        assert_ne!(ripulito.fingerprint_corrente, fingerprint_con_fatturazione);
+        let record_ordine = state.record_get("ordine", &ordine.id).unwrap().unwrap();
+        assert_eq!(str_field(&record_ordine.data, "fatt_ragione_sociale"), "");
     }
 
     #[test]
@@ -2258,6 +2470,7 @@ mod tests {
                 note: String::new(),
                 sconto_percentuale: 75,
                 acconto: 5_000,
+                fatturazione: None,
                 righe: vec![PreventivoRigaSalvaInput {
                     id: Some(prefill.righe[0].id.clone()),
                     revision: prefill.righe[0].revision.clone(),
@@ -2315,6 +2528,7 @@ mod tests {
                 note: salvato.note.clone(),
                 sconto_percentuale: salvato.sconto_percentuale,
                 acconto: 0,
+                fatturazione: None,
                 righe: salvato
                     .righe
                     .iter()
@@ -2364,7 +2578,9 @@ mod tests {
             .preventivo_ordini_disponibili()
             .unwrap()
             .iter()
-            .all(|elemento| elemento.ordine_id != ordine.id));
+            .any(|elemento| {
+                elemento.ordine_id == ordine.id && elemento.preventivo_nel_cestino
+            }));
         state.preventivo_ripristina(&senza_acconto.id).unwrap();
         assert_eq!(state.preventivi_lista().unwrap().len(), 1);
     }
@@ -2438,6 +2654,7 @@ mod tests {
             .is_some_and(|record| record.deleted));
 
         let ripristinato = state.preventivo_get(&ordine.id).unwrap();
+        assert!(!ripristinato.ordine_attivo);
         assert_eq!(ripristinato.numero_preventivo, preventivo.numero_preventivo);
         let aggiornato = state
             .preventivo_salva(input_preventivo(
@@ -2682,6 +2899,7 @@ mod tests {
             note: String::new(),
             sconto_percentuale: 0,
             acconto: 0,
+            fatturazione: None,
             righe: vec![PreventivoRigaSalvaInput {
                 id: Some(prefill.righe[0].id.clone()),
                 revision: prefill.righe[0].revision.clone(),

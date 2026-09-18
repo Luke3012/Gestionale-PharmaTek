@@ -87,6 +87,28 @@ impl Projection {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        let purged_esisteva: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'purged'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        let purged_aveva_hlc = if purged_esisteva {
+            let mut stmt = conn.prepare("PRAGMA table_info(purged)")?;
+            let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "purged_hlc" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        } else {
+            true
+        };
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -136,6 +158,7 @@ impl Projection {
             CREATE TABLE IF NOT EXISTS purged (
                 entity TEXT NOT NULL,
                 id     TEXT NOT NULL,
+                purged_hlc TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (entity, id)
             );
 
@@ -150,6 +173,46 @@ impl Projection {
             CREATE INDEX IF NOT EXISTS idx_records_entity ON records(entity, deleted);
             "#,
         )?;
+        let has_purged_hlc = {
+            let mut stmt = conn.prepare("PRAGMA table_info(purged)")?;
+            let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            let mut found = false;
+            for column in columns {
+                if column? == "purged_hlc" {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        };
+        if !has_purged_hlc {
+            conn.execute(
+                "ALTER TABLE purged ADD COLUMN purged_hlc TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if purged_esisteva && !purged_aveva_hlc {
+            let ha_identita_ricreabili: bool = conn
+                .query_row(
+                    "SELECT 1 FROM purged
+                     WHERE entity IN ('preventivo', 'scheda_cliente') LIMIT 1",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if ha_identita_ricreabili {
+                // Gli eventi successivi al purge possono essere già stati marcati
+                // come applicati dalla vecchia semantica. Rileggiamo una sola volta
+                // i log disponibili: field clock e tombstone rendono il replay
+                // idempotente, senza toccare la sorgente condivisa.
+                conn.execute_batch(
+                    "DELETE FROM applied_events;
+                     DELETE FROM log_offsets;",
+                )?;
+            }
+        }
+        conn.pragma_update(None, "user_version", 2)?;
         Ok(Projection { conn })
     }
 
@@ -285,10 +348,21 @@ impl Projection {
         let ts = ev.ts.to_string();
         let mut changed = false;
 
-        if !matches!(ev.body, EventBody::Purged) && Self::is_purged(tx, &ev.entity, &ev.entity_id)?
-        {
-            Self::insert_applied_and_watermark(tx, ev, &ts)?;
-            return Ok(false);
+        if !matches!(ev.body, EventBody::Purged) {
+            if let Some(purged_hlc) = Self::purged_hlc(tx, &ev.entity, &ev.entity_id)? {
+                let ricreabile = matches!(ev.entity.as_str(), "preventivo" | "scheda_cliente");
+                let created_successiva = matches!(ev.body, EventBody::Created)
+                    && ricreabile
+                    && !purged_hlc.is_empty()
+                    && ts > purged_hlc;
+                if created_successiva {
+                    tx.prepare_cached("DELETE FROM purged WHERE entity = ?1 AND id = ?2")?
+                        .execute(params![ev.entity, ev.entity_id])?;
+                } else {
+                    Self::insert_applied_and_watermark(tx, ev, &ts)?;
+                    return Ok(false);
+                }
+            }
         }
 
         if !matches!(ev.body, EventBody::Purged) {
@@ -342,6 +416,21 @@ impl Projection {
                 }
             }
             EventBody::Purged => {
+                // Per le identità deterministiche ricreabili, un purge vecchio non
+                // deve cancellare una nuova incarnazione creata causalmente dopo.
+                if matches!(ev.entity.as_str(), "preventivo" | "scheda_cliente") {
+                    let created_hlc: Option<String> = tx
+                        .query_row(
+                            "SELECT created_hlc FROM records WHERE entity = ?1 AND id = ?2",
+                            params![ev.entity, ev.entity_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if created_hlc.as_ref().is_some_and(|created| created > &ts) {
+                        Self::insert_applied_and_watermark(tx, ev, &ts)?;
+                        return Ok(false);
+                    }
+                }
                 // Terminale: i dati applicativi spariscono davvero; resta solo una
                 // tombstone minima per impedire resurrezioni da vecchi log.
                 let removed_records = tx
@@ -351,8 +440,12 @@ impl Projection {
                     .prepare_cached("DELETE FROM field_clocks WHERE entity = ?1 AND id = ?2")?
                     .execute(params![ev.entity, ev.entity_id])?;
                 let inserted = tx
-                    .prepare_cached("INSERT OR IGNORE INTO purged(entity, id) VALUES(?1, ?2)")?
-                    .execute(params![ev.entity, ev.entity_id])?;
+                    .prepare_cached(
+                        "INSERT INTO purged(entity, id, purged_hlc) VALUES(?1, ?2, ?3)
+                         ON CONFLICT(entity, id) DO UPDATE SET purged_hlc = excluded.purged_hlc
+                         WHERE purged.purged_hlc = '' OR excluded.purged_hlc > purged.purged_hlc",
+                    )?
+                    .execute(params![ev.entity, ev.entity_id, ts])?;
                 tx.prepare_cached("DELETE FROM local_suppressions WHERE entity = ?1 AND id = ?2")?
                     .execute(params![ev.entity, ev.entity_id])?;
                 changed = removed_records > 0 || removed_clocks > 0 || inserted > 0;
@@ -363,12 +456,18 @@ impl Projection {
         Ok(changed)
     }
 
-    fn is_purged(tx: &rusqlite::Transaction<'_>, entity: &str, id: &str) -> Result<bool> {
-        Ok(tx
-            .prepare_cached("SELECT 1 FROM purged WHERE entity = ?1 AND id = ?2")?
-            .query_row(params![entity, id], |_| Ok(()))
-            .optional()?
-            .is_some())
+    fn purged_hlc(
+        tx: &rusqlite::Transaction<'_>,
+        entity: &str,
+        id: &str,
+    ) -> Result<Option<String>> {
+        tx.query_row(
+            "SELECT purged_hlc FROM purged WHERE entity = ?1 AND id = ?2",
+            params![entity, id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     fn insert_applied_and_watermark(
@@ -495,11 +594,14 @@ impl Projection {
 
     /// Elenca le tombstone minime dei record purgati definitivamente.
     pub fn list_purged(&self) -> Result<Vec<RawPurged>> {
-        let mut stmt = self.conn.prepare("SELECT entity, id FROM purged")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT entity, id, purged_hlc FROM purged")?;
         let rows = stmt.query_map([], |r| {
             Ok(RawPurged {
                 entity: r.get(0)?,
                 id: r.get(1)?,
+                purged_hlc: r.get(2)?,
             })
         })?;
         let mut out = Vec::new();
@@ -507,6 +609,25 @@ impl Projection {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Completa le tombstone create da versioni che non salvavano ancora l'HLC.
+    /// Non sovrascrive mai un valore già noto e modifica soltanto la proiezione locale.
+    pub(crate) fn backfill_purged_hlcs(
+        &mut self,
+        hlcs: &BTreeMap<(String, String), String>,
+    ) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut aggiornate = 0;
+        for ((entity, id), hlc) in hlcs {
+            aggiornate += tx.execute(
+                "UPDATE purged SET purged_hlc = ?3
+                 WHERE entity = ?1 AND id = ?2 AND purged_hlc = ''",
+                params![entity, id, hlc],
+            )?;
+        }
+        tx.commit()?;
+        Ok(aggiornate)
     }
 
     /// Verifica la tombstone terminale di un singolo record senza confondere una
@@ -730,11 +851,14 @@ impl Projection {
         let applied = BTreeMap::new();
         let mut purged = Vec::new();
         {
-            let mut stmt = self.conn.prepare("SELECT entity, id FROM purged")?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT entity, id, purged_hlc FROM purged")?;
             let rows = stmt.query_map([], |r| {
                 Ok(RawPurged {
                     entity: r.get(0)?,
                     id: r.get(1)?,
+                    purged_hlc: r.get(2)?,
                 })
             })?;
             for r in rows {
@@ -767,6 +891,10 @@ impl Projection {
     /// Importa uno snapshot in un DB (assunto vergine). Usato per il bootstrap.
     pub fn import(&mut self, snap: &SnapshotData) -> Result<()> {
         let tx = self.conn.transaction()?;
+        let richiede_replay_legacy = snap.purged.iter().any(|pg| {
+            pg.purged_hlc.is_empty()
+                && matches!(pg.entity.as_str(), "preventivo" | "scheda_cliente")
+        });
         for r in &snap.records {
             tx.execute(
                 "INSERT OR REPLACE INTO records(entity, id, data, deleted, created_hlc, updated_hlc)
@@ -783,8 +911,8 @@ impl Projection {
         }
         for pg in &snap.purged {
             tx.execute(
-                "INSERT OR IGNORE INTO purged(entity, id) VALUES(?1, ?2)",
-                params![pg.entity, pg.id],
+                "INSERT OR REPLACE INTO purged(entity, id, purged_hlc) VALUES(?1, ?2, ?3)",
+                params![pg.entity, pg.id, pg.purged_hlc],
             )?;
             tx.execute(
                 "DELETE FROM records WHERE entity = ?1 AND id = ?2",
@@ -795,14 +923,16 @@ impl Projection {
                 params![pg.entity, pg.id],
             )?;
         }
-        for (event_id, hlc) in &snap.applied {
-            tx.execute(
-                "INSERT OR REPLACE INTO applied_events(event_id, hlc) VALUES(?1, ?2)",
-                params![event_id, hlc],
-            )?;
-            if snap.watermarks.is_empty() {
-                if let Ok(h) = hlc.parse::<Hlc>() {
-                    Self::upsert_watermark_tx(&tx, &h.device, hlc)?;
+        if !richiede_replay_legacy {
+            for (event_id, hlc) in &snap.applied {
+                tx.execute(
+                    "INSERT OR REPLACE INTO applied_events(event_id, hlc) VALUES(?1, ?2)",
+                    params![event_id, hlc],
+                )?;
+                if snap.watermarks.is_empty() {
+                    if let Ok(h) = hlc.parse::<Hlc>() {
+                        Self::upsert_watermark_tx(&tx, &h.device, hlc)?;
+                    }
                 }
             }
         }
@@ -812,11 +942,13 @@ impl Projection {
         // Ripristina i segnalibri: così l'ingest dopo l'import legge solo la coda
         // dei log (gli snapshot vecchi senza offset → mappa vuota → comportamento
         // di prima, rilettura da capo, comunque corretta per idempotenza).
-        for (file, offset) in &snap.offsets {
-            tx.execute(
-                "INSERT OR REPLACE INTO log_offsets(file, offset) VALUES(?1, ?2)",
-                params![file, offset],
-            )?;
+        if !richiede_replay_legacy {
+            for (file, offset) in &snap.offsets {
+                tx.execute(
+                    "INSERT OR REPLACE INTO log_offsets(file, offset) VALUES(?1, ?2)",
+                    params![file, offset],
+                )?;
+            }
         }
         if snap.watermarks.is_empty() && snap.applied.is_empty() {
             for r in &snap.records {
@@ -880,6 +1012,8 @@ pub struct RawClock {
 pub struct RawPurged {
     pub entity: String,
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub purged_hlc: String,
 }
 
 #[cfg(test)]
@@ -1076,6 +1210,43 @@ mod tests {
     }
 
     #[test]
+    fn import_snapshot_legacy_ricreabile_forza_il_replay_dei_log() {
+        let mut p = Projection::open_in_memory().unwrap();
+        let mut snapshot = SnapshotData {
+            records: Vec::new(),
+            clocks: Vec::new(),
+            applied: BTreeMap::from([(
+                "CREATED-SCARTATA".into(),
+                Hlc::new(20, 0, "PC-B").to_string(),
+            )]),
+            offsets: BTreeMap::from([("PC-B.ndjson".into(), 1234)]),
+            purged: vec![RawPurged {
+                entity: "preventivo".into(),
+                id: "preventivo/O1".into(),
+                purged_hlc: String::new(),
+            }],
+            watermarks: BTreeMap::from([("PC-B".into(), Hlc::new(20, 0, "PC-B").to_string())]),
+        };
+
+        p.import(&snapshot).unwrap();
+        assert_eq!(p.get_offset("PC-B.ndjson").unwrap(), 0);
+        let applied: i64 = p
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM applied_events WHERE event_id='CREATED-SCARTATA'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 0);
+
+        snapshot.purged[0].entity = "cliente".into();
+        let mut normale = Projection::open_in_memory().unwrap();
+        normale.import(&snapshot).unwrap();
+        assert_eq!(normale.get_offset("PC-B.ndjson").unwrap(), 1234);
+    }
+
+    #[test]
     fn snapshot_tiene_soft_deleted_ma_non_i_purged() {
         let mut p = Projection::open_in_memory().unwrap();
         p.apply(&set(
@@ -1121,7 +1292,10 @@ mod tests {
         assert!(snap.records.iter().any(|r| r.id == "SOFT" && r.deleted));
         assert!(snap.records.iter().all(|r| r.id != "PURGED"));
         assert!(snap.clocks.iter().all(|c| c.id != "PURGED"));
-        assert!(snap.purged.iter().any(|pg| pg.id == "PURGED"));
+        assert!(snap
+            .purged
+            .iter()
+            .any(|pg| pg.id == "PURGED" && pg.purged_hlc == Hlc::new(4, 0, "PC-A").to_string()));
         assert!(
             snap.applied.is_empty(),
             "i nuovi snapshot non serializzano la storia applied"
@@ -1158,6 +1332,162 @@ mod tests {
             ))
             .unwrap());
         assert!(p.get("client", "C1").unwrap().is_none());
+    }
+
+    #[test]
+    fn solo_identita_deterministiche_ricreabili_superano_un_purge_precedente() {
+        let mut p = Projection::open_in_memory().unwrap();
+        for entity in ["client", "preventivo", "scheda_cliente"] {
+            p.apply(&Event::new(
+                Hlc::new(10, 0, "PC-A"),
+                "PC-A",
+                "t",
+                entity,
+                "ID",
+                EventBody::Created,
+            ))
+            .unwrap();
+            p.apply(&Event::new(
+                Hlc::new(20, 0, "PC-A"),
+                "PC-A",
+                "t",
+                entity,
+                "ID",
+                EventBody::Purged,
+            ))
+            .unwrap();
+        }
+
+        for entity in ["client", "preventivo", "scheda_cliente"] {
+            assert!(!p
+                .apply(&Event::new(
+                    Hlc::new(20, 0, "PC-A"),
+                    "PC-A",
+                    "t",
+                    entity,
+                    "ID",
+                    EventBody::Created,
+                ))
+                .unwrap());
+        }
+        assert!(p
+            .apply(&Event::new(
+                Hlc::new(30, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                "ID",
+                EventBody::Created,
+            ))
+            .unwrap());
+        assert!(p
+            .apply(&Event::new(
+                Hlc::new(30, 1, "PC-A"),
+                "PC-A",
+                "t",
+                "scheda_cliente",
+                "ID",
+                EventBody::Created,
+            ))
+            .unwrap());
+        assert!(p.get("client", "ID").unwrap().is_none());
+        assert!(p.get("preventivo", "ID").unwrap().is_some());
+        assert!(p.get("scheda_cliente", "ID").unwrap().is_some());
+
+        // Un purge consegnato in ritardo non cancella la nuova incarnazione.
+        assert!(!p
+            .apply(&Event::new(
+                Hlc::new(25, 0, "PC-B"),
+                "PC-B",
+                "t",
+                "preventivo",
+                "ID",
+                EventBody::Purged,
+            ))
+            .unwrap());
+        assert!(p.get("preventivo", "ID").unwrap().is_some());
+    }
+
+    #[test]
+    fn snapshot_legacy_senza_hlc_purge_resta_importabile() {
+        let json = r#"{
+            "records": [], "clocks": [], "offsets": {},
+            "purged": [{"entity":"preventivo","id":"preventivo/O1"}],
+            "watermarks": {}
+        }"#;
+        let snapshot: SnapshotData = serde_json::from_str(json).unwrap();
+        assert_eq!(snapshot.purged[0].purged_hlc, "");
+        let mut p = Projection::open_in_memory().unwrap();
+        p.import(&snapshot).unwrap();
+        assert!(p.record_is_purged("preventivo", "preventivo/O1").unwrap());
+    }
+
+    #[test]
+    fn tombstone_legacy_senza_frontiera_non_accetta_created_in_replay() {
+        let snapshot = SnapshotData {
+            records: Vec::new(),
+            clocks: Vec::new(),
+            applied: BTreeMap::new(),
+            offsets: BTreeMap::new(),
+            purged: vec![RawPurged {
+                entity: "preventivo".into(),
+                id: "preventivo/O1".into(),
+                purged_hlc: String::new(),
+            }],
+            watermarks: BTreeMap::new(),
+        };
+        let mut p = Projection::open_in_memory().unwrap();
+        p.import(&snapshot).unwrap();
+
+        assert!(!p
+            .apply(&Event::new(
+                Hlc::new(100, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                "preventivo/O1",
+                EventBody::Created,
+            ))
+            .unwrap());
+        assert!(p.record_is_purged("preventivo", "preventivo/O1").unwrap());
+        assert!(p.get("preventivo", "preventivo/O1").unwrap().is_none());
+    }
+
+    #[test]
+    fn migrazione_tombstone_legacy_rilegge_solo_la_proiezione_locale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projection.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE purged(entity TEXT NOT NULL, id TEXT NOT NULL,
+                    PRIMARY KEY(entity, id));
+                 CREATE TABLE applied_events(event_id TEXT PRIMARY KEY, hlc TEXT NOT NULL);
+                 CREATE TABLE log_offsets(file TEXT PRIMARY KEY, offset INTEGER NOT NULL);
+                 INSERT INTO purged(entity, id) VALUES('preventivo', 'preventivo/O1');
+                 INSERT INTO applied_events(event_id, hlc)
+                    VALUES('E1', '0000000000000001-00000000-PC-A');
+                 INSERT INTO log_offsets(file, offset) VALUES('PC-A.ndjson', 123);",
+            )
+            .unwrap();
+        }
+
+        let p = Projection::open(&path).unwrap();
+        assert_eq!(p.get_offset("PC-A.ndjson").unwrap(), 0);
+        let applied: i64 = p
+            .conn
+            .query_row("SELECT COUNT(*) FROM applied_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(applied, 0);
+        let hlc: String = p
+            .conn
+            .query_row(
+                "SELECT purged_hlc FROM purged WHERE entity='preventivo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(hlc.is_empty());
     }
 
     #[test]

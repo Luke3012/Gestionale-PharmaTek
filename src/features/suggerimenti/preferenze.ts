@@ -12,9 +12,9 @@ export const TIPI_SUGGERIMENTO: readonly TipoSuggerimento[] = [
 export interface PreferenzeSuggerimenti {
   /** Categorie mostrate nella Dashboard e considerate dal notificatore. */
   tipiAbilitati: TipoSuggerimento[];
-  /** Inserisce le azioni mature in campanella e nei pop-up custom. */
+  /** Invia notifiche pop-up custom per le azioni da compiere. */
   notificheAttive: boolean;
-  /** Giorni minimi dalla data operativa prima dell'avviso. */
+  /** Cadenza di notifica: intervallo in giorni tra avvisi successivi per categoria (0 = immediato). */
   giorniAvviso: Record<TipoSuggerimento, number>;
 }
 

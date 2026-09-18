@@ -19,8 +19,8 @@ suggerimento:
 - scompare quando il lavoro viene completato o il dato sorgente cambia;
 - può essere nascosto fino a una modifica sostanziale delle sorgenti;
 - può essere ignorato insieme a tutte le altre azioni visibili con un unico salvataggio;
-- rispetta categorie e soglie configurate localmente sul PC;
-- entra nella campanella e nei pop-up custom quando raggiunge la soglia impostata;
+- rispetta categorie e cadenze di avviso configurate localmente sul PC;
+- invia pop-up custom nativi (durata 5 minuti) rispettando la cadenza impostata per ciascuna categoria, senza intasare la campanella (dedicata a promemoria, scadenze e messaggi);
 - converge fra postazioni senza introdurre un nuovo archivio di attività.
 
 Il motore non invia comunicazioni, non liquida importi, non crea lotti e non unisce
@@ -29,7 +29,7 @@ dominio.
 
 ## 2. Suggerimenti disponibili
 
-| Tipo | Condizione derivata | Azione | Soglia Default |
+| Tipo | Condizione derivata | Azione | Cadenza Notifica Default |
 |---|---|---|---|
 | Rimborsi | Uno o più rimborsi richiesti non ancora effettuati | Apre Contabilità → Rimborsi filtrata sugli aperti | 3 giorni |
 | Distinte | Contrassegni o assegni non ancora inclusi in distinta | Apre Contabilità → Distinte e avvia la distinta esistente | 20 giorni |
@@ -84,11 +84,11 @@ fra le sue finestre Tauri. Non creano record `impostazioni` e non passano da One
 permette di:
 
 - mostrare o nascondere ciascuna categoria (Provvigioni e Preventivi disattivate di default);
-- abilitare campanella, suono e pop-up per le azioni;
-- scegliere da 0 a 90 giorni di attesa per ogni categoria;
-- ripristinare le soglie predefinite tramite il pulsante **«Ripristina predefiniti»**.
+- abilitare le notifiche pop-up per le azioni;
+- scegliere da 0 a 90 giorni di cadenza di avviso per ciascuna categoria (0 = immediato, N = ripete la notifica ogni N giorni);
+- ripristinare le cadenze predefinite tramite il pulsante **«Ripristina predefiniti»**.
 
-Per i preventivi la soglia usa giorni civili locali ed è applicata ai singoli candidati prima
+Per i preventivi la cadenza e la soglia usano giorni civili locali ed è applicata ai singoli candidati prima
 dell'aggregazione della card; `0` significa disponibilità immediata. «Controlla ora» include
 temporaneamente anche i candidati sotto soglia.
 La stessa soglia è modificabile anche dalle Impostazioni generali, senza richiedere Premium; il
@@ -97,18 +97,19 @@ insieme, mentre la classificazione continua a usare un solo valore operativo.
 La marcatura manuale viene proposta soltanto dopo il salvataggio riuscito del preventivo in PDF
 o PNG; la stampa e l'annullamento del salvataggio non modificano lo stato di invio.
 
-Le card della Dashboard e le relative notifiche rispettano i giorni di soglia impostati:
-prima del raggiungimento della soglia la card non compare in Dashboard, a meno che l'operatore
-non forzi il ricalcolo cliccando su «Controlla ora». Anche con soglia zero il core rivalida la
-condizione per 60 secondi dopo l'ultima modifica sostanziale o la prima comparsa locale della
-nuova fotografia. Questo copre anche le card residue dopo un'azione parziale ed evita avvisi
-durante una transazione ancora in assestamento. La derivazione viene ripetuta sullo stato
-corrente prima dell'avviso: un'azione già risolta non genera quindi notifiche tardive.
+Nella Dashboard le card delle categorie abilitate rimangono sempre visibili finché l'azione non viene
+svolta o nascosta manualmente. I giorni configurati per ciascuna categoria regolano la **cadenza di notifica**
+(l'intervallo con cui viene emesso il pop-up se l'azione non è ancora stata eseguita). Quando una notifica
+viene emessa, il core Rust registra su SQLite (`notifica_avvisata`) il timestamp dell'avviso per quella
+categoria: all'avvio successivo dell'applicazione l'avviso viene silenziato fino allo scadere della cadenza
+impostata.
 
-Le notifiche riusano integralmente il sistema esistente: id stabile, stato letto/scartato
-per utente, campanella, finestra notifiche, suono unico Rust, overlay custom e deep-link. Gli
-stati letti FASE 14 seguono la retention temporale e non sono trattati come record `notifica`
-orfani.
+I suggerimenti non vengono inseriti nella lista della campanella (la quale rimane riservata a promemoria,
+scadenze pagamenti e messaggi operativi), ma attivano l'overlay custom con durata impostata a **5 minuti** (300.000 ms),
+garantendo tempo sufficiente per la presa in carico da parte dell'operatore. Il click sull'avviso custom naviga
+direttamente al flusso operativo corrispondente. Anche con cadenza zero il core rivalida la condizione per 60 secondi
+dopo l'ultima modifica sostanziale o la prima comparsa locale della nuova fotografia per evitare falsi allarmi
+durante transazioni in assestamento.
 
 ## 5. Comunicazioni di spedizione
 

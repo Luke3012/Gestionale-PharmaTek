@@ -342,7 +342,7 @@ function derivaComunicazioni(
     });
 }
 
-function derivaSuggerimenti(
+export function derivaSuggerimenti(
   suggerimenti: Suggerimento[],
 ): Notifica[] {
   return suggerimenti.map((suggerimento) => ({
@@ -362,7 +362,7 @@ function derivaSuggerimenti(
   }));
 }
 
-/** Costruisce l'elenco completo delle notifiche correnti (ordinato). */
+/** Costruisce l'elenco completo delle notifiche correnti della campanella (ordinato). */
 export function derivaNotifiche(d: DatiNotifiche): Notifica[] {
   const oggi = d.oggi ?? oggiIso();
   const ordiniVivi = new Set(d.ordini.map((o) => o.id));
@@ -372,7 +372,6 @@ export function derivaNotifiche(d: DatiNotifiche): Notifica[] {
     ...derivaMarcatori(d.ordini),
     ...derivaMessaggi(d.messaggi ?? [], d.userId ?? "", d.onboardingTime ?? 0),
     ...derivaComunicazioni(d.comunicazioni ?? []),
-    ...derivaSuggerimenti(d.suggerimenti ?? []),
   ]).filter((n) => n.collegato?.tipo !== "ordine" || ordiniVivi.has(n.collegato.id));
 }
 

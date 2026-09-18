@@ -10987,6 +10987,51 @@ fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
             .unwrap();
     }
 
+    for (data_ordine, nome) in [
+        ("2025-12-20", "preventivo-2025"),
+        ("2026-01-10", "preventivo-2026"),
+    ] {
+        let ordine = state
+            .record_create(
+                "ordine",
+                campi(&[
+                    ("data", json!(data_ordine)),
+                    ("stato", json!("Nuovo")),
+                    ("marcatore", json!("")),
+                ]),
+            )
+            .unwrap();
+        let preventivo_id = format!("preventivo/{}", ordine.id);
+        let ordine_id = ordine.id;
+        let fingerprint = nome.to_string();
+        let creato_ms = now_ms().saturating_sub(8 * 24 * 60 * 60 * 1000);
+        state
+            .with_engine(|engine| {
+                engine
+                    .emit_built_checked(move |_| {
+                        let mut mutations = vec![Mutation::new(
+                            "preventivo",
+                            preventivo_id.clone(),
+                            EventBody::Created,
+                        )];
+                        for (field, value) in campi(&[
+                            ("ordine_id", json!(ordine_id)),
+                            ("fingerprint_corrente", json!(fingerprint)),
+                            ("creato_ms", json!(creato_ms)),
+                        ]) {
+                            mutations.push(Mutation::new(
+                                "preventivo",
+                                preventivo_id.clone(),
+                                EventBody::FieldSet { field, value },
+                            ));
+                        }
+                        Ok(mutations)
+                    })
+                    .map_err(es)
+            })
+            .unwrap();
+    }
+
     let anno_2026 = state
         .suggerimenti_lista_con_soglia_preventivi_per_anno(0, 2026)
         .unwrap();
@@ -10997,6 +11042,12 @@ fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
         .unwrap();
     assert_eq!(rimborso_2026.titolo, "Completa il rimborso aperto");
     assert!(rimborso_2026.dettaglio.contains("20,00"));
+    let preventivi_2026 = anno_2026
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "preventivo")
+        .unwrap();
+    assert_eq!(preventivi_2026.titolo, "Invia il preventivo non trasmesso");
 
     let tutti = state
         .suggerimenti_lista_con_soglia_preventivi_per_anno(0, 0)
@@ -11007,4 +11058,10 @@ fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
         .find(|suggerimento| suggerimento.tipo == "rimborso")
         .unwrap();
     assert_eq!(rimborsi_tutti.titolo, "Completa 2 rimborsi aperti");
+    let preventivi_tutti = tutti
+        .suggerimenti
+        .iter()
+        .find(|suggerimento| suggerimento.tipo == "preventivo")
+        .unwrap();
+    assert_eq!(preventivi_tutti.titolo, "Invia 2 preventivi non trasmessi");
 }

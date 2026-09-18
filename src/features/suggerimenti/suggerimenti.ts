@@ -149,9 +149,9 @@ export function ordinaSuggerimenti(
 export function combinaSuggerimenti(
   bundle: SuggerimentiBundle,
   tipiAbilitati: readonly TipoSuggerimento[],
-  giorniAvviso?: Partial<Record<TipoSuggerimento, number>>,
-  temporanei?: ReadonlySet<string>,
-  oggi = oggiIso(),
+  _giorniAvviso?: Partial<Record<TipoSuggerimento, number>>,
+  _temporanei?: ReadonlySet<string>,
+  _oggi = oggiIso(),
 ): Suggerimento[] {
   const nascosti = new Set(bundle.nascosti);
   const tipiInPausa = new Set(bundle.tipiInPausa);
@@ -164,11 +164,7 @@ export function combinaSuggerimenti(
       !tipiInPausa.has(suggerimento.tipo) &&
       abilitati.has(suggerimento.tipo)
     ) {
-      const eForzato = temporanei?.has(suggerimento.id) ?? false;
-      const soglia = giorniAvviso?.[suggerimento.tipo] ?? 0;
-      if (eForzato || suggerimentoHaRaggiuntoSoglia(suggerimento, soglia, oggi)) {
-        unici.set(suggerimento.id, suggerimento);
-      }
+      unici.set(suggerimento.id, suggerimento);
     }
   }
   return ordinaSuggerimenti([...unici.values()]);

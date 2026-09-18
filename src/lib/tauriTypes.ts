@@ -425,7 +425,9 @@ export interface Preventivo {
   id: string;
   revision: string;
   esiste: boolean;
+  preventivoNelCestino?: boolean;
   ordineId: string;
+  ordineAttivo?: boolean;
   ordineRevision: string;
   ordineNumero: string;
   ordineData: string;
@@ -456,6 +458,7 @@ export interface Preventivo {
   fatturazioneProv: string;
   fatturazionePiva: string;
   fatturazioneCodiceFiscale: string;
+  fatturazioneDiversa?: boolean;
   medicoId: string;
   medicoNome: string;
   agenteId: string;
@@ -515,6 +518,15 @@ export interface PreventivoSalvaInput {
   note?: string;
   scontoPercentuale?: number;
   acconto: number;
+  fatturazione?: {
+    attiva: boolean;
+    ragioneSociale: string;
+    indirizzo: string;
+    citta: string;
+    prov: string;
+    cap: string;
+    piva: string;
+  };
   righe: PreventivoRigaSalvaInput[];
 }
 

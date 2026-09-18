@@ -152,7 +152,7 @@ describe("suggerimenti FASE 14", () => {
     ).toEqual([bassa.id]);
   });
 
-  it("filtra le card nella Dashboard se non hanno ancora raggiunto i giorni di soglia", () => {
+  it("mostra le card attive nella Dashboard per le categorie abilitate indipendentemente dalla data", () => {
     const oggi = "2026-09-16";
     const recente = voce("s14:rimborso:recente", 90, "2026-09-15"); // 1 giorno fa
     const matura = voce("s14:rimborso:matura", 92, "2026-09-10"); // 6 giorni fa
@@ -171,26 +171,8 @@ describe("suggerimenti FASE 14", () => {
       new Set(),
       oggi,
     );
-    expect(risultato.map((item) => item.id)).toEqual([matura.id]);
-  });
-
-  it("mostra comunque le card sotto soglia se forzate dal click Controlla ora (temporanei)", () => {
-    const oggi = "2026-09-16";
-    const recente = voce("s14:rimborso:recente", 90, "2026-09-15"); // 1 giorno fa
-    const temporanei = new Set([recente.id]);
-
-    const risultato = combinaSuggerimenti(
-      {
-        suggerimenti: [recente],
-        nascosti: [],
-        tipiInPausa: [],
-      },
-      ["rimborso"],
-      { rimborso: 3 },
-      temporanei,
-      oggi,
-    );
-    expect(risultato.map((item) => item.id)).toEqual([recente.id]);
+    // Nella Dashboard le azioni da compiere restano visibili (la cadenza regola solo le notifiche pop-up)
+    expect(risultato.map((item) => item.id)).toEqual([matura.id, recente.id]);
   });
 
   it("non ripropone subito nuove fotografie della categoria ignorata", () => {

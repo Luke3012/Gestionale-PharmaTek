@@ -1,5 +1,6 @@
 import type { Pagamento, Preventivo, RecordDto } from "../../lib/tauri";
 import { nuovaRiga, type RigaForm } from "../giornaliero/righeOrdine";
+import type { DatiFatturazione } from "../giornaliero/DatiFatturazionePanel";
 
 export type RigaDraftPreventivo = RigaForm;
 
@@ -57,6 +58,29 @@ export interface TestataDraftPreventivo extends Record<string, unknown> {
   scontoPercentuale: number;
   acconto: number;
   linea: string;
+  fatturazioneDiversa: boolean;
+  fatturazione: DatiFatturazione;
+}
+
+export function fatturazioneDaPreventivo(preventivo: Preventivo): DatiFatturazione {
+  if (!preventivo.fatturazioneDiversa) {
+    return {
+      ragione_sociale: "",
+      indirizzo: "",
+      citta: "",
+      prov: "",
+      cap: "",
+      piva: "",
+    };
+  }
+  return {
+    ragione_sociale: preventivo.fatturazioneNome,
+    indirizzo: preventivo.fatturazioneIndirizzo,
+    citta: preventivo.fatturazioneCitta,
+    prov: preventivo.fatturazioneProv,
+    cap: preventivo.fatturazioneCap,
+    piva: preventivo.fatturazionePiva,
+  };
 }
 
 export function testataDaPreventivo(preventivo: Preventivo): TestataDraftPreventivo {
@@ -68,6 +92,8 @@ export function testataDaPreventivo(preventivo: Preventivo): TestataDraftPrevent
     scontoPercentuale: preventivo.scontoPercentuale,
     acconto: preventivo.acconto,
     linea: preventivo.linee[0] || "Immunoterapia",
+    fatturazioneDiversa: Boolean(preventivo.fatturazioneDiversa),
+    fatturazione: fatturazioneDaPreventivo(preventivo),
   };
 }
 
@@ -107,6 +133,8 @@ export function snapshotPreventivoEditor(
   scontoPercentuale: number,
   acconto: number,
   linea: string,
+  fatturazioneDiversa: boolean,
+  fatturazione: DatiFatturazione,
 ) {
   return JSON.stringify({
     revision: preventivo.revision,
@@ -118,5 +146,7 @@ export function snapshotPreventivoEditor(
     scontoPercentuale,
     acconto,
     linea,
+    fatturazioneDiversa,
+    fatturazione,
   });
 }

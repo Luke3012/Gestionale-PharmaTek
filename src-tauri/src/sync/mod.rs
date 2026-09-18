@@ -18,7 +18,7 @@ pub mod hlc;
 pub mod log;
 pub mod snapshot;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -316,11 +316,76 @@ impl Engine {
             }
         }
 
+        // Le vecchie tombstone non contenevano l'HLC del Purged. Quando la storia
+        // è ancora nei log, lo ricaviamo prima del replay: così una Created antica
+        // non può resuscitare il record solo perché il file del suo device viene
+        // letto prima del file che contiene il purge.
+        let tombstone_legacy = proj
+            .list_purged()?
+            .into_iter()
+            .filter(|pg| {
+                pg.purged_hlc.is_empty()
+                    && matches!(pg.entity.as_str(), "preventivo" | "scheda_cliente")
+            })
+            .collect::<Vec<_>>();
+        if !tombstone_legacy.is_empty() {
+            let mut purge_hlcs = BTreeMap::new();
+            let mut massimo_log: Option<Hlc> = None;
+            for path in log.ndjson_files()? {
+                let rr = LogStore::read_from(&path, 0)?;
+                for event in rr.events {
+                    if massimo_log
+                        .as_ref()
+                        .is_none_or(|corrente| event.ts > *corrente)
+                    {
+                        massimo_log = Some(event.ts.clone());
+                    }
+                    if matches!(event.body, EventBody::Purged) {
+                        let key = (event.entity, event.entity_id);
+                        let hlc = event.ts.to_string();
+                        purge_hlcs
+                            .entry(key)
+                            .and_modify(|current: &mut String| {
+                                if hlc > *current {
+                                    *current = hlc.clone();
+                                }
+                            })
+                            .or_insert(hlc);
+                    }
+                }
+            }
+            // Se il Purged non è più nei log compattati, il massimo watermark
+            // dello snapshot è un limite conservativo: blocca le vecchie Created,
+            // mentre il clock del motore viene portato oltre quel limite e rende
+            // valida la prossima ricreazione esplicita dell'utente.
+            let mut floor = Hlc::new(HlcClock::now_ms(), 0, device.clone());
+            if let Some(log_hlc) = massimo_log {
+                floor = floor.max(log_hlc);
+            }
+            for watermark in proj.watermarks()?.into_values() {
+                if let Ok(hlc) = watermark.parse::<Hlc>() {
+                    floor = floor.max(hlc);
+                }
+            }
+            let floor = floor.to_string();
+            for pg in tombstone_legacy {
+                purge_hlcs
+                    .entry((pg.entity, pg.id))
+                    .or_insert_with(|| floor.clone());
+            }
+            proj.backfill_purged_hlcs(&purge_hlcs)?;
+        }
+
         let bootstrap_watermarks = proj.watermarks()?;
         let restore_markers_seen = marker_restore_legacy_remoti_presenti(&events_dir, &device);
         let mut clock = HlcClock::new(device.clone());
         for watermark in bootstrap_watermarks.values() {
             if let Ok(hlc) = watermark.parse() {
+                clock.bump_to(&hlc);
+            }
+        }
+        for purged in proj.list_purged()? {
+            if let Ok(hlc) = purged.purged_hlc.parse() {
                 clock.bump_to(&hlc);
             }
         }
@@ -1806,6 +1871,132 @@ mod tests {
             purged: Vec::new(),
             watermarks: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn bootstrap_legacy_usa_hlc_del_purge_prima_di_ripiegare_file_in_ordine_diverso() {
+        let data = tempfile::tempdir().unwrap();
+        let sqlite_dir = tempfile::tempdir().unwrap();
+        let events_dir = data.path().join("events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let id = "preventivo/O1";
+        let eventi_a = [
+            Event::new(
+                Hlc::new(5, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                id,
+                EventBody::Created,
+            ),
+            Event::new(
+                Hlc::new(6, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                id,
+                set("ordine_id", json!("VECCHIO")),
+            ),
+            Event::new(
+                Hlc::new(20, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                id,
+                EventBody::Created,
+            ),
+            Event::new(
+                Hlc::new(21, 0, "PC-A"),
+                "PC-A",
+                "t",
+                "preventivo",
+                id,
+                set("ordine_id", json!("NUOVO")),
+            ),
+        ];
+        let purge = Event::new(
+            Hlc::new(10, 0, "PC-Z"),
+            "PC-Z",
+            "t",
+            "preventivo",
+            id,
+            EventBody::Purged,
+        );
+        let serializza = |eventi: &[Event]| {
+            eventi
+                .iter()
+                .map(|event| format!("{}\n", event.to_ndjson().unwrap()))
+                .collect::<String>()
+        };
+        std::fs::write(events_dir.join("PC-A.ndjson"), serializza(&eventi_a)).unwrap();
+        std::fs::write(events_dir.join("PC-Z.ndjson"), serializza(&[purge])).unwrap();
+
+        let sqlite = sqlite_dir.path().join("observer.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&sqlite).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE purged(entity TEXT NOT NULL, id TEXT NOT NULL,
+                    PRIMARY KEY(entity, id));
+                 CREATE TABLE applied_events(event_id TEXT PRIMARY KEY, hlc TEXT NOT NULL);
+                 CREATE TABLE log_offsets(file TEXT PRIMARY KEY, offset INTEGER NOT NULL);
+                 INSERT INTO purged(entity, id) VALUES
+                    ('preventivo', 'preventivo/O1');",
+            )
+            .unwrap();
+        }
+
+        let observer = Engine::open(data.path(), sqlite, "PC-OBS", "t").unwrap();
+        let record = observer
+            .with_projection(|projection| projection.get("preventivo", id).unwrap())
+            .unwrap();
+        assert_eq!(record.data["ordine_id"], json!("NUOVO"));
+        assert_eq!(record.created_hlc, Hlc::new(20, 0, "PC-A"));
+    }
+
+    #[test]
+    fn tombstone_legacy_senza_storia_blocca_il_replay_ma_accetta_una_nuova_created() {
+        let data = tempfile::tempdir().unwrap();
+        let sqlite_dir = tempfile::tempdir().unwrap();
+        let events_dir = data.path().join("events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+        let id = "preventivo/O1";
+        let created_vecchia = Event::new(
+            Hlc::new(5, 0, "PC-A"),
+            "PC-A",
+            "t",
+            "preventivo",
+            id,
+            EventBody::Created,
+        );
+        std::fs::write(
+            events_dir.join("PC-A.ndjson"),
+            format!("{}\n", created_vecchia.to_ndjson().unwrap()),
+        )
+        .unwrap();
+
+        let sqlite = sqlite_dir.path().join("observer.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&sqlite).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE purged(entity TEXT NOT NULL, id TEXT NOT NULL,
+                    PRIMARY KEY(entity, id));
+                 CREATE TABLE applied_events(event_id TEXT PRIMARY KEY, hlc TEXT NOT NULL);
+                 CREATE TABLE log_offsets(file TEXT PRIMARY KEY, offset INTEGER NOT NULL);
+                 INSERT INTO purged(entity, id) VALUES
+                    ('preventivo', 'preventivo/O1');",
+            )
+            .unwrap();
+        }
+
+        let observer = Engine::open(data.path(), sqlite, "PC-OBS", "t").unwrap();
+        assert!(observer
+            .with_projection(|projection| projection.get("preventivo", id).unwrap())
+            .is_none());
+
+        observer.emit("preventivo", id, EventBody::Created).unwrap();
+        assert!(observer
+            .with_projection(|projection| projection.get("preventivo", id).unwrap())
+            .is_some());
     }
 
     fn publish_generation(

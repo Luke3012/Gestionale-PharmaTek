@@ -10,6 +10,7 @@ import {
   Paper,
   SimpleGrid,
   Select,
+  type SelectProps,
   Stack,
   TagsInput,
   Text,
@@ -19,7 +20,6 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import {
-  IconAlertTriangle,
   IconCheck,
   IconClipboardText,
   IconFileInvoice,
@@ -29,6 +29,7 @@ import {
 import { AnimatePresence, motion } from "framer-motion";
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -52,6 +53,11 @@ import {
   type RigaInterpretataPreventivo,
 } from "./parserPreventivo";
 import type { BozzaPreventivoDaZero } from "./bozzaPreventivo";
+import {
+  corrispondeRicercaOrdine,
+  normalizzaRicerca,
+} from "./ricercaOrdiniPreventivo";
+import { tabCompleta, useTabSelect } from "../../ui/tabCompleta";
 
 type Origine = "giornaliero" | "zero";
 
@@ -174,10 +180,164 @@ function esempioCompilazione(linea: string): string {
   ].join("\n");
 }
 
+interface CompilaDaTestoSectionProps {
+  linea: string;
+  interpretando: boolean;
+  ridurreAnimazioni: boolean;
+  onAnalizza: (testo: string) => void;
+  onHaContenutoChange: (haContenuto: boolean) => void;
+  righeCount: number;
+  riepilogoInterpretazione: {
+    prodotti: number;
+    quantita: number;
+    pazienti: number;
+    allergeni: number;
+    totale: number;
+  };
+  resetKey: number;
+}
+
+function CompilaDaTestoSection({
+  linea,
+  interpretando,
+  ridurreAnimazioni,
+  onAnalizza,
+  onHaContenutoChange,
+  righeCount,
+  riepilogoInterpretazione,
+  resetKey,
+}: CompilaDaTestoSectionProps) {
+  const [testo, setTesto] = useState("");
+  const ultimoHaContenutoRef = useRef(false);
+
+  useEffect(() => {
+    setTesto("");
+    if (ultimoHaContenutoRef.current) {
+      ultimoHaContenutoRef.current = false;
+      onHaContenutoChange(false);
+    }
+  }, [linea, resetKey, onHaContenutoChange]);
+
+  const handleChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = event.currentTarget.value;
+    setTesto(val);
+    const ha = val.trim() !== "";
+    if (ha !== ultimoHaContenutoRef.current) {
+      ultimoHaContenutoRef.current = ha;
+      onHaContenutoChange(ha);
+    }
+  };
+
+  return (
+    <Paper
+      withBorder
+      p="md"
+      radius="md"
+      style={{
+        background: "var(--mantine-color-yellow-0)",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <AnimatePresence>
+        {interpretando && !ridurreAnimazioni && (
+          <motion.div
+            key="scansione-testo"
+            initial={{ opacity: 0, top: "10%" }}
+            animate={{
+              opacity: [0, 0.9, 0.65, 0],
+              top: ["10%", "28%", "72%", "90%"],
+            }}
+            exit={{ opacity: 0 }}
+            transition={{
+              duration: 0.82,
+              ease: "easeInOut",
+            }}
+            aria-hidden
+            style={{
+              position: "absolute",
+              left: 16,
+              right: 16,
+              height: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+              borderRadius: 99,
+              background:
+                "linear-gradient(90deg, transparent, var(--mantine-color-yellow-5) 18%, var(--mantine-color-yellow-6) 82%, transparent)",
+              boxShadow: "0 0 12px rgba(246, 200, 0, .5)",
+            }}
+          />
+        )}
+      </AnimatePresence>
+      <Group align="flex-start" wrap="nowrap">
+        <Box style={{ marginTop: 22 }}>
+          <ThemeIcon color="yellow" variant="filled" radius="xl">
+            <IconSparkles size={17} color="#171717" />
+          </ThemeIcon>
+        </Box>
+        <Textarea
+          style={{ flex: 1 }}
+          label="Compila da testo"
+          description={
+            linea === "Immunoterapia"
+              ? "Scrivi prodotto e dettagli; separa allergeni e ceppi con virgole."
+              : "Scrivi prodotto, quantità e dettagli; separa allergeni e ceppi con virgole."
+          }
+          placeholder={esempioCompilazione(linea)}
+          minRows={2}
+          autosize
+          maxRows={4}
+          styles={{
+            input: {
+              overflowY: "auto",
+            },
+          }}
+          value={testo}
+          readOnly={interpretando}
+          onChange={handleChange}
+        />
+        <Button
+          mt={48}
+          color="yellow"
+          variant="light"
+          loading={interpretando}
+          disabled={!testo.trim()}
+          onClick={() => onAnalizza(testo)}
+        >
+          Analizza
+        </Button>
+      </Group>
+      {righeCount > 0 && (
+        <Group gap="xs" mt="sm">
+          <Badge color="yellow" variant="light">
+            {riepilogoInterpretazione.prodotti} prodotti
+          </Badge>
+          {linea !== "Immunoterapia" && (
+            <Badge color="gray" variant="light">
+              {riepilogoInterpretazione.quantita} pezzi
+            </Badge>
+          )}
+          <Badge color="blue" variant="light">
+            {riepilogoInterpretazione.pazienti} pazienti
+          </Badge>
+          <Badge color="teal" variant="light">
+            {riepilogoInterpretazione.allergeni} allergeni / ceppi
+          </Badge>
+          <Badge color="dark" variant="light">
+            € {centsToEurStr(riepilogoInterpretazione.totale)}
+          </Badge>
+        </Group>
+      )}
+    </Paper>
+  );
+}
+
 export function NuovoPreventivoModal({
   opened,
   disponibili,
   onClose,
+  anno,
+  onRefreshDisponibili,
   onOrdinePreparato,
   onBozzaPreparata,
   dentroFinestra = false,
@@ -185,6 +345,8 @@ export function NuovoPreventivoModal({
   opened: boolean;
   disponibili: Preventivo[];
   onClose: () => void;
+  anno: number;
+  onRefreshDisponibili: () => void | Promise<void>;
   onOrdinePreparato: (ordineId: string) => void;
   onBozzaPreparata: (bozza: BozzaPreventivoDaZero) => void;
   /** Nella Webview aperta da Spotlight mostra una pagina, non un modale annidato. */
@@ -196,7 +358,8 @@ export function NuovoPreventivoModal({
   const [linea, setLinea] = useState("Immunoterapia");
   const [destinatario, setDestinatario] = useState<string | null>(null);
   const [medicoClienteId, setMedicoClienteId] = useState<string | null>(null);
-  const [testo, setTesto] = useState("");
+  const [haTesto, setHaTesto] = useState(false);
+  const [resetKey, setResetKey] = useState(0);
   const [note, setNote] = useState("");
   const [righe, setRighe] = useState<RigaInterpretataPreventivo[]>([]);
   const [prodotti, setProdotti] = useState<RecordDto[]>([]);
@@ -226,16 +389,18 @@ export function NuovoPreventivoModal({
     setMedicoClienteId(null);
     setRighe([]);
     setNote("");
+    setHaTesto(false);
+    setResetKey((k) => k + 1);
     setCaricando(true);
     Promise.all([
+      Promise.resolve(onRefreshDisponibili()),
       api.recordsList("prodotto"),
       api.recordsList("medico"),
       api.recordsList("cliente"),
       api.recordsList("prodotto_produzione"),
       api.preventivoAliasLista(),
-    ])
-      .then(
-        ([
+    ]).then(([
+          _disponibiliAggiornati,
           catalogo,
           mediciCaricati,
           clientiCaricati,
@@ -247,23 +412,50 @@ export function NuovoPreventivoModal({
         setClienti(clientiCaricati);
         setProdottiProduzione(produzioneCaricata);
         setAliases(aliasCaricati);
-        },
-      )
+      })
       .catch((error) =>
         toast.error(`Preparazione nuovo preventivo non riuscita: ${error}`),
       )
       .finally(() => setCaricando(false));
-  }, [opened]);
+  }, [onRefreshDisponibili, opened]);
 
-  useEffect(() => {
-    if (!opened) return;
-    setOrdineId((corrente) =>
-      corrente &&
-      disponibili.some((preventivo) => preventivo.ordineId === corrente)
-        ? corrente
-        : (disponibili[0]?.ordineId ?? null),
-    );
-  }, [disponibili, opened]);
+  const ordiniById = useMemo(
+    () => new Map(disponibili.map((ordine) => [ordine.ordineId, ordine])),
+    [disponibili],
+  );
+
+  const opzioniOrdini = useMemo(
+    () =>
+      disponibili.map((ordine) => ({
+        value: ordine.ordineId,
+        label: `${ordine.ordineNumero} · ${
+          [ordine.clienteNome, ordine.medicoNome]
+            .filter(Boolean)
+            .join(" · ") || "senza destinatario"
+        } · € ${centsToEurStr(ordine.totale)}`,
+      })),
+    [disponibili],
+  );
+
+  const filtroOrdini: NonNullable<SelectProps["filter"]> = useCallback(
+    ({ options, search, limit }) => {
+      const query = normalizzaRicerca(search);
+      const filtrati = options.filter((option) => {
+        if ("group" in option) return false;
+        const ordine = ordiniById.get(option.value);
+        if (!query) {
+          if (!ordine) return true;
+          if (ordine.ordineId === ordineId) return true;
+          return anno === 0 || Number(ordine.ordineData.slice(0, 4)) === anno;
+        }
+        if (!ordine) return normalizzaRicerca(option.label).includes(query);
+        return corrispondeRicercaOrdine(ordine, query);
+      });
+      const max = typeof limit === "number" && limit > 0 ? limit : 20;
+      return filtrati.slice(0, max);
+    },
+    [anno, ordineId, ordiniById],
+  );
 
   const aliasByProdotto = useMemo(() => {
     const result = new Map<string, string[]>();
@@ -278,6 +470,43 @@ export function NuovoPreventivoModal({
   const destinatariDisponibili = useMemo(
     () => opzioniDestinatari(clienti, medici),
     [clienti, medici],
+  );
+  const opzioniMedici = useMemo(
+    () => opzioni(medici),
+    [medici],
+  );
+  const opzioniProdottiLinea = useMemo(
+    () =>
+      prodotti
+        .filter((record) => String(record.data.categoria ?? "") === linea)
+        .map((record) => ({
+          value: record.id,
+          label: String(record.data.nome ?? ""),
+        })),
+    [linea, prodotti],
+  );
+  const tabDestinatario = useTabSelect(
+    destinatariDisponibili,
+    destinatario,
+    (value) => {
+      setDestinatario(value);
+      const [tipo, id = ""] = value?.split(":", 2) ?? [];
+      setMedicoClienteId(
+        tipo === "cliente"
+          ? ultimoMedicoClienteValido(id, clienti, medici) || null
+          : null,
+      );
+    },
+  );
+  const tabMedico = useTabSelect(
+    opzioniMedici,
+    medicoClienteId,
+    setMedicoClienteId,
+  );
+  const tabOrdine = useTabSelect(
+    opzioniOrdini,
+    ordineId,
+    setOrdineId,
   );
   const suggerimentiAllergeni = useMemo(
     () =>
@@ -372,8 +601,8 @@ export function NuovoPreventivoModal({
       .catch(() => {});
   }, [medicoId]);
 
-  async function interpreta() {
-    if (!testo.trim() || interpretando) return null;
+  async function interpreta(testoDaInterpretare: string) {
+    if (!testoDaInterpretare.trim() || interpretando) return null;
     setInterpretando(true);
     const animazioneMinima = ridurreAnimazioni
       ? Promise.resolve()
@@ -401,7 +630,7 @@ export function NuovoPreventivoModal({
             : suggerito.prezzo,
         ]),
       );
-      const result = interpretaPreventivo(testo, {
+      const result = interpretaPreventivo(testoDaInterpretare, {
         lineeOrdine: [linea],
         dettagliProduzione: {
           formulazioni: suggerimentiFormulazioni,
@@ -463,9 +692,9 @@ export function NuovoPreventivoModal({
       return;
     }
     let pronte = righe;
-    if (testo.trim() && pronte.length === 0) {
-      pronte = (await interpreta()) ?? [];
-      if (pronte.length === 0) return;
+    if (pronte.length === 0) {
+      toast.warning("Aggiungi almeno un prodotto al preventivo prima di continuare.");
+      return;
     }
     if (pronte.some((riga) => !riga.prodottoNome.trim())) {
       toast.warning("Verifica le righe evidenziate prima di continuare.");
@@ -512,266 +741,180 @@ export function NuovoPreventivoModal({
       <Text fw={700}>Nuovo preventivo</Text>
     </Group>
   );
-  const corpo = (
-    <>
-      <AltezzaAnimata
-        ridotta={ridurreAnimazioni}
-        onRidimensionamento={setRidimensionando}
-      >
-        <Stack gap="md">
-          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-            {OPZIONI_ORIGINE.map((opzione) => {
-              const selezionata = origine === opzione.value;
-              const Icona = opzione.icona;
-              return (
-                <UnstyledButton
-                  key={opzione.value}
-                  className="pt-preventivo-scelta-origine"
-                  data-selected={selezionata || undefined}
-                  aria-pressed={selezionata}
-                  onClick={() => setOrigine(opzione.value)}
+  const contenuto = (
+    <AltezzaAnimata
+      ridotta={ridurreAnimazioni}
+      onRidimensionamento={setRidimensionando}
+    >
+      <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+        {OPZIONI_ORIGINE.map((opzione) => {
+          const selezionata = origine === opzione.value;
+          const Icona = opzione.icona;
+          return (
+            <UnstyledButton
+              key={opzione.value}
+              className="pt-preventivo-scelta-origine"
+              data-selected={selezionata || undefined}
+              aria-pressed={selezionata}
+              onClick={() => setOrigine(opzione.value)}
+            >
+              <Group wrap="nowrap" gap="sm" align="center">
+                <ThemeIcon
+                  size={42}
+                  radius="xl"
+                  color={selezionata ? "yellow" : "gray"}
+                  variant={selezionata ? "filled" : "light"}
+                  style={{ flexShrink: 0 }}
                 >
-                  <Group wrap="nowrap" gap="sm" align="center">
-                    <ThemeIcon
-                      size={42}
-                      radius="xl"
-                      color={selezionata ? "yellow" : "gray"}
-                      variant={selezionata ? "filled" : "light"}
-                      style={{ flexShrink: 0 }}
-                    >
-                      <Icona
-                        size={20}
-                        color={selezionata ? "#171717" : undefined}
-                      />
-                    </ThemeIcon>
-                    <Box style={{ flex: 1, minWidth: 0 }}>
-                      <Text fw={750} size="sm">
-                        {opzione.titolo}
-                      </Text>
-                      <Text size="xs" c="dimmed" lh={1.35}>
-                        {opzione.descrizione}
-                      </Text>
-                    </Box>
-                    <ThemeIcon
-                      size={23}
-                      radius="xl"
-                      color={selezionata ? "yellow" : "gray"}
-                      variant={selezionata ? "filled" : "outline"}
-                      className="pt-preventivo-scelta-check"
-                    >
-                      {selezionata && <IconCheck size={14} stroke={3} />}
-                    </ThemeIcon>
-                  </Group>
-                </UnstyledButton>
-              );
-            })}
-          </SimpleGrid>
-
-          <AnimatePresence initial={false} mode="popLayout">
-            <motion.div
-              key={origine}
-              initial={
-                ridurreAnimazioni ? false : { opacity: 0, y: 8 }
-              }
-              animate={{ opacity: 1, y: 0 }}
-              exit={
-                ridurreAnimazioni
-                  ? { opacity: 1 }
-                  : { opacity: 0, y: -5 }
-              }
-              transition={{ duration: ridurreAnimazioni ? 0 : 0.18 }}
-              style={{ width: "100%" }}
-            >
-              {origine === "giornaliero" ? (
-                <Stack gap="sm">
-                  <Box>
-                    <Text fw={700}>Scegli l’ordine da trasformare</Text>
-                    <Text size="sm" c="dimmed">
-                      Trovi soltanto gli ordini Nuovo che non hanno ancora un
-                      preventivo.
-                    </Text>
-                  </Box>
-            {disponibili.length ? (
-              <Select
-                searchable
-                placeholder="Cerca per numero, destinatario o importo…"
-                data={disponibili.map((ordine) => ({
-                  value: ordine.ordineId,
-                  label: `${ordine.ordineNumero} · ${
-                    ordine.clienteNome || ordine.medicoNome || "senza destinatario"
-                  } · € ${centsToEurStr(ordine.totale)}`,
-                }))}
-                value={ordineId}
-                onChange={setOrdineId}
-              />
-            ) : (
-              <Alert color="gray">
-                Non ci sono ordini Nuovo senza preventivo. Puoi comunque partire da zero.
-              </Alert>
-            )}
-                </Stack>
-              ) : (
-                <Stack gap="md">
-            <Paper withBorder p="md" radius="md">
-              <Group justify="space-between" align="center">
-                <Stack gap={2}>
-                  <Text fw={700}>Linea e destinatario</Text>
-                  <Text size="xs" c="dimmed">
-                    La data del preventivo sarà l’istante della sua creazione.
-                  </Text>
-                </Stack>
-                <SelettoreCategoriaNuovoOrdine
-                  value={linea}
-                  haContenuto={
-                    testo.trim() !== "" || note.trim() !== "" || righe.length > 0
-                  }
-                  tipo="preventivo"
-                  onChange={(value) => {
-                    setLinea(value);
-                    setRighe([]);
-                    setTesto("");
-                    setNote("");
-                  }}
-                />
-              </Group>
-              <Select
-                mt="md"
-                label="Destinatario del preventivo"
-                description="Cerca e seleziona un cliente oppure un medico."
-                placeholder="Cerca cliente o medico…"
-                searchable
-                clearable
-                data={destinatariDisponibili}
-                value={destinatario}
-                onChange={(value) => {
-                  setDestinatario(value);
-                  const [tipo, id = ""] = value?.split(":", 2) ?? [];
-                  setMedicoClienteId(
-                    tipo === "cliente"
-                      ? ultimoMedicoClienteValido(id, clienti, medici) || null
-                      : null,
-                  );
-                }}
-              />
-              {tipoDestinatario === "cliente" && (
-                <Select
-                  mt="md"
-                  required
-                  searchable
-                  clearable
-                  label="Medico di riferimento"
-                  description="Proposto dall’ultimo ordine del cliente; puoi cambiarlo."
-                  placeholder="Cerca il medico…"
-                  data={opzioni(medici)}
-                  value={medicoClienteId}
-                  onChange={setMedicoClienteId}
-                />
-              )}
-            </Paper>
-
-            <Paper
-              withBorder
-              p="md"
-              radius="md"
-              style={{
-                background: "var(--mantine-color-yellow-0)",
-                position: "relative",
-                overflow: "hidden",
-              }}
-            >
-              <AnimatePresence>
-                {interpretando && !ridurreAnimazioni && (
-                  <motion.div
-                    key="scansione-testo"
-                    initial={{ opacity: 0, top: "10%" }}
-                    animate={{
-                      opacity: [0, 0.9, 0.65, 0],
-                      top: ["10%", "28%", "72%", "90%"],
-                    }}
-                    exit={{ opacity: 0 }}
-                    transition={{
-                      duration: 0.82,
-                      ease: "easeInOut",
-                    }}
-                    aria-hidden
-                    style={{
-                      position: "absolute",
-                      left: 16,
-                      right: 16,
-                      height: 2,
-                      zIndex: 2,
-                      pointerEvents: "none",
-                      borderRadius: 99,
-                      background:
-                        "linear-gradient(90deg, transparent, var(--mantine-color-yellow-5) 18%, var(--mantine-color-yellow-6) 82%, transparent)",
-                      boxShadow: "0 0 12px rgba(246, 200, 0, .5)",
-                    }}
+                  <Icona
+                    size={20}
+                    color={selezionata ? "#171717" : undefined}
                   />
-                )}
-              </AnimatePresence>
-              <Group align="flex-start" wrap="nowrap">
-                <Box style={{ marginTop: 22 }}>
-                  <ThemeIcon color="yellow" variant="filled" radius="xl">
-                    <IconSparkles size={17} color="#171717" />
-                  </ThemeIcon>
+                </ThemeIcon>
+                <Box style={{ flex: 1, minWidth: 0 }}>
+                  <Text fw={750} size="sm">
+                    {opzione.titolo}
+                  </Text>
+                  <Text size="xs" c="dimmed" lh={1.35}>
+                    {opzione.descrizione}
+                  </Text>
                 </Box>
-                <Textarea
-                  style={{ flex: 1 }}
-                  label="Compila da testo"
-                  description={
-                    linea === "Immunoterapia"
-                      ? "Scrivi prodotto e dettagli; separa allergeni e ceppi con virgole."
-                      : "Scrivi prodotto, quantità e dettagli; separa allergeni e ceppi con virgole."
-                  }
-                  placeholder={esempioCompilazione(linea)}
-                  minRows={2}
-                  autosize
-                  maxRows={4}
-                  styles={{
-                    input: {
-                      overflowY: "auto",
-                    },
-                  }}
-                  value={testo}
-                  readOnly={interpretando}
-                  onChange={(event) => {
-                    setTesto(event.currentTarget.value);
-                    setRighe([]);
-                  }}
-                />
-                <Button
-                  mt={48}
-                  color="yellow"
-                  variant="light"
-                  loading={interpretando}
-                  disabled={!testo.trim()}
-                  onClick={() => void interpreta()}
+                <ThemeIcon
+                  size={23}
+                  radius="xl"
+                  color={selezionata ? "yellow" : "gray"}
+                  variant={selezionata ? "filled" : "outline"}
+                  className="pt-preventivo-scelta-check"
                 >
-                  Analizza
-                </Button>
+                  {selezionata && <IconCheck size={14} stroke={3} />}
+                </ThemeIcon>
               </Group>
-              {righe.length > 0 && (
-                <Group gap="xs" mt="sm">
-                  <Badge color="yellow" variant="light">
-                    {riepilogoInterpretazione.prodotti} prodotti
-                  </Badge>
-                  {linea !== "Immunoterapia" && (
-                    <Badge color="gray" variant="light">
-                      {riepilogoInterpretazione.quantita} pezzi
-                    </Badge>
-                  )}
-                  <Badge color="blue" variant="light">
-                    {riepilogoInterpretazione.pazienti} pazienti
-                  </Badge>
-                  <Badge color="teal" variant="light">
-                    {riepilogoInterpretazione.allergeni} allergeni / ceppi
-                  </Badge>
-                  <Badge color="dark" variant="light">
-                    € {centsToEurStr(riepilogoInterpretazione.totale)}
-                  </Badge>
-                </Group>
-              )}
-            </Paper>
+            </UnstyledButton>
+          );
+        })}
+      </SimpleGrid>
+
+      <AnimatePresence initial={false} mode="popLayout">
+        <motion.div
+          key={origine}
+          initial={
+            ridurreAnimazioni ? false : { opacity: 0, y: 8 }
+          }
+          animate={{ opacity: 1, y: 0 }}
+          exit={
+            ridurreAnimazioni
+              ? { opacity: 1 }
+              : { opacity: 0, y: -5 }
+          }
+          transition={{ duration: ridurreAnimazioni ? 0 : 0.18 }}
+          style={{ width: "100%" }}
+        >
+          {origine === "giornaliero" ? (
+            <Stack gap="sm">
+              <Box>
+                <Text fw={700}>Scegli l’ordine da trasformare</Text>
+                <Text size="sm" c="dimmed">
+                  Trovi soltanto gli ordini Nuovo che non hanno ancora un
+                  preventivo.
+                </Text>
+              </Box>
+        {disponibili.length ? (
+          <Select
+            searchable
+            clearable
+            limit={20}
+            placeholder="Cerca per numero, cliente o medico…"
+            nothingFoundMessage="Nessun ordine Nuovo corrispondente"
+            data={opzioniOrdini}
+            filter={filtroOrdini}
+            value={ordineId}
+            onChange={setOrdineId}
+            onKeyDown={tabOrdine.onKeyDown}
+            onSearchChange={tabOrdine.onSearchChange}
+          />
+        ) : (
+          <Alert color="gray">
+            Non ci sono ordini Nuovo senza preventivo. Puoi comunque partire da zero.
+          </Alert>
+        )}
+            </Stack>
+          ) : (
+            <Stack gap="md">
+        <Paper withBorder p="md" radius="md">
+          <Group justify="space-between" align="center">
+            <Stack gap={2}>
+              <Text fw={700}>Linea e destinatario</Text>
+              <Text size="xs" c="dimmed">
+                La data del preventivo sarà l’istante della sua creazione.
+              </Text>
+            </Stack>
+            <SelettoreCategoriaNuovoOrdine
+              value={linea}
+              haContenuto={
+                haTesto || note.trim() !== "" || righe.length > 0
+              }
+              tipo="preventivo"
+              onChange={(value) => {
+                setLinea(value);
+                setRighe([]);
+                setHaTesto(false);
+                setResetKey((k) => k + 1);
+                setNote("");
+              }}
+            />
+          </Group>
+          <Select
+            mt="md"
+            label="Destinatario del preventivo"
+            description="Cerca e seleziona un cliente oppure un medico."
+            placeholder="Cerca cliente o medico…"
+            searchable
+            clearable
+            limit={20}
+            data={destinatariDisponibili}
+            value={destinatario}
+            onChange={(value) => {
+              setDestinatario(value);
+              const [tipo, id = ""] = value?.split(":", 2) ?? [];
+              setMedicoClienteId(
+                tipo === "cliente"
+                  ? ultimoMedicoClienteValido(id, clienti, medici) || null
+                  : null,
+              );
+            }}
+            onKeyDown={tabDestinatario.onKeyDown}
+            onSearchChange={tabDestinatario.onSearchChange}
+          />
+          {tipoDestinatario === "cliente" && (
+            <Select
+              mt="md"
+              required
+              searchable
+              clearable
+              limit={20}
+              label="Medico di riferimento"
+              description="Proposto dall’ultimo ordine del cliente; puoi cambiarlo."
+              placeholder="Cerca il medico…"
+              data={opzioniMedici}
+              value={medicoClienteId}
+              onChange={setMedicoClienteId}
+              onKeyDown={tabMedico.onKeyDown}
+              onSearchChange={tabMedico.onSearchChange}
+            />
+          )}
+        </Paper>
+
+            <CompilaDaTestoSection
+              linea={linea}
+              interpretando={interpretando}
+              ridurreAnimazioni={Boolean(ridurreAnimazioni)}
+              onAnalizza={(t) => void interpreta(t)}
+              onHaContenutoChange={setHaTesto}
+              righeCount={righe.length}
+              riepilogoInterpretazione={riepilogoInterpretazione}
+              resetKey={resetKey}
+            />
 
             {righe.map((riga, index) => (
               <Paper
@@ -790,14 +933,8 @@ export function NuovoPreventivoModal({
                     style={{ flex: 1 }}
                     label="Prodotto interpretato"
                     searchable
-                    data={prodotti
-                      .filter(
-                        (record) => String(record.data.categoria ?? "") === linea,
-                      )
-                      .map((record) => ({
-                        value: record.id,
-                        label: String(record.data.nome ?? ""),
-                      }))}
+                    limit={20}
+                    data={opzioniProdottiLinea}
                     value={riga.prodottoId || null}
                     onChange={(value) => {
                       const record = prodotti.find((item) => item.id === value);
@@ -843,21 +980,19 @@ export function NuovoPreventivoModal({
                       patchRiga(index, { paziente: event.currentTarget.value })
                     }
                   />
-                  {riga.richiedeRevisione ? (
-                    <Button
-                      variant="light"
-                      color="orange"
-                      size="compact-sm"
-                      mb={7}
-                      onClick={() => patchRiga(index, { richiedeRevisione: false })}
-                    >
-                      Conferma riga
-                    </Button>
-                  ) : (
-                    <Badge color="teal" mb={8}>
-                      verificata
-                    </Badge>
-                  )}
+                  <Button
+                    variant="subtle"
+                    color="gray"
+                    size="compact-sm"
+                    mb={7}
+                    onClick={() =>
+                      setRighe((current) =>
+                        current.filter((_, i) => i !== index),
+                      )
+                    }
+                  >
+                    Annulla
+                  </Button>
                 </Group>
                 <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs" mt="xs">
                   <Autocomplete
@@ -868,6 +1003,11 @@ export function NuovoPreventivoModal({
                     onChange={(value) =>
                       patchRiga(index, { formulazione: value })
                     }
+                    onKeyDown={tabCompleta(
+                      suggerimentiFormulazioni,
+                      riga.formulazione,
+                      (value) => patchRiga(index, { formulazione: value }),
+                    )}
                   />
                   <Autocomplete
                     label="Posologia"
@@ -877,6 +1017,11 @@ export function NuovoPreventivoModal({
                     onChange={(value) =>
                       patchRiga(index, { posologia: value })
                     }
+                    onKeyDown={tabCompleta(
+                      suggerimentiPosologie,
+                      riga.posologia,
+                      (value) => patchRiga(index, { posologia: value }),
+                    )}
                   />
                 </SimpleGrid>
                 <TagsInput
@@ -893,52 +1038,38 @@ export function NuovoPreventivoModal({
                     patchRiga(index, { allergeni: value })
                   }
                 />
-                {riga.richiedeRevisione && (
-                  <Group gap={5} mt="xs">
-                    <IconAlertTriangle size={15} color="var(--mantine-color-orange-7)" />
-                    <Text size="xs" c="orange.8">
-                      {riga.motivazioni.join(" · ")}
-                    </Text>
-                  </Group>
-                )}
               </Paper>
             ))}
                 </Stack>
               )}
             </motion.div>
           </AnimatePresence>
+          <Group justify="flex-end" mt="sm">
+            <Button variant="default" onClick={onClose}>
+              Annulla
+            </Button>
+            <Button
+              color="accent"
+              loading={caricando}
+              disabled={
+                origine === "giornaliero"
+                  ? !ordineId
+                  : !destinatario ||
+                    (tipoDestinatario === "cliente" && !medicoClienteId)
+              }
+              onClick={() => {
+                if (origine === "giornaliero" && ordineId) {
+                  onOrdinePreparato(ordineId);
+                } else {
+                  void continuaDaZero();
+                }
+              }}
+            >
+              Continua
+            </Button>
+          </Group>
         </Stack>
       </AltezzaAnimata>
-    </>
-  );
-  const contenuto = (
-    <Box className="pt-modal-shell">
-      <Box className="pt-modal-scroll">{corpo}</Box>
-      <Group className="pt-modal-footer" justify="flex-end">
-        <Button variant="default" onClick={onClose}>
-          Annulla
-        </Button>
-        <Button
-          color="accent"
-          loading={caricando}
-          disabled={
-            origine === "giornaliero"
-              ? !ordineId
-              : !destinatario ||
-                (tipoDestinatario === "cliente" && !medicoClienteId)
-          }
-          onClick={() => {
-            if (origine === "giornaliero" && ordineId) {
-              onOrdinePreparato(ordineId);
-            } else {
-              void continuaDaZero();
-            }
-          }}
-        >
-          Continua
-        </Button>
-      </Group>
-    </Box>
   );
 
   if (dentroFinestra) {

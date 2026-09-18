@@ -2,7 +2,7 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
-## 0.8.0 — 2026-09-17
+## 0.8.0 — 2026-09-18
 
 Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.
 
