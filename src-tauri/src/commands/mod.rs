@@ -929,6 +929,18 @@ pub fn whatsapp_stato_get(
     state.whatsapp_stato_get()
 }
 
+#[tauri::command]
+pub fn whatsapp_interseca_overlay() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        crate::app::whatsapp_windows::whatsapp_interseca_overlay()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 pub async fn whatsapp_verifica_e_invia_prova(

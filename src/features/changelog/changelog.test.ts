@@ -30,9 +30,10 @@ describe("changelog", () => {
   });
 
   it("mostra le versioni intermedie non viste dopo un aggiornamento", () => {
-    if (VERSIONI.length >= 2) {
-      const piuRecente = VERSIONI[0].versione;
-      const precedente = VERSIONI[1].versione;
+    const versioniConVoci = VERSIONI.filter((v) => v.voci.length > 0);
+    if (versioniConVoci.length >= 2) {
+      const piuRecente = versioniConVoci[0].versione;
+      const precedente = versioniConVoci[1].versione;
       segnaVista(precedente);
 
       const daMostrare = novitaDaMostrare(piuRecente);

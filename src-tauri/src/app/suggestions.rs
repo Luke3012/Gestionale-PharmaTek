@@ -12,7 +12,7 @@ use chrono::{Local, TimeZone};
 
 const ENTITA_STATO_SUGGERIMENTO: &str = "suggerimento_stato";
 const PREFISSO_SUGGERIMENTO: &str = "s14:";
-const PAUSA_TIPO_SUGGERIMENTO_MS: u64 = 24 * 60 * 60 * 1000;
+const PAUSA_TIPO_SUGGERIMENTO_MS: u64 = 6 * 60 * 60 * 1000;
 pub(crate) const TIPI_SUGGERIMENTO: [&str; 6] = [
     "rimborso",
     "distinta",
@@ -1083,6 +1083,44 @@ impl AppState {
                 .map_err(es)
         })
     }
+
+    /// Elimina i record tecnici di sospensione/pausa (suggerimento_stato) per i tipi indicati,
+    /// o per tutti i tipi se `tipi` è `None`. Consente di ripristinare immediatamente le card
+    /// alla disattivazione delle notifiche o al ripristino delle impostazioni predefinite.
+    pub fn suggerimenti_azzera_pause(&self, tipi: Option<&[String]>) -> AppResult<()> {
+        if !crate::premium::is_enabled(&self.app_dir) {
+            return Ok(());
+        }
+        self.with_engine(|engine| {
+            engine
+                .emit_built_checked(|p| {
+                    let mut mutations = Vec::new();
+                    for record in p.list(ENTITA_STATO_SUGGERIMENTO).unwrap_or_default() {
+                        let tipo = str_field(&record.data, "tipo");
+                        let tipo_effettivo = if tipo.is_empty() {
+                            let id = str_field(&record.data, "suggerimento_id");
+                            tipo_suggerimento_da_id(&id).unwrap_or_default().to_string()
+                        } else {
+                            tipo
+                        };
+                        let da_eliminare = match tipi {
+                            None => true,
+                            Some(filtri) => filtri.iter().any(|f| f == &tipo_effettivo),
+                        };
+                        if da_eliminare {
+                            mutations.push(Mutation::new(
+                                ENTITA_STATO_SUGGERIMENTO,
+                                record.id,
+                                EventBody::Deleted,
+                            ));
+                        }
+                    }
+                    Ok(mutations)
+                })
+                .map(|_| ())
+                .map_err(es)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1139,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn categoria_ignorata_resta_in_pausa_per_un_giorno() {
+    fn categoria_ignorata_resta_in_pausa_per_sei_ore() {
         let ora = 2 * PAUSA_TIPO_SUGGERIMENTO_MS;
         let recente = ora - PAUSA_TIPO_SUGGERIMENTO_MS + 1;
         let scaduto = ora - PAUSA_TIPO_SUGGERIMENTO_MS;
@@ -1154,18 +1192,18 @@ mod tests {
     }
 
     #[test]
-    fn categoria_spedizione_ignorata_non_ha_pausa_24h() {
+    fn categoria_spedizione_ignorata_non_ha_pausa_tipo() {
         let ora = 2 * PAUSA_TIPO_SUGGERIMENTO_MS;
         let recente = ora - PAUSA_TIPO_SUGGERIMENTO_MS + 1;
         assert_eq!(
             tipo_suggerimento_in_pausa("s14:spedizione:foto-1", "", recente, ora),
             None,
-            "la categoria spedizione non deve andare in pausa per 24 ore"
+            "la categoria spedizione non deve andare in pausa per tipo"
         );
         assert_eq!(
             tipo_suggerimento_in_pausa("s14:spedizione:foto-1", "spedizione", recente, ora),
             None,
-            "anche con tipo esplicito non deve andare in pausa per 24 ore"
+            "anche con tipo esplicito non deve andare in pausa per tipo"
         );
     }
 

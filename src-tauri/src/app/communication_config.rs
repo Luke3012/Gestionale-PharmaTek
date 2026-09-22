@@ -415,6 +415,25 @@ fn archivia_inviata_imap(
     password: &str,
     raw: &[u8],
 ) -> AppResult<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let config = config.clone();
+    let password = password.to_string();
+    let raw = raw.to_vec();
+    std::thread::spawn(move || {
+        let res = archivia_inviata_imap_impl(&config, &password, &raw);
+        let _ = tx.send(res);
+    });
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(res) => res,
+        Err(_) => Err("timeout durante il salvataggio della copia in Posta inviata (30s)".to_string()),
+    }
+}
+
+fn archivia_inviata_imap_impl(
+    config: &ConfigurazioneEmailCondivisa,
+    password: &str,
+    raw: &[u8],
+) -> AppResult<()> {
     let mode = match config.imap_sicurezza {
         SicurezzaTrasportoEmail::SslTls => ConnectionMode::Tls,
         SicurezzaTrasportoEmail::Starttls => ConnectionMode::StartTls,

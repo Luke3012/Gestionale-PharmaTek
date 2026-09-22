@@ -454,6 +454,8 @@ export const api = {
     invoke<WhatsappDiagnostica>("whatsapp_diagnostica_get"),
   whatsappStatoGet: () =>
     invoke<WhatsappDiagnostica>("whatsapp_stato_get"),
+  whatsappIntersecaOverlay: () =>
+    invoke<boolean>("whatsapp_interseca_overlay"),
   whatsappVerificaEInviaProva: (input: WhatsappVerificaInput) =>
     invoke<WhatsappVerificaProva>("whatsapp_verifica_e_invia_prova", {
       input,

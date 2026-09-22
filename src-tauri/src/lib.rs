@@ -385,6 +385,9 @@ pub fn run() {
                 });
             }
 
+            #[cfg(target_os = "windows")]
+            crate::app::whatsapp_windows::registra_app_handle(app.handle().clone());
+
             // NB: la finestra `overlay` dei pop-up NON è più definita in `tauri.conf.json`:
             // le finestre di config, in dev, nascono prima che Vite serva e il loro webview
             // restava «morto» (renderer mai avviato → pop-up mai visibili). Ora la crea a
@@ -501,6 +504,7 @@ pub fn run() {
             commands::comunicazione_whatsapp_riprendi,
             commands::whatsapp_diagnostica_get,
             commands::whatsapp_stato_get,
+            commands::whatsapp_interseca_overlay,
             commands::whatsapp_verifica_e_invia_prova,
             commands::comunicazione_elimina,
             commands::comunicazioni_elimina,

@@ -73,8 +73,10 @@ Da questa regola seguono tre comportamenti:
 
 **Nascondi fino al prossimo cambiamento** salva soltanto un piccolo record tecnico condiviso
 `suggerimento_stato`, con l'identificativo della fotografia nascosta. Non viene salvata una
-copia del titolo, del conteggio o dell'azione. La scelta converge quindi tramite il normale log
-append-only e non può occultare una futura situazione diversa.
+copia del titolo, del conteggio o dell'azione. La sospensione di una categoria dura 6 ore (anziché 24)
+o fino alla modifica sostanziale delle sorgenti; disattivando le notifiche delle azioni, spegnendo la singola
+categoria o cliccando «Ripristina predefiniti», tutte le relative pause attive vengono immediatamente azzerate.
+La scelta converge tramite il normale log append-only e non può occultare una futura situazione diversa.
 
 **Ignora tutte** applica la stessa regola a tutte le card visibili, ma le registra in un solo
 batch atomico per non moltiplicare flush, eventi e lavoro di sincronizzazione.
@@ -86,7 +88,7 @@ permette di:
 - mostrare o nascondere ciascuna categoria (Provvigioni e Preventivi disattivate di default);
 - abilitare le notifiche pop-up per le azioni;
 - scegliere da 0 a 90 giorni di cadenza di avviso per ciascuna categoria (0 = immediato, N = ripete la notifica ogni N giorni);
-- ripristinare le cadenze predefinite tramite il pulsante **«Ripristina predefiniti»**.
+- ripristinare le cadenze predefinite tramite il pulsante **«Ripristina predefiniti»** (che azzera anche eventuali pause attive).
 
 Per i preventivi la cadenza e la soglia usano giorni civili locali ed è applicata ai singoli candidati prima
 dell'aggregazione della card; `0` significa disponibilità immediata. «Controlla ora» include
@@ -98,10 +100,10 @@ La marcatura manuale viene proposta soltanto dopo il salvataggio riuscito del pr
 o PNG; la stampa e l'annullamento del salvataggio non modificano lo stato di invio.
 
 Nella Dashboard le card delle categorie abilitate rimangono sempre visibili finché l'azione non viene
-svolta o nascosta manualmente. I giorni configurati per ciascuna categoria regolano la **cadenza di notifica**
+svolta o nascosta temporaneamente (6 ore). I giorni configurati per ciascuna categoria regolano la **cadenza di notifica**
 (l'intervallo con cui viene emesso il pop-up se l'azione non è ancora stata eseguita). Quando una notifica
-viene emessa, il core Rust registra su SQLite (`notifica_avvisata`) il timestamp dell'avviso per quella
-categoria: all'avvio successivo dell'applicazione l'avviso viene silenziato fino allo scadere della cadenza
+viene emessa, il core Rust registra su SQLite locale (`local_notifiche_avvisate`) il timestamp dell'avviso per quella
+categoria (senza produrre eventi sul log condiviso di OneDrive): all'avvio successivo dell'applicazione l'avviso viene silenziato fino allo scadere della cadenza
 impostata.
 
 I suggerimenti non vengono inseriti nella lista della campanella (la quale rimane riservata a promemoria,

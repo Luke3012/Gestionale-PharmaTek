@@ -316,6 +316,49 @@ impl AppState {
         })
     }
 
+    // ---- Notifiche avvisate locali (non replicate) ----
+
+    pub fn local_notifica_avvisata_get_map(
+        &self,
+        user_id: &str,
+    ) -> AppResult<HashMap<String, i64>> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.local_notifica_avvisata_get_map(user_id))
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub fn local_notifica_avvisata_set(
+        &self,
+        user_id: &str,
+        chiave: &str,
+        tipo: &str,
+        ts: i64,
+    ) -> AppResult<()> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.local_notifica_avvisata_set(user_id, chiave, tipo, ts))
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub fn local_notifica_avvisata_delete(&self, user_id: &str, chiave: &str) -> AppResult<()> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.local_notifica_avvisata_delete(user_id, chiave))
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub fn local_notifica_avvisata_delete_tipo(&self, user_id: &str, tipo: &str) -> AppResult<()> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.local_notifica_avvisata_delete_tipo(user_id, tipo))
+                .map_err(|e| e.to_string())
+        })
+    }
+
     /// Crea un record: genera l'ULID, emette `Created` + i campi, restituisce il record.
     pub fn record_create(
         &self,

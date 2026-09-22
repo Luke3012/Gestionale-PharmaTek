@@ -30,12 +30,14 @@ export interface RigaCorriere {
 }
 
 export function formattaNumeriLottoPerExport(numero: string): string {
-  return String(numero || "")
+  const lotti = String(numero || "")
     .replace(/\r/g, "")
     .split("\n")
     .map((valore) => valore.trim())
-    .filter(Boolean)
-    .join(" + ");
+    .filter(Boolean);
+  const univoci = Array.from(new Set(lotti));
+  univoci.sort((a, b) => a.localeCompare(b, "it", { numeric: true, sensitivity: "base" }));
+  return univoci.join(" + ");
 }
 
 /** Regola unica colli/peso del profilo. CORRIERE_A richiede sempre 1/1, anche
@@ -76,94 +78,57 @@ export function rigaCorriere(s: Spedizione): RigaCorriere {
   };
 }
 
-function normalizzaChiave(value: string): string {
-  return String(value || "")
-    .trim()
-    .toLocaleLowerCase("it-IT")
-    .replace(/\s+/g, " ");
+/** Estrae tutti i numeri lotto della spedizione: da s.righe (se presenti) o da s.numero,
+ * deduplicati e ordinati naturalmente in senso crescente. */
+export function estraiNumeriLottoSpedizione(s: Spedizione): string[] {
+  const grezzi: string[] = [];
+  if (s.righe && s.righe.length > 0) {
+    for (const riga of s.righe) {
+      if (riga.numero) {
+        grezzi.push(riga.numero);
+      }
+    }
+  } else if (s.numero) {
+    grezzi.push(s.numero);
+  }
+  const lotti: string[] = [];
+  for (const item of grezzi) {
+    const righe = String(item || "")
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((val) => val.trim())
+      .filter(Boolean);
+    lotti.push(...righe);
+  }
+  const univoci = Array.from(new Set(lotti));
+  univoci.sort((a, b) => a.localeCompare(b, "it", { numeric: true, sensitivity: "base" }));
+  return univoci;
 }
 
-function chiaveDestinazione(riga: RigaCorriere, fallback: string): string {
-  const chiave = [riga.cliente, riga.indirizzo, riga.cap, riga.citta, riga.prov]
-    .map(normalizzaChiave)
-    .join("|");
-  return chiave.replace(/\|/g, "") ? chiave : `spedizione:${fallback}`;
-}
-
-function unisciTestoSenzaDuplicati(a: string, b: string): string {
-  if (!a) return b;
-  if (!b || a === b) return a;
-  return `${a} - ${b}`;
-}
-
-interface GruppoCorriereA {
+export interface GruppoCorriereA {
   riga: RigaCorriere;
   numeri: string[];
 }
 
+/** Prepara le righe per la distinta CORRIERE_A: 1 riga per ogni collo/spedizione presente
+ * nel gestionale, con tutti i lotti del collo uniti con " + " e ordinati in modo naturale,
+ * senza separare per paziente. Colli e peso sono sempre impostati a 1. */
 function preparaRigheCorriereA(spedizioni: Spedizione[]): RigaCorriere[] {
-  const gruppi = new Map<string, GruppoCorriereA>();
-
-  const aggiungi = (s: Spedizione, persona: string, numeri: string[]) => {
+  return spedizioni.map((s) => {
     const riga = rigaCorriere(s);
-    const destinatario = chiaveDestinazione(riga, s.id);
-    // Il paziente distingue persone diverse spedite allo stesso indirizzo. Nei dati
-    // senza paziente, il destinatario stesso è la persona di riferimento.
-    const personaNormalizzata = normalizzaChiave(persona) || normalizzaChiave(riga.cliente);
-    const chiave = `${destinatario}|persona:${personaNormalizzata}`;
-    const esistente = gruppi.get(chiave);
-
-    if (!esistente) {
-      riga.colli = 1;
-      riga.peso = 1;
-      gruppi.set(chiave, { riga, numeri: [...numeri] });
-      return;
-    }
-
-    esistente.numeri.push(...numeri);
-    if (typeof riga.importo === "number") {
-      esistente.riga.importo =
-        (typeof esistente.riga.importo === "number" ? esistente.riga.importo : 0) + riga.importo;
-    }
-    esistente.riga.note = unisciTestoSenzaDuplicati(esistente.riga.note, riga.note);
-    esistente.riga.preavvisoTel ||= riga.preavvisoTel;
-    esistente.riga.telefono ||= riga.telefono;
-    esistente.riga.email ||= riga.email;
-  };
-
-  for (const s of spedizioni) {
-    if (s.righe.length === 0) {
-      aggiungi(s, s.clienteNome, [s.numero]);
-      continue;
-    }
-
-    // Prima evita di duplicare importo/note della stessa spedizione quando una
-    // persona ha più vaccini; poi l'unione globale accorpa anche colli distinti.
-    const perPersona = new Map<string, { persona: string; numeri: string[] }>();
-    for (const riga of s.righe) {
-      const persona = String(riga.paziente || "").trim() || s.clienteNome;
-      const chiave = normalizzaChiave(persona);
-      const gruppo = perPersona.get(chiave);
-      if (gruppo) gruppo.numeri.push(riga.numero || "");
-      else perPersona.set(chiave, { persona, numeri: [riga.numero || ""] });
-    }
-    for (const gruppo of perPersona.values()) aggiungi(s, gruppo.persona, gruppo.numeri);
-  }
-
-  return Array.from(gruppi.values(), ({ riga, numeri }) => ({
-    ...riga,
-    numero: formattaNumeriLottoPerExport(numeri.join("\n")),
-    colli: 1,
-    peso: 1,
-  }));
+    riga.colli = 1;
+    riga.peso = 1;
+    const lotti = estraiNumeriLottoSpedizione(s);
+    riga.numero = lotti.join(" + ");
+    return riga;
+  });
 }
 
 /** Prepara l'elenco delle righe per l'esportazione:
  *  - CORRIERE_B ed CORRIERE_C: una sola riga unita per spedizione (con lotti tipo "508213/34" forniti dal backend).
- *  - CORRIERE_A: una riga per persona; più vaccini dello stesso paziente condividono la cella numero
- *    (es. `5078989 + 5078990`). Se i numeri mancano, la riga resta presente con cella vuota.
- *    Le righe senza paziente restano distinte, perché non è sicuro presumere che appartengano
- *    alla stessa persona.
+ *  - CORRIERE_A: una riga per collo/spedizione del gestionale; tutti i vaccini del collo condividono la
+ *    cella numero uniti con " + " in ordine naturale (es. `5081997 + 5081998 + 5081999`),
+ *    senza separazione per paziente. Se i numeri mancano, la riga resta presente con cella vuota.
  *  Tutte le righe hanno sempre colli = 1 e peso = 1.
  */
 export function preparaRigheEsportazione(spedizioni: Spedizione[], profilo: string): RigaCorriere[] {

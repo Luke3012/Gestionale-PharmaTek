@@ -519,11 +519,25 @@ impl AppState {
                 p.list("riga_ordine")
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|r| str_field(&r.data, "lotto_produzione") == lotto)
+                    .filter(|r| {
+                        if str_field(&r.data, "lotto_produzione") == lotto {
+                            return true;
+                        }
+                        if let Some(order_id) = lotto.strip_prefix('_') {
+                            if str_field(&r.data, "ordine_id") == order_id {
+                                return !str_field(&r.data, "stato_produzione").is_empty()
+                                    || !str_field(&r.data, "lotto_produzione").is_empty();
+                            }
+                        }
+                        false
+                    })
                     .map(|r| r.id)
                     .collect()
             });
             let mut ordini: Vec<String> = Vec::new();
+            if let Some(order_id) = lotto.strip_prefix('_') {
+                ordini.push(order_id.to_string());
+            }
             for rid in &ids {
                 set_fields(
                     engine,

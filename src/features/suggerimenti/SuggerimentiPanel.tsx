@@ -243,7 +243,7 @@ const SchedaSuggerimento = memo(function SchedaSuggerimento({
           label={
             suggerimento.tipo === "spedizione"
               ? "Ignora avviso"
-              : "Nascondi e sospendi questa categoria per 24 ore"
+              : "Nascondi e sospendi questa categoria per 6 ore"
           }
           withArrow
           openDelay={350}
@@ -562,6 +562,7 @@ export function SuggerimentiPanel({
 
   const salvaImpostazioni = useCallback(() => {
     setPreferenzeSuggerimenti(preferenzeBozza);
+    setNascostiLocali(new Set());
     setImpostazioniAperte(false);
     toast.success("Impostazioni salvate su questo PC.");
   }, [preferenzeBozza, setPreferenzeSuggerimenti]);

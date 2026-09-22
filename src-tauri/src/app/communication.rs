@@ -3472,6 +3472,7 @@ impl AppState {
                 .filter(|item| {
                     item.canale == CanaleComunicazione::Whatsapp
                         && item.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
+                        && item.stato != StatoComunicazione::Annullato
                 })
                 .max_by_key(|item| item.stato_aggiornato_ms)
             {
@@ -3555,22 +3556,23 @@ impl AppState {
         self.force_sync()?;
 
         // Un arresto o una versione precedente del collaudo può aver lasciato
-        // una prova diagnostica in coda. Non deve essere ripresa più tardi dal
-        // worker ordinario, causando un invio o una minimizzazione fuori tempo.
-        let diagnostiche_pendenti = self
+        // una prova diagnostica in sospeso o fallita. Annulliamo le precedenti prove
+        // non riuscite e azzeriamo l'ultimo esito così che il nuovo collaudo parta pulito.
+        let diagnostiche_precedenti = self
             .comunicazioni_lista()?
             .into_iter()
             .filter(|item| {
                 item.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
-                    && item.stato == StatoComunicazione::InCoda
+                    && !item.stato.positivo()
             })
             .map(|item| item.id)
             .collect::<Vec<_>>();
-        for id in diagnostiche_pendenti {
+        for id in diagnostiche_precedenti {
             // Nessuna minimizzazione asincrona qui: potrebbe arrivare mentre
             // il nuovo collaudo ha già riaperto WhatsApp.
             let _ = self.comunicazione_cambia_stato(&id, StatoComunicazione::Annullato, false);
         }
+        crate::app::whatsapp_windows::resetta_ultimo_esito();
 
         let sessione = ulid::Ulid::generate().to_string();
         let crea = |suffisso: &str,
@@ -3845,7 +3847,7 @@ impl AppState {
             // worker non può produrre alcun effetto esterno.
             return Ok(None);
         };
-        let prossima = self
+        let in_coda: Vec<_> = self
             .comunicazioni_lista()?
             .into_iter()
             .filter(|comunicazione| {
@@ -3853,12 +3855,28 @@ impl AppState {
                     && comunicazione.proprietario_dispositivo_id == dispositivo
                     && !trattenute_all_avvio.contains(&comunicazione.id)
             })
-            .min_by_key(|comunicazione| comunicazione.creata_ms);
+            .collect();
+
         #[cfg(all(target_os = "windows", not(test)))]
-        let era_whatsapp = prossima
+        let whatsapp_pronto = crate::app::whatsapp_windows::pc_pronto_per_whatsapp();
+        #[cfg(any(not(target_os = "windows"), test))]
+        let whatsapp_pronto = true;
+
+        // Se WhatsApp è pronto, rispettiamo l'ordine cronologico (FIFO).
+        // Se il PC è in uso, WhatsApp viene temporaneamente scavalcato dalle e-mail pronte,
+        // così le e-mail partono subito in background senza attendere la quiete dell'operatore.
+        let prossima = in_coda
+            .iter()
+            .filter(|c| c.canale != CanaleComunicazione::Whatsapp || whatsapp_pronto)
+            .min_by_key(|c| c.creata_ms)
+            .cloned();
+
+        #[cfg(all(target_os = "windows", not(test)))]
+        let mut era_whatsapp = prossima
             .as_ref()
             .is_some_and(|comunicazione| comunicazione.canale == CanaleComunicazione::Whatsapp);
-        let risultato = prossima
+
+        let mut risultato = prossima
             .map(|comunicazione| match comunicazione.canale {
                 CanaleComunicazione::Email => self.comunicazione_email_invia(&comunicazione.id),
                 CanaleComunicazione::Whatsapp => {
@@ -3866,6 +3884,27 @@ impl AppState {
                 }
             })
             .transpose();
+
+        // Se WhatsApp è stato differito (rimasto in InCoda per attività operatore)
+        // ma ci sono e-mail pronte in coda, inviamo subito la prima e-mail invece di fermare il worker.
+        if risultato
+            .as_ref()
+            .ok()
+            .and_then(|c| c.as_ref())
+            .is_some_and(|item| item.stato == StatoComunicazione::InCoda)
+        {
+            if let Some(email) = in_coda
+                .iter()
+                .filter(|c| c.canale == CanaleComunicazione::Email)
+                .min_by_key(|c| c.creata_ms)
+            {
+                #[cfg(all(target_os = "windows", not(test)))]
+                {
+                    era_whatsapp = false;
+                }
+                risultato = self.comunicazione_email_invia(&email.id).map(Some);
+            }
+        }
 
         #[cfg(all(target_os = "windows", not(test)))]
         if era_whatsapp

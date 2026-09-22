@@ -91,6 +91,8 @@ interface Toast {
   notificheIncluse?: string[];
   /** Le riattivazioni manuali dalla Dashboard devono mostrare la card completa. */
   mostraCompleta?: boolean;
+  /** True se la notifica riguarda la prova/collaudo WhatsApp da Impostazioni. */
+  eCollaudoWhatsapp?: boolean;
 }
 
 const LARGHEZZA = 440; // px logici della finestra: card + spazio attorno per l'ombra
@@ -193,6 +195,9 @@ function toastDaStatoComunicazione(
     return null;
   }
   const canale = comunicazione.canale === "email" ? "E-mail" : "WhatsApp";
+  const eCollaudoWhatsapp =
+    comunicazione.destinatarioEntita === "diagnostica_whatsapp" ||
+    Boolean(comunicazione.campagnaId?.startsWith("collaudo-whatsapp:"));
   const base: Toast = {
     id: `comunicazione-operativa:${comunicazione.id}`,
     tipo: "comunicazione",
@@ -207,6 +212,7 @@ function toastDaStatoComunicazione(
     comunicazioneId: comunicazione.id,
     canaleComunicazione: comunicazione.canale,
     campagnaId: comunicazione.campagnaId,
+    eCollaudoWhatsapp,
   };
   if (comunicazione.stato === "sospeso") {
     return {
@@ -311,6 +317,9 @@ function toastDaStatoCampagna(comunicazioni: Comunicazione[]): Toast | null {
       : corrente.canale === "email"
         ? "E-mail"
         : "WhatsApp";
+  const eCollaudoWhatsapp = Boolean(
+    prima.campagnaId?.startsWith("collaudo-whatsapp:"),
+  );
   const base: Toast = {
     id: `comunicazione-campagna:${prima.campagnaId}`,
     tipo: "comunicazione",
@@ -325,6 +334,7 @@ function toastDaStatoCampagna(comunicazioni: Comunicazione[]): Toast | null {
     comunicazioneId: corrente.id,
     campagnaId: prima.campagnaId,
     progress: riepilogo.progress,
+    eCollaudoWhatsapp,
   };
 
   if (riepilogo.terminale) {
@@ -350,6 +360,10 @@ function toastDaStatoCampagna(comunicazioni: Comunicazione[]): Toast | null {
     titolo: inPausa ? "Campagna messa in pausa" : "Invio comunicazioni",
     inCorso: true,
     campagnaInPausa: inPausa,
+    ripresaWhatsapp:
+      !inPausa &&
+      corrente.canale === "whatsapp" &&
+      corrente.stato === "in_coda",
   };
 }
 
@@ -365,6 +379,7 @@ export function OverlayWindow() {
   const contenutoRef = useRef<HTMLDivElement>(null);
   const ultimoPortaDavantiRef = useRef(0);
   const aperturaCampanellaInCorsoRef = useRef(false);
+  const whatsappInInvioRef = useRef(false);
 
   // Cap di altezza = area utile dello schermo (esclude la taskbar): oltre, la colonna
   // di card scorre invece di sforare lo schermo.
@@ -381,22 +396,24 @@ export function OverlayWindow() {
     ultimoPortaDavantiRef.current = adesso;
 
     try {
+      if (whatsappInInvioRef.current) {
+        const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
+        if (interseca) {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          await getCurrentWindow().hide().catch(() => {});
+          return;
+        }
+      }
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();
       await win.show().catch(() => {});
       await win.unminimize().catch(() => {});
-      // Su Windows alcune finestre always-on-top possono superare l'overlay nel tempo:
-      // togglarlo lo riporta in cima senza rubare il focus alla finestra corrente.
-      await win.setAlwaysOnTop(false).catch(() => {});
-      await win.setAlwaysOnTop(true).catch(() => {});
-    } catch {}
-  }, []);
-
-  const nascondiOverlayDuranteWhatsapp = useCallback(async () => {
-    if (!inTauri) return;
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().hide();
+      // Evitiamo di commutare always-on-top mentre WhatsApp sta digitando o inviando,
+      // per non sottrarre il focus alla finestra di chat.
+      if (!whatsappInInvioRef.current) {
+        await win.setAlwaysOnTop(false).catch(() => {});
+        await win.setAlwaysOnTop(true).catch(() => {});
+      }
     } catch {}
   }, []);
 
@@ -406,6 +423,9 @@ export function OverlayWindow() {
     const versioniCampagna = new Map<string, number>();
 
     const aggiornaComunicazione = async (payload: Comunicazione) => {
+      if (payload.canale === "whatsapp") {
+        whatsappInInvioRef.current = payload.stato === "in_invio";
+      }
       if (payload.campagnaId) {
         if (payload.stato === "in_coda") {
           // Una ripresa esplicita dal Centro comunicazioni riattiva anche la
@@ -420,15 +440,9 @@ export function OverlayWindow() {
           return;
         }
       }
-      const automazioneWhatsapp =
-        payload.canale === "whatsapp" && payload.stato === "in_invio";
-      if (automazioneWhatsapp) void nascondiOverlayDuranteWhatsapp();
       if (!balloonAttivo) return;
 
       let prossimo: Toast | null;
-      let whatsappAncoraAttivo =
-        payload.canale === "whatsapp" &&
-        ["in_coda", "in_invio"].includes(payload.stato);
       if (payload.campagnaId) {
         const versione = (versioniCampagna.get(payload.campagnaId) ?? 0) + 1;
         versioniCampagna.set(payload.campagnaId, versione);
@@ -443,14 +457,6 @@ export function OverlayWindow() {
           (item) => item.campagnaId === payload.campagnaId,
         );
         prossimo = toastDaStatoCampagna(elementiCampagna);
-        // Una campagna WhatsApp resta nascosta per tutta la sequenza. Mostrarla
-        // tra un destinatario e il successivo produceva un continuo lampeggio
-        // e poteva coprire i controlli che l'automazione deve verificare.
-        whatsappAncoraAttivo = elementiCampagna.some(
-          (item) =>
-            item.canale === "whatsapp" &&
-            ["in_coda", "in_invio"].includes(item.stato),
-        ) && !elementiCampagna.some((item) => item.stato === "sospeso");
       } else {
         prossimo = toastDaStatoComunicazione(payload);
       }
@@ -470,10 +476,18 @@ export function OverlayWindow() {
         return ordinaToast([prossimo, ...senzaPrecedente]).slice(0, MAX_TOAST);
       });
 
-      if (whatsappAncoraAttivo) {
-        void nascondiOverlayDuranteWhatsapp();
-      } else if (prossimo) {
-        void portaOverlayDavanti(true);
+      if (prossimo) {
+        if (payload.canale === "whatsapp" && payload.stato === "in_invio") {
+          const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
+          if (interseca) {
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            await getCurrentWindow().hide().catch(() => {});
+          } else {
+            void portaOverlayDavanti(true);
+          }
+        } else {
+          void portaOverlayDavanti(true);
+        }
       } else {
         window.setTimeout(() => {
           if (toastsRef.current.length > 0) void portaOverlayDavanti(true);
@@ -494,8 +508,12 @@ export function OverlayWindow() {
     if (balloonAttivo) {
       void api
         .comunicazioniLista()
-        .then((comunicazioni) => {
+        .then(async (comunicazioni) => {
           if (!attivo) return;
+          const waInInvio = comunicazioni.some(
+            (item) => item.canale === "whatsapp" && item.stato === "in_invio",
+          );
+          whatsappInInvioRef.current = waInInvio;
           const campagneAttive = new Set(
             comunicazioni
               .filter(
@@ -519,13 +537,19 @@ export function OverlayWindow() {
             );
             return ordinaToast([...operative, ...nonOperative]).slice(0, MAX_TOAST);
           });
-          const automazioneWhatsapp = comunicazioni.some(
-            (item) =>
-              item.canale === "whatsapp" &&
-              ["in_coda", "in_invio"].includes(item.stato),
-          ) && !comunicazioni.some((item) => item.stato === "sospeso");
-          if (automazioneWhatsapp) void nascondiOverlayDuranteWhatsapp();
-          else if (operative.length > 0) void portaOverlayDavanti(true);
+          if (operative.length > 0) {
+            if (waInInvio) {
+              const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
+              if (interseca) {
+                const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                await getCurrentWindow().hide().catch(() => {});
+              } else {
+                void portaOverlayDavanti(true);
+              }
+            } else {
+              void portaOverlayDavanti(true);
+            }
+          }
         })
         .catch(() => {});
     }
@@ -533,7 +557,7 @@ export function OverlayWindow() {
       attivo = false;
       disiscriviTauri();
     };
-  }, [balloonAttivo, nascondiOverlayDuranteWhatsapp, portaOverlayDavanti]);
+  }, [balloonAttivo, portaOverlayDavanti]);
 
   const inserisciToastAggiornamento = useCallback((versione: string, note?: string) => {
     setToasts((cur) => {
@@ -834,10 +858,15 @@ export function OverlayWindow() {
       // La finestra resta NASCOSTA quando è vuota: mostrarla da vuota faceva lampeggiare
       // un rettangolo grigio in basso a destra all'avvio (il webview trasparente non era
       // ancora dipinto). La mostriamo solo quando ci sono pop-up da far vedere.
+      let mostra = !riduciFinestra;
+      if (mostra && whatsappInInvioRef.current) {
+        const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
+        if (interseca) mostra = false;
+      }
       const [mon] = await Promise.all([
         currentMonitor().catch(() => null),
         win.setIgnoreCursorEvents(ignoraClick).catch(() => {}),
-        (riduciFinestra ? win.hide() : win.show().then(() => win.setAlwaysOnTop(true))).catch(() => {}),
+        (mostra ? win.show().then(() => win.setAlwaysOnTop(true)) : win.hide()).catch(() => {}),
       ]);
 
       if (annulla) return;
@@ -883,6 +912,21 @@ export function OverlayWindow() {
   }, [toasts.length, maxH, zoomFactor]);
 
   function naviga(t: Toast) {
+    if (t.eCollaudoWhatsapp || t.campagnaId?.startsWith("collaudo-whatsapp:")) {
+      // Chiudi semplicemente la notifica toast (dismiss)
+      setToasts((cur) => cur.filter((toast) => toast.id !== t.id));
+      // Mostra la finestra dell'app dove sta già il modale aperto del test whatsapp
+      void import("@tauri-apps/api/webviewWindow").then(async ({ getAllWebviewWindows }) => {
+        const windows = await getAllWebviewWindows();
+        const main = windows.find((w) => w.label === "main");
+        if (main) {
+          await main.show().catch(() => {});
+          await main.unminimize().catch(() => {});
+          await main.setFocus().catch(() => {});
+        }
+      });
+      return;
+    }
     const identity = identityRef.current ?? undefined;
     if (t.tipo === "comunicazione" && t.comunicazioneId) {
       void apriCentroComunicazioniDaNotifica(t.comunicazioneId);

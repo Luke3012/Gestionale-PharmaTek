@@ -1422,6 +1422,22 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     await esegui(() => api.produzioneLottoRigheAnnulla(g.lotto), "Lotto annullato.");
   }
 
+  async function annullaLottiSelezionati() {
+    if (selLottiVis.length === 0) return;
+    const ok = await dialog.confirm(
+      `Annullare ${selLottiVis.length === 1 ? "il lotto selezionato" : `i ${selLottiVis.length} lotti selezionati`}?`,
+      `Tutti i prodotti tornano fra quelli «Da produrre». I pagamenti non vengono toccati.`,
+      { conferma: "Annulla lotti", annulla: "Indietro" }
+    );
+    if (!ok) return;
+    await esegui(async () => {
+      for (const l of selLottiVis) {
+        await api.produzioneLottoRigheAnnulla(l);
+      }
+      setSelLotti(new Set());
+    }, selLottiVis.length === 1 ? "Lotto annullato." : `${selLottiVis.length} lotti annullati.`);
+  }
+
   async function unisciLotti() {
     if (selLottiVis.length < 2) return;
     const ok = await dialog.confirm(
@@ -1952,10 +1968,16 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
               <BarraSelezione etichetta="Seleziona tutti i lotti" checked={tuttiLottiSel}
                 indeterminate={nSel > 0 && !tuttiLottiSel} onToggle={toggleTuttiLotti}
                 selezionati={nSel} onDeseleziona={() => setSelLotti(new Set())}>
-                <Button size="xs" variant="light" color="grape" leftSection={<IconArrowMerge size={15} />}
-                  disabled={nSel < 2} loading={salvando} onClick={unisciLotti}>
-                  Unisci lotti{nSel >= 2 ? ` (${nSel})` : ""}
-                </Button>
+                <Group gap="xs">
+                  <Button size="xs" variant="light" color="orange" leftSection={<IconArrowBackUp size={15} />}
+                    disabled={nSel === 0} loading={salvando} onClick={annullaLottiSelezionati}>
+                    Annulla lotti{nSel > 0 ? ` (${nSel})` : ""}
+                  </Button>
+                  <Button size="xs" variant="light" color="grape" leftSection={<IconArrowMerge size={15} />}
+                    disabled={nSel < 2} loading={salvando} onClick={unisciLotti}>
+                    Unisci lotti{nSel >= 2 ? ` (${nSel})` : ""}
+                  </Button>
+                </Group>
               </BarraSelezione>
             );
           })();

@@ -17,7 +17,7 @@ use serde::Serialize;
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GlobalFree, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HANDLE, HGLOBAL, HWND,
-    LPARAM, POINT,
+    LPARAM, POINT, RECT,
 };
 use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows::Win32::System::Com::{
@@ -27,6 +27,11 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
+// #[link(name = "kernel32")]
+// extern "system" {
+//     fn GetModuleHandleW(lpModuleName: PCWSTR) -> HANDLE;
+//     fn GetProcAddress(hModule: HANDLE, lpProcName: *const u8) -> *mut std::ffi::c_void;
+// }
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
@@ -54,9 +59,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::DROPFILES;
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, EnumWindows, FindWindowW, GetAncestor, GetCursorPos, GetForegroundWindow,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetCursorPos,
+    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetCursorPos,
     SetForegroundWindow, SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT, HWND_NOTOPMOST,
-    HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_MINIMIZE, SW_RESTORE,
+    HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
 };
 
 const ATTESA_APERTURA: Duration = Duration::from_secs(12);
@@ -393,6 +398,12 @@ pub(super) fn registra_collaudo_completato(durata: Duration) {
         esito.codice = "collaudo_completato".into();
         esito.fase = "collaudo".into();
     }
+}
+
+pub(super) fn resetta_ultimo_esito() {
+    *ultimo_esito()
+        .lock()
+        .expect("whatsapp diagnostics poisoned") = None;
 }
 
 pub(super) fn marcatore_input_utente() -> Option<u32> {
@@ -1527,7 +1538,11 @@ fn punto_whatsapp_scoperto(hwnd: HWND, punto: POINT) -> bool {
 /// subito revocato, quindi WhatsApp non resta sopra alle altre applicazioni.
 fn porta_whatsapp_in_primo_piano(hwnd: HWND) {
     unsafe {
-        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+        } else {
+            let _ = ShowWindowAsync(hwnd, SW_SHOW);
+        }
         let thread_corrente = GetCurrentThreadId();
         let thread_whatsapp = GetWindowThreadProcessId(hwnd, None);
         let foreground = GetForegroundWindow();
@@ -1557,6 +1572,151 @@ fn porta_whatsapp_in_primo_piano(hwnd: HWND) {
         if agganciato_foreground {
             let _ = AttachThreadInput(thread_corrente, thread_foreground, false);
         }
+    }
+}
+
+static GLOBAL_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn registra_app_handle(handle: tauri::AppHandle) {
+    let _ = GLOBAL_APP_HANDLE.set(handle);
+}
+
+pub fn finestre_si_intersecano(rc_a: &RECT, rc_b: &RECT) -> bool {
+    rc_a.left < rc_b.right
+        && rc_a.right > rc_b.left
+        && rc_a.top < rc_b.bottom
+        && rc_a.bottom > rc_b.top
+}
+
+pub fn handle_finestra_whatsapp_corrente() -> Option<HWND> {
+    if let Ok(cache) = cache_finestra().lock() {
+        if cache.hwnd != 0 {
+            let hwnd = HWND(cache.hwnd as _);
+            if unsafe { IsWindow(Some(hwnd)) }.as_bool()
+                && unsafe { IsWindowVisible(hwnd) }.as_bool()
+                && !unsafe { IsIconic(hwnd) }.as_bool()
+            {
+                return Some(hwnd);
+            }
+        }
+    }
+    if let Ok(hwnd) = unsafe { FindWindowW(PCWSTR::null(), w!("WhatsApp")) } {
+        if unsafe { IsWindow(Some(hwnd)) }.as_bool()
+            && unsafe { IsWindowVisible(hwnd) }.as_bool()
+            && !unsafe { IsIconic(hwnd) }.as_bool()
+        {
+            return Some(hwnd);
+        }
+    }
+    None
+}
+
+pub fn whatsapp_interseca_overlay() -> bool {
+    let Some(app) = GLOBAL_APP_HANDLE.get() else {
+        return false;
+    };
+    use tauri::Manager;
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        return false;
+    };
+    let Ok(hwnd_overlay_raw) = overlay.hwnd() else {
+        return false;
+    };
+    let hwnd_overlay = HWND(hwnd_overlay_raw.0 as _);
+    let mut rc_overlay = RECT::default();
+    if unsafe { GetWindowRect(hwnd_overlay, &mut rc_overlay) }.is_err() {
+        return false;
+    }
+    if rc_overlay.right <= rc_overlay.left || rc_overlay.bottom <= rc_overlay.top {
+        return false;
+    }
+
+    let Some(hwnd_wa) = handle_finestra_whatsapp_corrente() else {
+        return false;
+    };
+    let mut rc_wa = RECT::default();
+    if unsafe { GetWindowRect(hwnd_wa, &mut rc_wa) }.is_err() {
+        return false;
+    }
+    if rc_wa.right <= rc_wa.left || rc_wa.bottom <= rc_wa.top {
+        return false;
+    }
+
+    finestre_si_intersecano(&rc_wa, &rc_overlay)
+}
+
+struct GuardiaOverlayInvio {
+    overlay_da_ripristinare: Option<tauri::WebviewWindow>,
+}
+
+impl GuardiaOverlayInvio {
+    fn cattura(hwnd_wa: HWND) -> Self {
+        if hwnd_wa.0.is_null() {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        }
+        let Some(app) = GLOBAL_APP_HANDLE.get() else {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        };
+        use tauri::Manager;
+        let Some(overlay) = app.get_webview_window("overlay") else {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        };
+        let Ok(hwnd_overlay_raw) = overlay.hwnd() else {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        };
+        let hwnd_overlay = HWND(hwnd_overlay_raw.0 as _);
+        let mut rc_overlay = RECT::default();
+        if unsafe { GetWindowRect(hwnd_overlay, &mut rc_overlay) }.is_err() {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        }
+        if rc_overlay.right <= rc_overlay.left || rc_overlay.bottom <= rc_overlay.top {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        }
+        let mut rc_wa = RECT::default();
+        if unsafe { GetWindowRect(hwnd_wa, &mut rc_wa) }.is_err() {
+            return Self {
+                overlay_da_ripristinare: None,
+            };
+        }
+
+        if finestre_si_intersecano(&rc_wa, &rc_overlay) {
+            let _ = overlay.hide();
+            Self {
+                overlay_da_ripristinare: Some(overlay),
+            }
+        } else {
+            Self {
+                overlay_da_ripristinare: None,
+            }
+        }
+    }
+}
+
+impl Drop for GuardiaOverlayInvio {
+    fn drop(&mut self) {
+        if let Some(ref overlay) = self.overlay_da_ripristinare {
+            let _ = overlay.show();
+        }
+    }
+}
+
+struct GuardiaNonDisturbare;
+
+impl GuardiaNonDisturbare {
+    fn attiva() -> Self {
+        Self
     }
 }
 
@@ -2876,6 +3036,7 @@ fn aziona_invio_interno_impl(
     if annullato() {
         return Err(errore_annullamento());
     }
+    let _guardia_non_disturbare = GuardiaNonDisturbare::attiva();
     // La disponibilita del PC e gia stata verificata prima di aprire il
     // deep-link. L'apertura di `whatsapp://` puo aggiornare brevemente il
     // marcatore di input di Windows: ricontrollarlo qui faceva differire
@@ -3100,6 +3261,11 @@ fn aziona_invio_interno_impl(
         if annullato() {
             return Err(errore_annullamento());
         }
+        let _guardia_overlay = if let Ok(hwnd) = handle_finestra(&preparati) {
+            GuardiaOverlayInvio::cattura(hwnd)
+        } else {
+            GuardiaOverlayInvio::cattura(HWND(std::ptr::null_mut()))
+        };
         if ripristini_automazione > 0 {
             // Dopo la chiusura di preview/dialog WebView2 pubblica il nuovo
             // compositore prima che il layer di transizione smetta di
@@ -3232,6 +3398,7 @@ fn aziona_invio_allegato_impl(
     if annullato() {
         return Err(errore_annullamento());
     }
+    let _guardia_non_disturbare = GuardiaNonDisturbare::attiva();
     verifica_pc_libero(autorizzazione_input)?;
     let _com = ComApartment::init()?;
     let automation: IUIAutomation = unsafe {
@@ -3290,6 +3457,7 @@ fn aziona_invio_allegato_impl(
         return Err(error);
     }
     let hwnd = attiva_finestra_e_compositore(&preparati, &annullato)?;
+    let _guardia_overlay = GuardiaOverlayInvio::cattura(hwnd);
     if !destinazione_input_verificata(&preparati, hwnd) {
         return Err(errore_attivita_utente());
     }

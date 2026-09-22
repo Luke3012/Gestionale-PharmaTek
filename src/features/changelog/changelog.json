@@ -1,6 +1,12 @@
 {
   "versioni": [
     {
+      "versione": "0.8.1",
+      "data": "2026-09-18",
+      "sintesi": "🚛 Risolto un problema per cui nel File spedizione potevano apparire più righe del previsto.",
+      "voci": []
+    },
+    {
       "versione": "0.8.0",
       "data": "2026-09-18",
       "sintesi": "Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.",

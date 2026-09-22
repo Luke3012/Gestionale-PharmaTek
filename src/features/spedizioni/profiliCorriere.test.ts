@@ -73,15 +73,16 @@ describe("numeri lotto nelle distinte corriere", () => {
     expect(normalizzaColliPesoCorriere("gls", 8, 12)).toEqual({ colli: 8, peso: 12 });
   });
 
-  it("raggruppa in una riga Corriere A tutti i vaccini della stessa persona", () => {
+  it("raggruppa in una singola riga Corriere A tutti i lotti del collo, senza separare per paziente", () => {
     const righe = preparaRigheEsportazione([spedizioneCorriereA()], "corriere_a");
 
-    expect(righe).toHaveLength(2);
-    expect(righe.map((riga) => riga.numero)).toEqual(["LOT-1 + LOT-2", "LOT-3"]);
-    expect(righe.every((riga) => riga.colli === 1 && riga.peso === 1)).toBe(true);
+    expect(righe).toHaveLength(1);
+    expect(righe[0].numero).toBe("LOT-1 + LOT-2 + LOT-3");
+    expect(righe[0].colli).toBe(1);
+    expect(righe[0].peso).toBe(1);
   });
 
-  it("accorpa nella stessa riga Excel colli Corriere A distinti della stessa persona", () => {
+  it("mantiene righe distinte per colli Corriere A distinti anche se per lo stesso destinatario", () => {
     const prima = spedizioneCorriereA();
     prima.id = "spedizione-1";
     prima.righe = [{ ...prima.righe[0], numero: "5078989" }];
@@ -91,13 +92,13 @@ describe("numeri lotto nelle distinte corriere", () => {
 
     const righe = preparaRigheEsportazione([prima, seconda], "corriere_a");
 
-    expect(righe).toHaveLength(1);
-    expect(righe[0].numero).toBe("5078989 + 5078990");
-    expect(righe[0].colli).toBe(1);
-    expect(righe[0].peso).toBe(1);
+    expect(righe).toHaveLength(2);
+    expect(righe[0].numero).toBe("5078989");
+    expect(righe[1].numero).toBe("5078990");
+    expect(righe.every((riga) => riga.colli === 1 && riga.peso === 1)).toBe(true);
   });
 
-  it("mantiene la riga Corriere A della persona anche quando non ha numeri lotto", () => {
+  it("mantiene la riga Corriere A del collo anche quando non ha numeri lotto", () => {
     const spedizione = spedizioneCorriereA();
     spedizione.righe = spedizione.righe.slice(0, 2).map((riga) => ({ ...riga, numero: "" }));
 
@@ -109,17 +110,18 @@ describe("numeri lotto nelle distinte corriere", () => {
     expect(righe[0].peso).toBe(1);
   });
 
-  it("usa il destinatario per accorpare righe Corriere A senza paziente", () => {
-    const prima = spedizioneCorriereA();
-    prima.id = "spedizione-1";
-    prima.righe = [{ ...prima.righe[0], paziente: "", numero: "5078989" }];
-    const seconda = spedizioneCorriereA();
-    seconda.id = "spedizione-2";
-    seconda.righe = [{ ...seconda.righe[1], paziente: "", numero: "5078990" }];
+  it("ordina i lotti in modo naturale crescente e rimuove duplicati", () => {
+    const spedizione = spedizioneCorriereA();
+    spedizione.righe = [
+      { ...spedizione.righe[0], paziente: "Sofia Turturo", numero: "5081997" },
+      { ...spedizione.righe[1], paziente: "Mattia Turturo", numero: "5081999" },
+      { ...spedizione.righe[2], paziente: "Mattia Turturo", numero: "5081998" },
+      { ...spedizione.righe[0], rigaId: "r4", paziente: "Mattia Turturo", numero: "5081997" },
+    ];
 
-    const righe = preparaRigheEsportazione([prima, seconda], "corriere_a");
+    const righe = preparaRigheEsportazione([spedizione], "corriere_a");
 
     expect(righe).toHaveLength(1);
-    expect(righe[0].numero).toBe("5078989 + 5078990");
+    expect(righe[0].numero).toBe("5081997 + 5081998 + 5081999");
   });
 });

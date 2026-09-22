@@ -28,7 +28,6 @@ import {
 } from "@mantine/core";
 import {
   IconBrandWhatsapp,
-  IconClipboard,
   IconMail,
   IconHistory,
   IconPlayerPause,
@@ -219,7 +218,6 @@ export function CentroComunicazioniContenuto({
   evidenziazione?: { id: string; nonce: number } | null;
 }) {
   const [comunicazioni, setComunicazioni] = useState<Comunicazione[]>([]);
-  const [caricando, setCaricando] = useState(false);
   const [azione, setAzione] = useState("");
   const [cerca, setCerca] = useState("");
   const cercaDifferita = useDeferredValue(cerca);
@@ -259,20 +257,23 @@ export function CentroComunicazioniContenuto({
     return () => onModalStateChange?.(false);
   }, [nuovaAperta, onModalStateChange]);
 
-  const carica = useCallback(async (mostraCaricamento = false) => {
+  const carica = useCallback(async (mostraErrore = false) => {
     const versione = ++versioneCaricamentoRef.current;
-    if (mostraCaricamento) setCaricando(true);
     try {
       const aggiornate = await api.comunicazioniLista();
       if (versione === versioneCaricamentoRef.current) {
-        setComunicazioni(aggiornate);
+        setComunicazioni(
+          aggiornate.filter(
+            (c) =>
+              c.destinatarioEntita !== "diagnostica_whatsapp" &&
+              !c.campagnaId?.startsWith("collaudo-whatsapp:"),
+          ),
+        );
       }
     } catch (error) {
-      if (mostraCaricamento && versione === versioneCaricamentoRef.current) {
+      if (mostraErrore && versione === versioneCaricamentoRef.current) {
         toast.error(`Caricamento non riuscito: ${error}`);
       }
-    } finally {
-      if (mostraCaricamento) setCaricando(false);
     }
   }, []);
 
@@ -770,31 +771,6 @@ export function CentroComunicazioniContenuto({
     });
   };
 
-  const copiaDiagnosticaWhatsapp = async () => {
-    try {
-      const diagnostica = await api.whatsappDiagnosticaGet();
-      const rapporto = {
-        generatoIl: new Date().toISOString(),
-        protocolloRegistrato: diagnostica.protocolloRegistrato,
-        finestraRilevata: diagnostica.finestraRilevata,
-        processo: diagnostica.processo,
-        pacchetto: diagnostica.pacchetto,
-        versione: diagnostica.versione,
-        identificazioneFallback: diagnostica.identificazioneFallback,
-        prestazioni: {
-          campioni: diagnostica.campioniPrestazioni,
-          medianaMs: diagnostica.medianaMs,
-          percentile95Ms: diagnostica.percentile95Ms,
-        },
-        ultimoEsito: diagnostica.ultimoEsito,
-      };
-      await navigator.clipboard.writeText(JSON.stringify(rapporto, null, 2));
-      toast.success("Diagnostica WhatsApp copiata.");
-    } catch (error) {
-      toast.error(`Diagnostica WhatsApp non disponibile: ${error}`);
-    }
-  };
-
   return (
       <Stack gap="md" style={{ flex: 1, minHeight: 0, height: "100%" }}>
         <Group gap="sm" wrap="nowrap">
@@ -812,27 +788,6 @@ export function CentroComunicazioniContenuto({
           >
             Nuova comunicazione
           </Button>
-          <Tooltip label="Aggiorna" withArrow>
-            <ActionIcon
-              variant="default"
-              size="lg"
-              loading={caricando}
-              onClick={() => void carica(true)}
-              aria-label="Aggiorna comunicazioni"
-            >
-              <IconRefresh size={17} />
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label="Copia diagnostica WhatsApp" withArrow>
-            <ActionIcon
-              variant="default"
-              size="lg"
-              onClick={() => void copiaDiagnosticaWhatsapp()}
-              aria-label="Copia diagnostica WhatsApp"
-            >
-              <IconClipboard size={17} />
-            </ActionIcon>
-          </Tooltip>
         </Group>
 
         <SegmentedControl

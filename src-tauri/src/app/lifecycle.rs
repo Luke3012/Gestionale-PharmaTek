@@ -325,8 +325,51 @@ impl AppState {
             cfg = self.config();
             self.ensure_engine(&args.data_dir, &cfg.device_id)?;
         }
-        let device_id = cfg.device_id.clone();
+        let mut device_id = cfg.device_id.clone();
         let now = now_iso();
+        let is_reconnecting = *self.reconnect_required.lock().expect("reconnect poisoned");
+        let existing_device_id = if is_reconnecting && (args.mode == "use" || args.mode == "reconfigure") {
+            let guard = self.runtime.lock().expect("rt poisoned");
+            if let Some(rt) = guard.as_ref() {
+                let host = hostname();
+                let uid = args.user_id.as_deref().unwrap_or("");
+                rt.engine.with_projection(|p| {
+                    p.list("device")
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|d| {
+                            !p.is_device_retired(&d.id).unwrap_or(false)
+                                && str_field(&d.data, "nome").trim().eq_ignore_ascii_case(&host)
+                                && str_field(&d.data, "user_id") == uid
+                        })
+                        .max_by_key(|d| d.id.clone())
+                        .map(|d| d.id)
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(target_id) = existing_device_id {
+            if target_id != device_id {
+                let target_author = args.user_id.as_deref().unwrap_or(&target_id);
+                // Riapre il runtime con il deviceId originale già registrato per questo computer e utente
+                *self.runtime.lock().expect("rt poisoned") = None;
+                let handle = clone_native_app_handle(&self.app_handle.lock().expect("handle poisoned"));
+                let rt = open_runtime(
+                    &self.app_dir,
+                    &args.data_dir,
+                    &target_id,
+                    target_author,
+                    handle,
+                )?;
+                *self.runtime.lock().expect("rt poisoned") = Some(rt);
+                device_id = target_id.clone();
+                cfg.device_id = target_id;
+            }
+        }
 
         let user_id = {
             let guard = self.runtime.lock().expect("rt poisoned");
@@ -407,6 +450,7 @@ impl AppState {
         // Salva la configurazione locale.
         {
             let mut c = self.config.lock().expect("config poisoned");
+            c.device_id = device_id.clone();
             c.data_dir = Some(args.data_dir.clone());
             c.user_id = Some(user_id.clone());
             save_config(&self.app_dir, &c)?;

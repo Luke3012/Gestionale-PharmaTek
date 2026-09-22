@@ -1911,14 +1911,16 @@ impl AppState {
                                 EventBody::FieldSet { field, value },
                             ));
                         }
-                        mutations.push(Mutation::new(
-                            "riga_ordine",
-                            row.row_id.clone(),
-                            EventBody::FieldSet {
-                                field: "stato_produzione".into(),
-                                value: json!("arrivato_it"),
-                            },
-                        ));
+                        if input.mode == "arrivato_it" {
+                            mutations.push(Mutation::new(
+                                "riga_ordine",
+                                row.row_id.clone(),
+                                EventBody::FieldSet {
+                                    field: "stato_produzione".into(),
+                                    value: json!("arrivato_it"),
+                                },
+                            ));
+                        }
                         orders.insert(order_id);
                     }
 
@@ -1978,21 +1980,22 @@ impl AppState {
                         }
                     }
 
-                    // Lo stato di produzione e la data di arrivo fanno parte dello stesso batch.
-                    // La funzione condivisa considera le righe che questo batch sta portando ad
-                    // `arrivato_it`, evitando una seconda implementazione delle regole di testata.
-                    for order_id in &orders {
-                        for (field, value) in campi_stato_produzione(
-                            projection,
-                            order_id,
-                            &row_ids,
-                            &input.data_arrivo,
-                        ) {
-                            mutations.push(Mutation::new(
-                                "ordine",
-                                order_id.clone(),
-                                EventBody::FieldSet { field, value },
-                            ));
+                    // Lo stato di produzione e la data di arrivo fanno parte dello stesso batch
+                    // soltanto per l'esito «arrivato_it» (la spedizione segue il normale ciclo di evasione).
+                    if input.mode == "arrivato_it" {
+                        for order_id in &orders {
+                            for (field, value) in campi_stato_produzione(
+                                projection,
+                                order_id,
+                                &row_ids,
+                                &input.data_arrivo,
+                            ) {
+                                mutations.push(Mutation::new(
+                                    "ordine",
+                                    order_id.clone(),
+                                    EventBody::FieldSet { field, value },
+                                ));
+                            }
                         }
                     }
                     Ok(mutations)
@@ -3164,5 +3167,64 @@ mod tests {
                 shipments: Vec::new(),
             })
             .is_err());
+    }
+
+    #[test]
+    fn conferma_spedizione_non_imposta_stato_produzione() {
+        let (_app, _data, state) = test_state();
+        let order = order_with_rows(&state, 1);
+        let courier = state.records_list("corriere").unwrap()[0].id.clone();
+        let rows = vec![confirmation(&order, 0, "LOT-SPED-1")];
+        let result = state
+            .bollettazione_conferma(BollettazioneConfermaIn {
+                mode: "spedizione".into(),
+                data_arrivo: "2026-08-01".into(),
+                rows,
+                shipments: vec![BollettazioneSpedizioneIn {
+                    data: "2026-08-01".into(),
+                    corriere_id: courier,
+                    colli: 1,
+                    peso: 1,
+                    servizi: String::new(),
+                    preavviso: true,
+                    mezzo: String::new(),
+                    contrassegno: 0,
+                    note: String::new(),
+                    row_ids: vec![order.righe[0].id.clone()],
+                }],
+            })
+            .unwrap();
+        assert_eq!(result.updated_rows, 1);
+        assert_eq!(result.shipments.len(), 1);
+        let row = state
+            .record_get("riga_ordine", &order.righe[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.data["numero"], json!("LOT-SPED-1"));
+        assert_eq!(str_field(&row.data, "stato_produzione"), "");
+        assert_eq!(str_field(&row.data, "stato_riga"), "spedita");
+        let current_order = state.record_get("ordine", &order.id).unwrap().unwrap();
+        assert_eq!(current_order.data["stato"], json!("Spedito"));
+    }
+
+    #[test]
+    fn annulla_lotto_fantasma_ripristina_ordine() {
+        let (_app, _data, state) = test_state();
+        let order = order_with_rows(&state, 1);
+        state
+            .record_update(
+                "riga_ordine",
+                &order.righe[0].id,
+                fields(&[("stato_produzione", json!("arrivato_it"))]),
+            )
+            .unwrap();
+        let phantom_lot = format!("_{}", order.id);
+        state.produzione_lotto_righe_annulla(&phantom_lot).unwrap();
+        let row = state
+            .record_get("riga_ordine", &order.righe[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(str_field(&row.data, "stato_produzione"), "");
+        assert_eq!(str_field(&row.data, "lotto_produzione"), "");
     }
 }

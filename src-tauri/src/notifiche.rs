@@ -363,6 +363,7 @@ fn ultime_riattivazioni_dashboard(
 
 /// Recupera l'ultimo timestamp di avviso (pop-up/suono) emesso per ciascuna chiave.
 /// Consente di rispettare la cadenza di re-invio configurata anche dopo il riavvio dell'app.
+#[cfg(test)]
 fn ultimi_avvisi(recs: Vec<crate::app::RecordDto>, user_id: &str) -> HashMap<String, i64> {
     let mut out: HashMap<String, i64> = HashMap::new();
     for r in recs {
@@ -385,6 +386,7 @@ fn chiave_stato_suggerimento(prefisso: &str, tipo: &str, anno: i32) -> String {
     format!("{prefisso}:{anno}:{tipo}")
 }
 
+#[cfg(test)]
 fn chiave_stato_appartiene_al_tipo(chiave: &str, tipo: &str) -> bool {
     chiave == format!("suggerimento:{tipo}")
         || chiave == format!("primo_rilevato:{tipo}")
@@ -525,8 +527,23 @@ impl Notificatore {
                     .filter(|tipo| !prossima.suggerimenti.tipi_abilitati.contains(*tipo))
                     .cloned()
                     .collect();
-                if !rimosse.is_empty() {
-                    self.azzera_avvisi_suggerimenti(&prossima.user_id, Some(&rimosse));
+                let cadenze_modificate: Vec<String> = prossima
+                    .suggerimenti
+                    .giorni_avviso
+                    .iter()
+                    .filter(|(tipo, &giorni)| {
+                        prec.suggerimenti.giorni_avviso.get(*tipo).copied() != Some(giorni)
+                    })
+                    .map(|(tipo, _)| tipo.clone())
+                    .collect();
+                let mut da_azzerare = rimosse;
+                for tipo in cadenze_modificate {
+                    if !da_azzerare.contains(&tipo) {
+                        da_azzerare.push(tipo);
+                    }
+                }
+                if !da_azzerare.is_empty() {
+                    self.azzera_avvisi_suggerimenti(&prossima.user_id, Some(&da_azzerare));
                 }
             }
         }
@@ -549,21 +566,10 @@ impl Notificatore {
                     "preventivo".into(),
                 ],
             };
-            for record in state.records_list("notifica_avvisata").unwrap_or_default() {
-                if record.data.get("user_id").and_then(|value| value.as_str()) != Some(user_id) {
-                    continue;
-                }
-                let Some(chiave) = record.data.get("chiave").and_then(|value| value.as_str())
-                else {
-                    continue;
-                };
-                if tipi_da_azzerare
-                    .iter()
-                    .any(|tipo| chiave_stato_appartiene_al_tipo(chiave, tipo))
-                {
-                    let _ = state.record_delete("notifica_avvisata", &record.id);
-                }
+            for tipo in &tipi_da_azzerare {
+                let _ = state.local_notifica_avvisata_delete_tipo(user_id, tipo);
             }
+            let _ = state.suggerimenti_azzera_pause(tipi);
         }
         *self
             .suggerimenti_cache
@@ -740,10 +746,8 @@ impl Notificatore {
                         if ultimi_avvisi.contains_key(&chiave_avviso)
                             || ultimi_avvisi.contains_key(&chiave_primo)
                         {
-                            let id_avviso = format!("avviso-v1|{user_id}|{chiave_avviso}");
-                            let id_primo = format!("avviso-v1|{user_id}|{chiave_primo}");
-                            let _ = state.record_delete("notifica_avvisata", &id_avviso);
-                            let _ = state.record_delete("notifica_avvisata", &id_primo);
+                            let _ = state.local_notifica_avvisata_delete(user_id, &chiave_avviso);
+                            let _ = state.local_notifica_avvisata_delete(user_id, &chiave_primo);
                         }
                     }
                 }
@@ -767,28 +771,11 @@ impl Notificatore {
                             Some(ts) if ts > 0 => ts,
                             _ => {
                                 if !user_id.is_empty() {
-                                    let stato_id = format!("avviso-v1|{user_id}|{chiave_primo}");
-                                    let mut campi = serde_json::Map::new();
-                                    campi.insert(
-                                        "chiave".into(),
-                                        serde_json::Value::String(chiave_primo.clone()),
-                                    );
-                                    campi.insert(
-                                        "user_id".into(),
-                                        serde_json::Value::String(user_id.to_string()),
-                                    );
-                                    campi.insert(
-                                        "ts".into(),
-                                        serde_json::Value::Number(serde_json::Number::from(ora)),
-                                    );
-                                    campi.insert(
-                                        "tipo".into(),
-                                        serde_json::Value::String(suggerimento.tipo.clone()),
-                                    );
-                                    let _ = state.record_create_with_id(
-                                        "notifica_avvisata",
-                                        &stato_id,
-                                        campi,
+                                    let _ = state.local_notifica_avvisata_set(
+                                        user_id,
+                                        &chiave_primo,
+                                        &suggerimento.tipo,
+                                        ora,
                                     );
                                 }
                                 ora
@@ -1002,8 +989,7 @@ impl Notificatore {
     fn ultime_notifiche_avvisate(&self, user_id: &str) -> HashMap<String, i64> {
         self.app
             .try_state::<AppState>()
-            .and_then(|state| state.records_list("notifica_avvisata").ok())
-            .map(|recs| ultimi_avvisi(recs, user_id))
+            .and_then(|state| state.local_notifica_avvisata_get_map(user_id).ok())
             .unwrap_or_default()
     }
 
@@ -1295,32 +1281,27 @@ impl Notificatore {
     /// letto/scartato. Le card custom sono l'unico canale visivo: se WebView2 non è
     /// ancora pronto le accodiamo e le consegniamo al successivo handshake dell'overlay.
     fn avvisa(&self, cfg: &Cfg, nuove: &[Notif]) {
-        // Registra l'avvenuto invio su storage persistente SQLite (notifica_avvisata).
+        // Registra l'avvenuto invio su storage SQLite locale (local_notifiche_avvisate).
         // Questo impedisce a ogni riavvio dell'app di ri-emettere immediatamente il pop-up/suono,
-        // garantendo il rispetto della cadenza di re-invio configurata.
+        // garantendo il rispetto della cadenza di re-invio configurata, senza scrivere eventi su OneDrive.
         if let Some(state) = self.app.try_state::<AppState>() {
             let ora = ora_ms();
             for n in nuove {
-                let chiave = if n.tipo == "suggerimento" {
-                    let tipo = crate::app::suggestions::tipo_suggerimento_da_id(&n.id)
+                let (chiave, tipo) = if n.tipo == "suggerimento" {
+                    let tipo_suggerimento = crate::app::suggestions::tipo_suggerimento_da_id(&n.id)
                         .unwrap_or(n.id.as_str());
-                    chiave_stato_suggerimento("suggerimento", tipo, cfg.suggerimenti.anno)
+                    (
+                        chiave_stato_suggerimento(
+                            "suggerimento",
+                            tipo_suggerimento,
+                            cfg.suggerimenti.anno,
+                        ),
+                        tipo_suggerimento.to_string(),
+                    )
                 } else {
-                    n.id.clone()
+                    (n.id.clone(), n.tipo.clone())
                 };
-                let stato_id = format!("avviso-v1|{}|{}", cfg.user_id, chiave);
-                let mut campi = serde_json::Map::new();
-                campi.insert("chiave".into(), serde_json::Value::String(chiave));
-                campi.insert(
-                    "user_id".into(),
-                    serde_json::Value::String(cfg.user_id.clone()),
-                );
-                campi.insert(
-                    "ts".into(),
-                    serde_json::Value::Number(serde_json::Number::from(ora)),
-                );
-                campi.insert("tipo".into(), serde_json::Value::String(n.tipo.clone()));
-                let _ = state.record_create_with_id("notifica_avvisata", &stato_id, campi);
+                let _ = state.local_notifica_avvisata_set(&cfg.user_id, &chiave, &tipo, ora);
             }
         }
 

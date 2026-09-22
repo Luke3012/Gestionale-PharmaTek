@@ -170,6 +170,17 @@ impl Projection {
                 PRIMARY KEY (entity, id)
             );
 
+            -- Storico locale degli avvisi (pop-up/suono) emessi per questa postazione.
+            -- Non entra negli snapshot e non produce eventi su OneDrive.
+            CREATE TABLE IF NOT EXISTS local_notifiche_avvisate (
+                user_id TEXT NOT NULL,
+                chiave  TEXT NOT NULL,
+                tipo    TEXT NOT NULL,
+                ts      INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chiave)
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_notifiche_avvisate_tipo ON local_notifiche_avvisate(user_id, tipo);
+
             CREATE INDEX IF NOT EXISTS idx_records_entity ON records(entity, deleted);
             "#,
         )?;
@@ -387,7 +398,20 @@ impl Projection {
 
         match &ev.body {
             EventBody::Created => {
-                // L'esistenza è già garantita sopra; nessun campo da impostare.
+                // Se il record era stato eliminato (deleted = 1) ma riceve un nuovo evento
+                // Created con timestamp HLC posteriore alla cancellazione, viene riattivato.
+                if Self::clock_wins(tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)? {
+                    let updated = tx
+                        .prepare_cached(
+                            "UPDATE records SET deleted = 0 WHERE entity = ?1 AND id = ?2 AND deleted != 0",
+                        )?
+                        .execute(params![ev.entity, ev.entity_id])?;
+                    if updated > 0 {
+                        Self::set_clock(tx, &ev.entity, &ev.entity_id, CLOCK_DEL, &ts)?;
+                        Self::bump_updated(tx, &ev.entity, &ev.entity_id, &ts)?;
+                        changed = true;
+                    }
+                }
             }
             EventBody::FieldSet { field, value } => {
                 if Self::clock_wins(tx, &ev.entity, &ev.entity_id, field, &ts)? {
@@ -754,7 +778,8 @@ impl Projection {
              DELETE FROM applied_events;
              DELETE FROM log_offsets;
              DELETE FROM purged;
-             DELETE FROM watermarks;",
+             DELETE FROM watermarks;
+             DELETE FROM local_notifiche_avvisate;",
         )?;
         Ok(())
     }
@@ -796,6 +821,68 @@ impl Projection {
         }
         tx.commit()?;
         Ok(drop_ids.len())
+    }
+
+    // ---- Notifiche avvisate locali (non replicate) ----
+
+    /// Legge la mappa degli ultimi avvisi emessi per un utente: chiave -> timestamp ms.
+    pub fn local_notifica_avvisata_get_map(
+        &self,
+        user_id: &str,
+    ) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chiave, ts FROM local_notifiche_avvisate WHERE user_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
+
+    /// Salva o aggiorna l'ultimo timestamp di avviso per una data chiave.
+    pub fn local_notifica_avvisata_set(
+        &self,
+        user_id: &str,
+        chiave: &str,
+        tipo: &str,
+        ts: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO local_notifiche_avvisate(user_id, chiave, tipo, ts)
+             VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(user_id, chiave) DO UPDATE SET ts = excluded.ts, tipo = excluded.tipo",
+            params![user_id, chiave, tipo, ts],
+        )?;
+        Ok(())
+    }
+
+    /// Cancella una specifica chiave di avviso per un utente.
+    pub fn local_notifica_avvisata_delete(&self, user_id: &str, chiave: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM local_notifiche_avvisate WHERE user_id = ?1 AND chiave = ?2",
+            params![user_id, chiave],
+        )?;
+        Ok(())
+    }
+
+    /// Cancella tutti gli avvisi associati a un tipo/categoria di suggerimento per un utente.
+    pub fn local_notifica_avvisata_delete_tipo(&self, user_id: &str, tipo: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM local_notifiche_avvisate
+             WHERE user_id = ?1
+               AND (
+                 tipo = ?2
+                 OR chiave = 'suggerimento:' || ?2
+                 OR chiave = 'primo_rilevato:' || ?2
+                 OR chiave LIKE 'suggerimento:%:' || ?2
+                 OR chiave LIKE 'primo_rilevato:%:' || ?2
+               )",
+            params![user_id, tipo],
+        )?;
+        Ok(())
     }
 
     // ---- Supporto snapshot (export/import dello stato) ----
@@ -1568,4 +1655,108 @@ mod tests {
             p2.get_max_hlc_for_device("PC-B").unwrap()
         );
     }
+
+    #[test]
+    fn created_dopo_deleted_riattiva_se_posteriore() {
+        let mut p = Projection::open_in_memory().unwrap();
+
+        // 1. Creazione iniziale a t=10
+        let ev1 = Event::new(
+            Hlc::new(10, 0, "PC-A"),
+            "PC-A",
+            "u",
+            "suggerimento_stato",
+            "sugg-1",
+            EventBody::Created,
+        );
+        p.apply(&ev1).unwrap();
+        assert!(!p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+
+        // 2. Cancellazione a t=20
+        let ev2 = Event::new(
+            Hlc::new(20, 0, "PC-A"),
+            "PC-A",
+            "u",
+            "suggerimento_stato",
+            "sugg-1",
+            EventBody::Deleted,
+        );
+        p.apply(&ev2).unwrap();
+        assert!(p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+
+        // 3. Un vecchio Created fuori ordine a t=15 NON deve resuscitare il record
+        let ev_old = Event::new(
+            Hlc::new(15, 0, "PC-B"),
+            "PC-B",
+            "u",
+            "suggerimento_stato",
+            "sugg-1",
+            EventBody::Created,
+        );
+        p.apply(&ev_old).unwrap();
+        assert!(p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+
+        // 4. Una ricreazione successiva a t=30 riattiva il record (deleted = false)
+        let ev3 = Event::new(
+            Hlc::new(30, 0, "PC-A"),
+            "PC-A",
+            "u",
+            "suggerimento_stato",
+            "sugg-1",
+            EventBody::Created,
+        );
+        p.apply(&ev3).unwrap();
+        let record = p.get("suggerimento_stato", "sugg-1").unwrap().unwrap();
+        assert!(!record.deleted);
+        assert_eq!(record.updated_hlc, Hlc::new(30, 0, "PC-A"));
+    }
+
+    #[test]
+    fn local_notifiche_avvisate_crud() {
+        let p = Projection::open_in_memory().unwrap();
+
+        // Inserimento per utente 1
+        p.local_notifica_avvisata_set("u1", "suggerimento:2026:provvigione", "provvigione", 100)
+            .unwrap();
+        p.local_notifica_avvisata_set("u1", "primo_rilevato:2026:provvigione", "provvigione", 50)
+            .unwrap();
+        p.local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 200)
+            .unwrap();
+
+        // Inserimento per utente 2 (isolamento)
+        p.local_notifica_avvisata_set("u2", "suggerimento:2026:provvigione", "provvigione", 500)
+            .unwrap();
+
+        let map_u1 = p.local_notifica_avvisata_get_map("u1").unwrap();
+        assert_eq!(map_u1.len(), 3);
+        assert_eq!(map_u1.get("suggerimento:2026:provvigione"), Some(&100));
+        assert_eq!(map_u1.get("primo_rilevato:2026:provvigione"), Some(&50));
+        assert_eq!(map_u1.get("suggerimento:2026:rimborso"), Some(&200));
+
+        let map_u2 = p.local_notifica_avvisata_get_map("u2").unwrap();
+        assert_eq!(map_u2.len(), 1);
+        assert_eq!(map_u2.get("suggerimento:2026:provvigione"), Some(&500));
+
+        // Cancellazione singola chiave
+        p.local_notifica_avvisata_delete("u1", "suggerimento:2026:rimborso")
+            .unwrap();
+        let map_u1_after_del = p.local_notifica_avvisata_get_map("u1").unwrap();
+        assert_eq!(map_u1_after_del.len(), 2);
+        assert_eq!(map_u1_after_del.get("suggerimento:2026:rimborso"), None);
+
+        // Cancellazione per tipo (cancella sia suggerimento:2026:provvigione che primo_rilevato:2026:provvigione)
+        p.local_notifica_avvisata_delete_tipo("u1", "provvigione")
+            .unwrap();
+        let map_u1_after_del_tipo = p.local_notifica_avvisata_get_map("u1").unwrap();
+        assert!(map_u1_after_del_tipo.is_empty());
+
+        // Utente 2 non è stato toccato
+        let map_u2_intatto = p.local_notifica_avvisata_get_map("u2").unwrap();
+        assert_eq!(map_u2_intatto.get("suggerimento:2026:provvigione"), Some(&500));
+
+        // Verifica che l'export per snapshot sia completamente vuoto di queste tabelle locali
+        let exported = p.export().unwrap();
+        assert!(exported.records.is_empty());
+    }
 }
+

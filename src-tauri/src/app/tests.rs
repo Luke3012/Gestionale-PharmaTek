@@ -6289,6 +6289,28 @@ fn suggerimento_nascosto_converge_e_sospende_subito_la_stessa_categoria() {
         dopo_modifica_su_a.tipi_in_pausa,
         dopo_modifica_su_b.tipi_in_pausa
     );
+
+    b.suggerimenti_azzera_pause(Some(&["rimborso".into()]))
+        .unwrap();
+    let ripristinato_su_b = b.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
+    assert!(ripristinato_su_b
+        .suggerimenti
+        .iter()
+        .any(|voce| voce.tipo == "rimborso"));
+    assert!(!ripristinato_su_b
+        .tipi_in_pausa
+        .contains(&"rimborso".to_string()));
+
+    b.force_sync().unwrap();
+    a.force_sync().unwrap();
+    let ripristinato_su_a = a.suggerimenti_lista_con_soglia_preventivi(0).unwrap();
+    assert!(ripristinato_su_a
+        .suggerimenti
+        .iter()
+        .any(|voce| voce.tipo == "rimborso"));
+    assert!(!ripristinato_su_a
+        .tipi_in_pausa
+        .contains(&"rimborso".to_string()));
 }
 
 #[test]
@@ -11064,4 +11086,40 @@ fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
         .find(|suggerimento| suggerimento.tipo == "preventivo")
         .unwrap();
     assert_eq!(preventivi_tutti.titolo, "Invia 2 preventivi non trasmessi");
+}
+
+#[test]
+fn riconnessione_onboarding_riadotta_lo_stesso_device_senza_duplicare() {
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let app = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    let id_iniziale = onboarda(&state, data_dir, "Luca");
+
+    // Simula la disconnessione della configurazione locale
+    state.disconnetti_configurazione_locale().unwrap();
+    assert!(state.bootstrap().reconnect_required);
+
+    // Riconnessione tramite onboarding scegliendo "use" dello stesso utente
+    state.open_data_dir(data_dir).unwrap();
+    let id_riconnesso = state
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "use".into(),
+            user_id: Some(id_iniziale.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+
+    // Deve avere riadottato lo stesso id dispositivo iniziale
+    assert_eq!(id_riconnesso.device_id, id_iniziale.device_id);
+    assert_eq!(id_riconnesso.user_id, id_iniziale.user_id);
+
+    // Deve esistere esattamente UNA postazione nel sync overview
+    let devices = state.sync_overview().unwrap().devices;
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].device_id, id_iniziale.device_id);
+    assert!(devices[0].is_current);
 }

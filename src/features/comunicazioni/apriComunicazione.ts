@@ -18,7 +18,6 @@ import {
   CHIAVI_PREFERENZE,
   type OrdineFinestra,
 } from "../../lib/prefs";
-import { apriFinestraCentroComunicazioni } from "../../shell/apriPannelli";
 
 export interface ComunicazioneTarget {
   /** Deduplica la consegna locale + Tauri della stessa apertura. */
@@ -593,22 +592,14 @@ export async function apriCentroComunicazioni(
 }
 
 /**
- * Apre una comunicazione dalla campanella: una voce già esistente è assimilata
- * alla modifica, quindi "Solo in modifica" usa la finestra separata.
+ * Apre il Centro comunicazioni dalla notifica: mostra sempre la barra laterale
+ * a destra portando la finestra principale in primo piano.
  */
 export async function apriCentroComunicazioniDaNotifica(
   comunicazioneId: string,
 ): Promise<boolean> {
   if (!comunicazioneId) return false;
-  const preferenza = preferenzaFinestraCorrente();
-  if (
-    preferenza !== "mai" &&
-    (await apriFinestraCentroComunicazioni(comunicazioneId))
-  ) {
-    return true;
-  }
-
-  await apriCentroComunicazioni("modale", comunicazioneId);
+  await apriCentroComunicazioni("laterale", comunicazioneId);
   if (inTauri) {
     await portaMainInPrimoPianoSeNecessario();
   }

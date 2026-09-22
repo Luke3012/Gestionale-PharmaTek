@@ -1250,7 +1250,7 @@ vanno provati a mano.
   e comunicazioni. Dopo un invio multiplo riuscito, tutte le spedizioni correlate ricevono il
   proprio marcatore; coda e cronologia continuano a essere locali al PC d'origine.
 - I suggerimenti non compaiono nella lista della campanella (riservata a promemoria, scadenze e messaggi), ma attivano l'overlay custom con durata impostata a 5 minuti (300.000 ms).
-- L'emissione della notifica custom persiste l'evento su SQLite (`notifica_avvisata` con chiave `suggerimento:<tipo>`), garantendo che al riavvio dell'app la notifica non si ripeta prima che sia trascorsa la cadenza in giorni configurata per quella specifica categoria. Nella Dashboard le azioni abilitate rimangono sempre consultabili. Una rivalidazione di 60 secondi impedisce pop-up immediati durante transazioni in assestamento.
+- L'emissione della notifica custom persiste lo stato su tabella SQLite locale non replicata (`local_notifiche_avvisate` con chiave `suggerimento:<anno>:<tipo>`), garantendo che al riavvio dell'app la notifica non si ripeta prima che sia trascorsa la cadenza in giorni configurata per quella specifica categoria, senza generare traffico di eventi sul log OneDrive. Nella Dashboard le azioni abilitate rimangono sempre consultabili. Una rivalidazione di 60 secondi impedisce pop-up immediati durante transazioni in assestamento.
 - Deep-link fino a filtri Contabilità/Produzione e al selettore solleciti Preventivi, senza nuove pagine o modali parallele.
 - Test automatici su fingerprint, ranking, deduplicazione frontend, classificazione preventivi e invio multiplo; verifica
   finale con suite complete, typecheck, build, formattazione e Clippy `-D warnings`.

@@ -315,7 +315,12 @@ function derivaComunicazioni(
   comunicazioni: Comunicazione[],
 ): Notifica[] {
   return comunicazioni
-    .filter((comunicazione) => comunicazione.stato === "fallito")
+    .filter(
+      (comunicazione) =>
+        comunicazione.stato === "fallito" &&
+        comunicazione.destinatarioEntita !== "diagnostica_whatsapp" &&
+        !comunicazione.campagnaId?.startsWith("collaudo-whatsapp:"),
+    )
     .map((comunicazione) => {
       const canale =
         comunicazione.canale === "email" ? "E-mail" : "WhatsApp";

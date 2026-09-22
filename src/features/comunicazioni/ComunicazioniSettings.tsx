@@ -513,6 +513,9 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
     if (!confermato) return;
     setWhatsappInvio(true);
     setWhatsappErrore("");
+    setWhatsappDiagnostica((cur) =>
+      cur ? { ...cur, ultimoEsito: null } : null,
+    );
     try {
       const risultato = await api.whatsappVerificaEInviaProva({
         nome: whatsappNome.trim(),
@@ -537,8 +540,9 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
       Da configurare
     </Badge>
   );
-  const whatsappAvviso =
-    whatsappErrore || whatsappDiagnostica?.ultimoEsito?.messaggio || "";
+  const whatsappAvviso = whatsappInvio
+    ? ""
+    : whatsappErrore || whatsappDiagnostica?.ultimoEsito?.messaggio || "";
 
   return (
     <>
@@ -945,21 +949,25 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                   </Box>
                   <Badge
                     color={
-                      whatsappDiagnostica?.ultimoEsito?.riuscito
-                        ? "teal"
-                        : whatsappDiagnostica?.ultimoEsito
-                          ? "red"
-                          : "gray"
+                      whatsappInvio
+                        ? "blue"
+                        : whatsappDiagnostica?.ultimoEsito?.riuscito
+                          ? "teal"
+                          : whatsappDiagnostica?.ultimoEsito
+                            ? "red"
+                            : "gray"
                     }
                     variant="light"
                   >
                     {whatsappCaricando
                       ? "Controllo…"
-                      : whatsappDiagnostica?.ultimoEsito?.riuscito
-                        ? "Compatibile"
-                        : whatsappDiagnostica?.ultimoEsito
-                          ? `Errore · ${whatsappDiagnostica.ultimoEsito.fase}`
-                          : "Non collaudato"}
+                      : whatsappInvio
+                        ? "Invio in corso…"
+                        : whatsappDiagnostica?.ultimoEsito?.riuscito
+                          ? "Compatibile"
+                          : whatsappDiagnostica?.ultimoEsito
+                            ? `Errore · ${whatsappDiagnostica.ultimoEsito.fase}`
+                            : "Non collaudato"}
                   </Badge>
                 </Group>
 

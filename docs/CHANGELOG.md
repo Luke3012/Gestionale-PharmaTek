@@ -2,6 +2,10 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.1 — 2026-09-18
+
+🚛 Risolto un problema per cui nel File spedizione potevano apparire più righe del previsto.
+
 ## 0.8.0 — 2026-09-18
 
 Preventivi e comunicazioni finalizzati, con nuove automazioni e miglioramenti a bollettazione e backup.
