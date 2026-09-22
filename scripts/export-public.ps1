@@ -5,11 +5,11 @@
 .DESCRIPTION
   Crea lo staging esclusivamente dal commit HEAD, rimuove dati e riferimenti
   operativi, esegue un audit e sincronizza il risultato nel repository pubblico.
-  Con -Publish esegue anche test/build, commit e push del repository pubblico.
+  Con -Publish esegue anche test frontend/backend, commit e push del repository pubblico.
 .PARAMETER Destination
   Cartella del repository pubblico. Deve terminare con Gestionale-PharmaTek.
 .PARAMETER Publish
-  Dopo l'esportazione verifica, compila, committa e pubblica il repository demo.
+  Dopo l'esportazione verifica, committa e pubblica il repository demo senza generare l'installer.
 .PARAMETER NoPause
   Non attende Invio al termine. Utile per terminale, CI e altri script.
 #>
@@ -110,8 +110,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Build Vite pubblica fallita.' }
         & cargo test --manifest-path (Join-Path $Destination 'src-tauri\Cargo.toml') -- --test-threads=1
         if ($LASTEXITCODE -ne 0) { throw 'Test Rust pubblici falliti.' }
-        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Destination 'scripts\build.ps1') -SkipTests -NoPause
-        if ($LASTEXITCODE -ne 0) { throw 'Build Tauri pubblica fallita.' }
         & git -C $Destination add --all
         & git -C $Destination commit -m 'Pubblica la variante demo sanitizzata'
         if ($LASTEXITCODE -ne 0) { throw 'Commit pubblico fallito.' }
