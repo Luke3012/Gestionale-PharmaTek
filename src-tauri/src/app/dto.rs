@@ -293,8 +293,8 @@ pub struct SpedizioneRigaDto {
     pub cliente_nome: String,
     /// Linea dell'ordine: numero vaccino e colli appartengono solo all'Immunoterapia.
     pub categoria: String,
-    /// Persona a cui appartiene il vaccino: serve al profilo CORRIERE_A per accorpare
-    /// più vaccini della stessa persona in una sola riga di distinta.
+    /// Persona a cui appartiene il vaccino, mostrata nei dettagli del collo. La distinta
+    /// CORRIERE_A mantiene una riga per spedizione e non separa più i vaccini per paziente.
     pub paziente: String,
     /// Numero/lotto del singolo vaccino (per la rimozione singola e il dettaglio). FASE 7.
     pub numero: String,

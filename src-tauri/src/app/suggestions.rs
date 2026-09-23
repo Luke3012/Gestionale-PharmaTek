@@ -1088,14 +1088,11 @@ impl AppState {
     /// o per tutti i tipi se `tipi` è `None`. Consente di ripristinare immediatamente le card
     /// alla disattivazione delle notifiche o al ripristino delle impostazioni predefinite.
     pub fn suggerimenti_azzera_pause(&self, tipi: Option<&[String]>) -> AppResult<()> {
-        if !crate::premium::is_enabled(&self.app_dir) {
-            return Ok(());
-        }
         self.with_engine(|engine| {
             engine
                 .emit_built_checked(|p| {
                     let mut mutations = Vec::new();
-                    for record in p.list(ENTITA_STATO_SUGGERIMENTO).unwrap_or_default() {
+                    for record in p.list(ENTITA_STATO_SUGGERIMENTO).map_err(es)? {
                         let tipo = str_field(&record.data, "tipo");
                         let tipo_effettivo = if tipo.is_empty() {
                             let id = str_field(&record.data, "suggerimento_id");

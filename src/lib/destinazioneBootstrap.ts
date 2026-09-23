@@ -14,6 +14,9 @@ export function destinazioneBootstrap(
 ): DestinazioneBootstrap {
   if (boot.reconnectRequired || (!boot.onboarded && ricollegamentoLocale)) return "reconnect";
   if (boot.dataDirStatus === "missing_or_empty") return "dataProblem";
+  // Una cartella già configurata ma priva di identità in questo bootstrap può
+  // indicare un motore non ancora apribile durante l'allineamento OneDrive.
+  if (boot.dataDir && !boot.onboarded) return "dataProblem";
   if (boot.dataDirStatus === "ok" && boot.onboarded && boot.identity) return "pronto";
   return "onboarding";
 }

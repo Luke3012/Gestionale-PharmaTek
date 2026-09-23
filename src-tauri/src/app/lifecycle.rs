@@ -55,7 +55,6 @@ impl AppState {
             config: Mutex::new(config),
             runtime: Mutex::new(runtime),
             app_handle: Mutex::new(app_handle),
-            reconnect_required: Mutex::new(false),
             operation_lock_local: Mutex::new(None),
             email_test_local: Mutex::new(()),
             communication_send_local: Mutex::new(()),
@@ -121,6 +120,7 @@ impl AppState {
             data_dir_status = stato_cartella_dati(cfg.data_dir.as_deref());
         }
 
+        let reconnect_required = cfg.reconnect_required();
         BootstrapDto {
             onboarded: identity.is_some(),
             device_id: cfg.device_id,
@@ -128,7 +128,7 @@ impl AppState {
             data_dir: cfg.data_dir,
             data_dir_status,
             identity,
-            reconnect_required: *self.reconnect_required.lock().expect("reconnect poisoned"),
+            reconnect_required,
             pending_restore: restore_status == "ready",
             restore_status,
         }
@@ -202,9 +202,10 @@ impl AppState {
         let mut c = self.config.lock().expect("config poisoned");
         *c = AppConfig {
             device_id,
+            onboarding_state: LocalOnboardingState::Reconnect,
             ..AppConfig::default()
         };
-        *self.reconnect_required.lock().expect("reconnect poisoned") = true;
+        save_config(&self.app_dir, &c)?;
         Ok(())
     }
 
@@ -213,9 +214,10 @@ impl AppState {
         let mut c = self.config.lock().expect("config poisoned");
         *c = AppConfig {
             device_id: Ulid::generate().to_string(),
+            onboarding_state: LocalOnboardingState::Retired,
             ..AppConfig::default()
         };
-        *self.reconnect_required.lock().expect("reconnect poisoned") = true;
+        save_config(&self.app_dir, &c)?;
         Ok(())
     }
 
@@ -311,6 +313,9 @@ impl AppState {
     /// eventi, salva la configurazione locale e riapre il motore con l'autorità
     /// definitiva (lo `userId`).
     pub fn finish_onboarding(&self, args: FinishOnboarding) -> AppResult<IdentityDto> {
+        if !matches!(args.mode.as_str(), "create" | "use" | "reconfigure") {
+            return Err("modalità onboarding non valida".into());
+        }
         valida_radice_dati(&args.data_dir)?;
         let mut cfg = self.config();
         self.ensure_engine(
@@ -327,23 +332,31 @@ impl AppState {
         }
         let mut device_id = cfg.device_id.clone();
         let now = now_iso();
-        let is_reconnecting = *self.reconnect_required.lock().expect("reconnect poisoned");
-        let existing_device_id = if is_reconnecting && (args.mode == "use" || args.mode == "reconfigure") {
+        let existing_device_id = if args.mode == "use" || args.mode == "reconfigure" {
             let guard = self.runtime.lock().expect("rt poisoned");
             if let Some(rt) = guard.as_ref() {
                 let host = hostname();
                 let uid = args.user_id.as_deref().unwrap_or("");
                 rt.engine.with_projection(|p| {
-                    p.list("device")
+                    let current_is_active = p.get("device", &device_id).ok().flatten().is_some()
+                        && !p.is_device_retired(&device_id).unwrap_or(false);
+                    if current_is_active || cfg.onboarding_state == LocalOnboardingState::Retired {
+                        return None;
+                    }
+                    let candidates: Vec<String> = p
+                        .list("device")
                         .unwrap_or_default()
                         .into_iter()
                         .filter(|d| {
                             !p.is_device_retired(&d.id).unwrap_or(false)
-                                && str_field(&d.data, "nome").trim().eq_ignore_ascii_case(&host)
+                                && str_field(&d.data, "nome")
+                                    .trim()
+                                    .eq_ignore_ascii_case(&host)
                                 && str_field(&d.data, "user_id") == uid
                         })
-                        .max_by_key(|d| d.id.clone())
                         .map(|d| d.id)
+                        .collect();
+                    (candidates.len() == 1).then(|| candidates[0].clone())
                 })
             } else {
                 None
@@ -357,7 +370,8 @@ impl AppState {
                 let target_author = args.user_id.as_deref().unwrap_or(&target_id);
                 // Riapre il runtime con il deviceId originale già registrato per questo computer e utente
                 *self.runtime.lock().expect("rt poisoned") = None;
-                let handle = clone_native_app_handle(&self.app_handle.lock().expect("handle poisoned"));
+                let handle =
+                    clone_native_app_handle(&self.app_handle.lock().expect("handle poisoned"));
                 let rt = open_runtime(
                     &self.app_dir,
                     &args.data_dir,
@@ -453,6 +467,7 @@ impl AppState {
             c.device_id = device_id.clone();
             c.data_dir = Some(args.data_dir.clone());
             c.user_id = Some(user_id.clone());
+            c.onboarding_state = LocalOnboardingState::Configured;
             save_config(&self.app_dir, &c)?;
         }
 
@@ -465,8 +480,6 @@ impl AppState {
             identity_from(engine, &user_id, &device_id, &args.data_dir)
         }
         .ok_or_else(|| "utente non trovato dopo l'onboarding".to_string())?;
-        *self.reconnect_required.lock().expect("reconnect poisoned") = false;
-
         // Conti speciali built-in (Contrassegno, Assegno) per la contabilità + corrieri built-in.
         self.seed_builtin_conti();
         self.seed_builtin_corrieri();
@@ -927,6 +940,7 @@ impl AppState {
         let _attivita = self.begin_runtime_activity()?;
         self.avanza_lock("preparazione_ripristino", "ottimizzazione_database")?;
         let mut barriera_pubblicata = false;
+        let mut notifiche_locali_salvate = Vec::new();
 
         let result = (|| {
             self.with_engine(|engine| {
@@ -994,6 +1008,7 @@ impl AppState {
             // Da questo punto i file vecchi sono soltanto spazio occupato: la
             // barriera li rende semanticamente inerti anche se una rimozione
             // best-effort fallisce o OneDrive li riconsegna più tardi.
+            notifiche_locali_salvate = self.esporta_notifiche_locali()?;
             self.wipe_local()?;
             let (file_log_rimossi, byte_log_rimossi) =
                 rimuovi_file_con_estensione(&data_path.join("events"), "ndjson", None);
@@ -1032,6 +1047,9 @@ impl AppState {
                 anchor.clone(),
             )?;
             rt.engine
+                .with_projection(|p| p.import_local_notifiche_avvisate(&notifiche_locali_salvate))
+                .map_err(es)?;
+            rt.engine
                 .registra_restore_anchor_locale(&anchor)
                 .map_err(es)?;
             rt.engine.with_projection(|p| p.vacuum()).map_err(es)?;
@@ -1063,7 +1081,7 @@ impl AppState {
             // i vecchi log restano comunque innocui; prova a rendere nuovamente
             // operativo questo PC dall'anchor generazionale prima di sbloccare gli altri.
             if barriera_pubblicata {
-                let _ = self.riapri_da_generazione_corrente();
+                let _ = self.riapri_da_generazione_corrente(&notifiche_locali_salvate);
             }
             let _ = scrivi_restore_cancel(data_path, generation_id, &cfg.device_id);
             rimuovi_restore_coordination(data_path, Some(generation_id));
@@ -1072,7 +1090,10 @@ impl AppState {
         result
     }
 
-    fn riapri_da_generazione_corrente(&self) -> AppResult<()> {
+    fn riapri_da_generazione_corrente(
+        &self,
+        notifiche_salvate: &[crate::projection::LocalNotificaAvvisata],
+    ) -> AppResult<()> {
         let cfg = self.config();
         let data_dir = cfg.data_dir.clone().ok_or("cartella dati non impostata")?;
         let data_path = Path::new(&data_dir);
@@ -1080,7 +1101,12 @@ impl AppState {
             .map_err(es)?
             .ok_or("checkpoint generazionale non disponibile")?;
         let anchor = barrier.anchor(data_path).map_err(es)?;
-        let _ = self.wipe_local();
+        let notifiche_locali = if self.runtime.lock().expect("rt poisoned").is_some() {
+            self.esporta_notifiche_locali()?
+        } else {
+            notifiche_salvate.to_vec()
+        };
+        self.wipe_local()?;
         let log_corrente = LogStore::new(data_path.join("events"), &cfg.device_id)
             .map_err(es)?
             .own_path();
@@ -1100,6 +1126,9 @@ impl AppState {
             handle,
             anchor,
         )?;
+        rt.engine
+            .with_projection(|p| p.import_local_notifiche_avvisate(&notifiche_locali))
+            .map_err(es)?;
         *self.runtime.lock().expect("rt poisoned") = Some(rt);
         Ok(())
     }
@@ -1208,9 +1237,10 @@ impl AppState {
             let mut c = self.config.lock().expect("config poisoned");
             *c = AppConfig {
                 device_id: nuovo_device.expect("nuovo device mancante"),
+                onboarding_state: LocalOnboardingState::Retired,
                 ..AppConfig::default()
             };
-            *self.reconnect_required.lock().expect("reconnect poisoned") = false;
+            save_config(&self.app_dir, &c)?;
         } else {
             self.ricostruisci_proiezione_locale()?;
         }
@@ -1300,17 +1330,27 @@ impl AppState {
     pub fn ricostruisci_proiezione_locale(&self) -> AppResult<()> {
         let cfg = self.config();
         let data_dir = cfg.data_dir.clone().ok_or("cartella dati non impostata")?;
-        let restore_anchor = {
+        let (restore_anchor, ripristino_remoto) = {
             let runtime = self.runtime.lock().expect("rt poisoned");
             let anchor = runtime
                 .as_ref()
                 .and_then(|rt| rt.engine.restore_anchor_remoto_pronto());
+            let ripristino_remoto = runtime.as_ref().is_some_and(|rt| {
+                rt.engine.restore_remoto_stato() == crate::sync::RestoreRemoteStatus::Ready
+            });
             if let (Some(rt), Some(anchor)) = (runtime.as_ref(), anchor.as_ref()) {
                 rt.engine
                     .registra_restore_anchor_locale(anchor)
                     .map_err(es)?;
             }
-            anchor
+            (anchor, ripristino_remoto)
+        };
+        let notifiche_locali = if ripristino_remoto {
+            Vec::new()
+        } else if self.runtime.lock().expect("rt poisoned").is_some() {
+            self.esporta_notifiche_locali()?
+        } else {
+            Vec::new()
         };
         self.wipe_local()?;
         let author = cfg
@@ -1328,6 +1368,9 @@ impl AppState {
             )?,
             None => open_runtime(&self.app_dir, &data_dir, &cfg.device_id, &author, handle)?,
         };
+        rt.engine
+            .with_projection(|p| p.import_local_notifiche_avvisate(&notifiche_locali))
+            .map_err(es)?;
         rt.engine.segna_restore_pronti_come_gestiti().map_err(es)?;
         // Nei manifest legacy non esiste un anchor dedicato. L'apertura appena
         // sopra importa quindi lo snapshot ordinario ma sospende il replay finche'

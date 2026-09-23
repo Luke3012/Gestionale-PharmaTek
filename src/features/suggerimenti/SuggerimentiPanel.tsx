@@ -57,6 +57,8 @@ import {
 } from "./suggerimenti";
 import { deepLinkSuggerimento } from "./collegamento";
 import {
+  applicaPreferenzeSuggerimenti,
+  bundleDopoRipristino,
   PREFERENZE_SUGGERIMENTI_DEFAULT,
   TIPI_SUGGERIMENTO,
   type PreferenzeSuggerimenti,
@@ -303,6 +305,8 @@ export function SuggerimentiPanel({
   const [controlloManualeCompletato, setControlloManualeCompletato] =
     useState(() => statoManuale.bundle !== null);
   const [impostazioniAperte, setImpostazioniAperte] = useState(false);
+  const [ripristinoRichiesto, setRipristinoRichiesto] = useState(false);
+  const [salvataggioInCorso, setSalvataggioInCorso] = useState(false);
   const [preferenzeBozza, setPreferenzeBozza] =
     useState<PreferenzeSuggerimenti>(preferenzeSuggerimenti);
   const haCategorieAttive =
@@ -552,6 +556,7 @@ export function SuggerimentiPanel({
   }, [ridotte, suggerimenti]);
 
   const apriImpostazioni = useCallback(() => {
+    setRipristinoRichiesto(false);
     setPreferenzeBozza({
       ...preferenzeSuggerimenti,
       tipiAbilitati: [...preferenzeSuggerimenti.tipiAbilitati],
@@ -560,12 +565,34 @@ export function SuggerimentiPanel({
     setImpostazioniAperte(true);
   }, [preferenzeSuggerimenti]);
 
-  const salvaImpostazioni = useCallback(() => {
-    setPreferenzeSuggerimenti(preferenzeBozza);
+  const salvaImpostazioni = useCallback(async () => {
+    if (salvataggioInCorso) return;
+    setSalvataggioInCorso(true);
+    try {
+      await applicaPreferenzeSuggerimenti(
+        preferenzeBozza,
+        anno,
+        ripristinoRichiesto,
+        api.notificheRipristinaPredefiniti,
+        setPreferenzeSuggerimenti,
+      );
+    } catch (error) {
+      toast.error(`Impossibile salvare le impostazioni: ${error}`);
+      setSalvataggioInCorso(false);
+      return;
+    }
+    if (ripristinoRichiesto) {
+      invalidaControlloManualeSuggerimenti();
+      setBundle(bundleDopoRipristino);
+      void api.suggerimentiLista({ ...preferenzeBozza, anno })
+        .then(setBundle)
+        .catch((error) => console.error("Aggiornamento suggerimenti non riuscito", error));
+    }
+    setSalvataggioInCorso(false);
     setNascostiLocali(new Set());
     setImpostazioniAperte(false);
     toast.success("Impostazioni salvate su questo PC.");
-  }, [preferenzeBozza, setPreferenzeSuggerimenti]);
+  }, [anno, preferenzeBozza, ripristinoRichiesto, salvataggioInCorso, setPreferenzeSuggerimenti]);
 
   return (
     <>
@@ -822,7 +849,7 @@ export function SuggerimentiPanel({
       </Card>
       <Modal
         opened={impostazioniAperte}
-        onClose={() => setImpostazioniAperte(false)}
+        onClose={() => { if (!salvataggioInCorso) setImpostazioniAperte(false); }}
         title={
           <Group gap="sm">
             <ThemeIcon variant="light" color="yellow" radius="md">
@@ -840,14 +867,15 @@ export function SuggerimentiPanel({
             <Stack gap="md">
               <Text size="sm" c="dimmed">
                 Queste preferenze valgono soltanto su questo PC. Per ciascuna categoria puoi
-                impostare la cadenza di notifica: stabilisce ogni quanti giorni ripetere l'avviso
-                pop-up se l'azione è ancora da compiere (0 = avviso immediato). Nella Dashboard le
+                impostare la cadenza di notifica: con N giorni il primo avviso arriva dopo N giorni
+                e poi si ripete ogni N giorni; con 0 attende soltanto 60 secondi di verifica. Nella Dashboard le
                 azioni abilitate restano sempre consultabili.
               </Text>
               <Paper withBorder p="sm">
                 <Switch
                   color="yellow"
                   checked={preferenzeBozza.notificheAttive}
+                  disabled={salvataggioInCorso}
                   onChange={(event) => {
                     const notificheAttive = event.currentTarget.checked;
                     setPreferenzeBozza((correnti) => ({
@@ -879,6 +907,7 @@ export function SuggerimentiPanel({
                         <Switch
                           color={aspetto.colore}
                           checked={abilitato}
+                          disabled={salvataggioInCorso}
                           onChange={(event) => {
                             const attivo = event.currentTarget.checked;
                             setPreferenzeBozza((correnti) => ({
@@ -937,7 +966,7 @@ export function SuggerimentiPanel({
                               ? " giorno"
                               : " giorni"
                           }
-                          disabled={!abilitato}
+                          disabled={salvataggioInCorso || !abilitato}
                           w={132}
                         />
                       </Group>
@@ -951,7 +980,9 @@ export function SuggerimentiPanel({
             <Button
               variant="subtle"
               color="gray"
-              onClick={() =>
+              disabled={salvataggioInCorso}
+              onClick={() => {
+                setRipristinoRichiesto(true);
                 setPreferenzeBozza({
                   ...PREFERENZE_SUGGERIMENTI_DEFAULT,
                   tipiAbilitati: [
@@ -960,20 +991,22 @@ export function SuggerimentiPanel({
                   giorniAvviso: {
                     ...PREFERENZE_SUGGERIMENTI_DEFAULT.giorniAvviso,
                   },
-                })
-              }
+                });
+              }}
             >
               Ripristina predefiniti
             </Button>
             <Group gap="sm">
               <Button
                 variant="default"
+                disabled={salvataggioInCorso}
                 onClick={() => setImpostazioniAperte(false)}
               >
                 Annulla
               </Button>
               <Button
                 color="accent"
+                loading={salvataggioInCorso}
                 onClick={salvaImpostazioni}
               >
                 Salva

@@ -9,7 +9,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1576,6 +1577,9 @@ fn porta_whatsapp_in_primo_piano(hwnd: HWND) {
 }
 
 static GLOBAL_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+static OVERLAY_INVIO_ATTIVO: AtomicBool = AtomicBool::new(false);
+static OVERLAY_VISIBILITA_DESIDERATA: AtomicBool = AtomicBool::new(false);
+static OVERLAY_MANUTENZIONE_RINVIATA: AtomicBool = AtomicBool::new(false);
 
 pub fn registra_app_handle(handle: tauri::AppHandle) {
     let _ = GLOBAL_APP_HANDLE.set(handle);
@@ -1645,6 +1649,121 @@ pub fn whatsapp_interseca_overlay() -> bool {
     finestre_si_intersecano(&rc_wa, &rc_overlay)
 }
 
+pub fn overlay_invio_sovrapposto() -> bool {
+    overlay_invio_attivo() && whatsapp_interseca_overlay()
+}
+
+pub fn overlay_invio_attivo() -> bool {
+    OVERLAY_INVIO_ATTIVO.load(Ordering::Acquire)
+}
+
+pub fn overlay_invio_richiedi_visibilita() -> bool {
+    if !overlay_invio_sovrapposto() {
+        return false;
+    }
+    OVERLAY_VISIBILITA_DESIDERATA.store(true, Ordering::Release);
+    true
+}
+
+pub fn overlay_imposta_visibilita_desiderata(visibile: bool) {
+    OVERLAY_VISIBILITA_DESIDERATA.store(visibile, Ordering::Release);
+}
+
+pub fn overlay_rinvia_manutenzione() {
+    OVERLAY_MANUTENZIONE_RINVIATA.store(true, Ordering::Release);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AzioneVisibilitaOverlay {
+    Nessuna,
+    Nascondi,
+    Mostra,
+}
+
+fn azione_visibilita_overlay(
+    visibile: bool,
+    desiderato: bool,
+    sovrapposto: bool,
+) -> AzioneVisibilitaOverlay {
+    if sovrapposto && visibile {
+        AzioneVisibilitaOverlay::Nascondi
+    } else if !sovrapposto && !visibile && desiderato {
+        AzioneVisibilitaOverlay::Mostra
+    } else {
+        AzioneVisibilitaOverlay::Nessuna
+    }
+}
+
+pub(super) struct MonitorOverlayInvio {
+    arresta: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl MonitorOverlayInvio {
+    pub(super) fn avvia() -> Self {
+        use tauri::Manager;
+        OVERLAY_INVIO_ATTIVO.store(true, Ordering::Release);
+        let arresta = Arc::new(AtomicBool::new(false));
+        let arresta_thread = Arc::clone(&arresta);
+        let thread = thread::spawn(move || {
+            while !arresta_thread.load(Ordering::Acquire) {
+                if let Some(overlay) = GLOBAL_APP_HANDLE
+                    .get()
+                    .and_then(|app| app.get_webview_window("overlay"))
+                {
+                    let sovrapposto = whatsapp_interseca_overlay();
+                    if let Ok(visibile) = overlay.is_visible() {
+                        match azione_visibilita_overlay(
+                            visibile,
+                            OVERLAY_VISIBILITA_DESIDERATA.load(Ordering::Acquire),
+                            sovrapposto,
+                        ) {
+                            AzioneVisibilitaOverlay::Nascondi => {
+                                let _ = overlay.hide();
+                            }
+                            AzioneVisibilitaOverlay::Mostra => {
+                                let _ = overlay.show();
+                            }
+                            AzioneVisibilitaOverlay::Nessuna => {}
+                        }
+                    }
+                }
+                thread::park_timeout(Duration::from_millis(250));
+            }
+        });
+        Self {
+            arresta,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for MonitorOverlayInvio {
+    fn drop(&mut self) {
+        self.arresta.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+        OVERLAY_INVIO_ATTIVO.store(false, Ordering::Release);
+        let mostra = OVERLAY_VISIBILITA_DESIDERATA.load(Ordering::Acquire);
+        let manutenzione = OVERLAY_MANUTENZIONE_RINVIATA.swap(false, Ordering::AcqRel);
+        if mostra || manutenzione {
+            use tauri::{Emitter, Manager};
+            if let Some(app) = GLOBAL_APP_HANDLE.get() {
+                if let Some(overlay) = app.get_webview_window("overlay") {
+                    if overlay.is_visible().ok() == Some(false) {
+                        let _ = overlay.show();
+                    }
+                    if manutenzione {
+                        let _ = app.emit_to("overlay", "pt:background-maintenance", ());
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct GuardiaOverlayInvio {
     overlay_da_ripristinare: Option<tauri::WebviewWindow>,
 }
@@ -1691,8 +1810,13 @@ impl GuardiaOverlayInvio {
             };
         }
 
-        if finestre_si_intersecano(&rc_wa, &rc_overlay) {
-            let _ = overlay.hide();
+        if unsafe { IsWindowVisible(hwnd_overlay) }.as_bool()
+            && finestre_si_intersecano(&rc_wa, &rc_overlay)
+            && overlay.hide().is_ok()
+        {
+            if OVERLAY_INVIO_ATTIVO.load(Ordering::Acquire) {
+                OVERLAY_VISIBILITA_DESIDERATA.store(true, Ordering::Release);
+            }
             Self {
                 overlay_da_ripristinare: Some(overlay),
             }
@@ -1707,6 +1831,9 @@ impl GuardiaOverlayInvio {
 impl Drop for GuardiaOverlayInvio {
     fn drop(&mut self) {
         if let Some(ref overlay) = self.overlay_da_ripristinare {
+            if OVERLAY_INVIO_ATTIVO.load(Ordering::Acquire) {
+                return;
+            }
             let _ = overlay.show();
         }
     }
@@ -3774,6 +3901,31 @@ mod tests {
         CoCreateInstance, ComApartment, IUIAutomation, CLSCTX_INPROC_SERVER,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn overlay_cambia_visibilita_solo_quando_cambia_la_sovrapposizione() {
+        use super::{azione_visibilita_overlay, AzioneVisibilitaOverlay as Azione};
+        assert_eq!(
+            azione_visibilita_overlay(true, true, true),
+            Azione::Nascondi
+        );
+        assert_eq!(
+            azione_visibilita_overlay(false, true, true),
+            Azione::Nessuna
+        );
+        assert_eq!(
+            azione_visibilita_overlay(false, true, false),
+            Azione::Mostra
+        );
+        assert_eq!(
+            azione_visibilita_overlay(true, true, false),
+            Azione::Nessuna
+        );
+        assert_eq!(
+            azione_visibilita_overlay(false, false, false),
+            Azione::Nessuna
+        );
+    }
 
     #[test]
     fn statistiche_prestazioni_calcolano_mediana_e_percentile_95() {

@@ -1413,10 +1413,13 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   }
 
   async function annullaLotto(g: GruppoLotto) {
+    const fantasma = g.lotto.startsWith("_");
     const ok = await dialog.confirm(
-      "Annullare tutto il lotto?",
-      `Tutti i prodotti del lotto tornano fra quelli «Da produrre». I pagamenti non vengono toccati.`,
-      { conferma: "Annulla lotto", annulla: "Indietro" }
+      fantasma ? "Rimuovere lo stato di produzione errato?" : "Annullare tutto il lotto?",
+      fantasma
+        ? "La spedizione resta invariata; vengono ripuliti soltanto i dati di produzione orfani che generano questa scheda."
+        : "Tutti i prodotti del lotto tornano fra quelli «Da produrre». I pagamenti non vengono toccati.",
+      { conferma: fantasma ? "Rimuovi scheda" : "Annulla lotto", annulla: "Indietro" }
     );
     if (!ok) return;
     await esegui(() => api.produzioneLottoRigheAnnulla(g.lotto), "Lotto annullato.");
@@ -1424,9 +1427,15 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
 
   async function annullaLottiSelezionati() {
     if (selLottiVis.length === 0) return;
+    const soloFantasmi = selLottiVis.every((lotto) => lotto.startsWith("_"));
+    const includeFantasmi = selLottiVis.some((lotto) => lotto.startsWith("_"));
     const ok = await dialog.confirm(
       `Annullare ${selLottiVis.length === 1 ? "il lotto selezionato" : `i ${selLottiVis.length} lotti selezionati`}?`,
-      `Tutti i prodotti tornano fra quelli «Da produrre». I pagamenti non vengono toccati.`,
+      soloFantasmi
+        ? "Le spedizioni restano invariate; vengono ripuliti soltanto i dati di produzione orfani."
+        : includeFantasmi
+          ? "I lotti reali tornano fra quelli «Da produrre»; per le schede orfane viene ripulito soltanto lo stato di produzione errato. I pagamenti non vengono toccati."
+          : "Tutti i prodotti tornano fra quelli «Da produrre». I pagamenti non vengono toccati.",
       { conferma: "Annulla lotti", annulla: "Indietro" }
     );
     if (!ok) return;

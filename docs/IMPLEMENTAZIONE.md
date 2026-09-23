@@ -150,11 +150,13 @@ da solo tutta la logica applicativa. Le responsabilità principali sono distribu
 
 I comandi pubblici restano esposti da `AppState`: la suddivisione cambia soltanto l'organizzazione
 interna e non il contratto Tauri.
-- `AppState { app_dir, config(Mutex), runtime(Mutex<Option<Runtime>>), reconnect_required(Mutex) }`.
+- `AppState { app_dir, config(Mutex), runtime(Mutex<Option<Runtime>>) }`: lo stato di onboarding e
+  riconnessione è persistito nella configurazione, senza un secondo flag solo in memoria.
   `Runtime { _watcher,
   engine }` (**ordine dei campi = ordine di drop**: prima il watcher, poi la connessione).
-- **Config locale** `config.json` in app_data_dir: `device_id`, `data_dir`, `user_id`. Proiezione
-  in `<app_dir>/projection.sqlite`.
+- **Config locale** `config.json` in app_data_dir: `device_id`, `data_dir`, `user_id`,
+  `onboarding_state` (`fresh/configured/reconnect/reset/retired`). Proiezione in
+  `<app_dir>/projection.sqlite`.
 - Onboarding: `bootstrap`, `open_data_dir` (apre engine, completa un restore `ready` prima della
   lista utenti e rifiuta senza salvare la cartella se il payload è ancora `waiting`), `finish_onboarding`
   (crea/usa/riconfigura utente + registra device come **eventi**, imposta autore via `set_user`).
@@ -162,7 +164,7 @@ interna e non il contratto Tauri.
 - Dominio: `ordini_lista` (numero ANNO-progressivo derivato, totale, residuo, nomi),
   `anni_ordini`, `prezzo_suggerito`.
 - Sync: `force_sync`, `sync_overview`, `apri_cartella_dati`.
-- Reset: `reset_leggero` (riconfigura questo PC eliminando l'intera `app_data_dir`; rimuove
+- Reset: `reset_leggero` (riconfigura questo PC eliminando cache e proiezione locale; rimuove
   `user`, stati utente e avatar solo se nessun altro device attivo usa il profilo, svuota sempre
   `device.user_id` per nascondere il PC fino al nuovo onboarding; `sync_overview_ritiro` continua
   a esporlo alla sola lista amministrativa; dati di lavoro intatti) e
@@ -172,11 +174,14 @@ interna e non il contratto Tauri.
   marker/manifest per riallineare i PC offline, riapre dall'anchor ed esegue `VACUUM`) e
   `reset_completo` (cancella i dati applicativi, riparte con nuovo device e crea un log/snapshot
   minimo `device_retired` come barriera contro vecchi log risincronizzati);
-  `cancella_cartella_locale` esegue shutdown/wipe e rimuove config, SQLite e cache locali.
+  `cancella_cartella_locale` esegue shutdown/wipe e rimuove config, SQLite e cache locali; i
+  chiamanti ricreano subito il solo `config.json` minimo per rendere durevoli `device_id` e stato.
 - Bootstrap: una cartella non leggibile conserva la configurazione e produce
   `data_dir_status=missing_or_empty`; un'identità assente in dati leggibili o un device ritirato
-  produce `reconnect_required` e pulizia AppData. Il reset volontario lascia invece
-  `reconnect_required=false` per entrare direttamente nell'onboarding.
+  produce uno stato locale `reconnect`/`retired` e la pulizia della cache. Il reset volontario usa
+  invece lo stato `reset`, che mantiene `reconnect_required=false` e lo stesso `device_id` anche
+  dopo il riavvio. Se il motore locale è temporaneamente non apribile durante l'allineamento,
+  `config.json` resta intatto e la UI propone di riprovare senza avviare un nuovo onboarding.
 
 ### `commands/mod.rs` + `lib.rs`
 Wrapper `#[tauri::command]` per tutto quanto sopra. Plugin: `updater`, `process`, `dialog`.
@@ -1251,6 +1256,7 @@ vanno provati a mano.
   proprio marcatore; coda e cronologia continuano a essere locali al PC d'origine.
 - I suggerimenti non compaiono nella lista della campanella (riservata a promemoria, scadenze e messaggi), ma attivano l'overlay custom con durata impostata a 5 minuti (300.000 ms).
 - L'emissione della notifica custom persiste lo stato su tabella SQLite locale non replicata (`local_notifiche_avvisate` con chiave `suggerimento:<anno>:<tipo>`), garantendo che al riavvio dell'app la notifica non si ripeta prima che sia trascorsa la cadenza in giorni configurata per quella specifica categoria, senza generare traffico di eventi sul log OneDrive. Nella Dashboard le azioni abilitate rimangono sempre consultabili. Una rivalidazione di 60 secondi impedisce pop-up immediati durante transazioni in assestamento.
+- Con cadenza 0 il primo avviso attende la rivalidazione di 60 secondi; con N > 0 attende N giorni dalla prima rilevazione e si ripete ogni N giorni dall'ultima emissione. Le fotografie già mature al bootstrap sono seminate silenziosamente fino a una nuova fotografia/evento. `local_notifiche_avvisate` sopravvive alle ricostruzioni tecniche della proiezione (anche sostituzione fisica del file SQLite), ma non a reset, disconnessioni e restore deliberati. «Ripristina predefiniti» azzera esplicitamente timer e pause soltanto al Salva, anche se i valori erano già default; Annulla non modifica lo stato.
 - Deep-link fino a filtri Contabilità/Produzione e al selettore solleciti Preventivi, senza nuove pagine o modali parallele.
 - Test automatici su fingerprint, ranking, deduplicazione frontend, classificazione preventivi e invio multiplo; verifica
   finale con suite complete, typecheck, build, formattazione e Clippy `-D warnings`.

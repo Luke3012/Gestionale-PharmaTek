@@ -2,9 +2,9 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
-## 0.8.1 — 2026-09-18
+## 0.8.2 — 2026-09-23
 
-🚛 Risolto un problema per cui nel File spedizione potevano apparire più righe del previsto.
+🚛 Migliorie, per offrire l'esperienza migliore di sempre.
 
 ## 0.8.0 — 2026-09-18
 

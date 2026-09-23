@@ -295,6 +295,8 @@ export const api = {
   /** Chiede al rilevatore Rust una scansione immediata (il webview la chiama a ogni
    *  ricarica, da vivo, per un avviso istantaneo). */
   notificheCheck: () => invoke<void>("notifiche_check"),
+  notificheRipristinaPredefiniti: (preferenze: SuggerimentiPreferenzeInput) =>
+    invoke<void>("notifiche_ripristina_predefiniti", { preferenze }),
   /** Handshake dell'overlay: true soltanto dopo la registrazione dei listener. */
   notificheOverlayPronto: (pronto: boolean) =>
     invoke<void>("notifiche_overlay_pronto", { pronto }),
@@ -456,6 +458,10 @@ export const api = {
     invoke<WhatsappDiagnostica>("whatsapp_stato_get"),
   whatsappIntersecaOverlay: () =>
     invoke<boolean>("whatsapp_interseca_overlay"),
+  overlayInvioAttivo: () =>
+    invoke<boolean>("overlay_invio_attivo"),
+  overlayImpostaVisibilitaDesiderata: (visibile: boolean) =>
+    invoke<void>("overlay_imposta_visibilita_desiderata", { visibile }),
   whatsappVerificaEInviaProva: (input: WhatsappVerificaInput) =>
     invoke<WhatsappVerificaProva>("whatsapp_verifica_e_invia_prova", {
       input,

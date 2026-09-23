@@ -425,7 +425,9 @@ fn archivia_inviata_imap(
     });
     match rx.recv_timeout(Duration::from_secs(30)) {
         Ok(res) => res,
-        Err(_) => Err("timeout durante il salvataggio della copia in Posta inviata (30s)".to_string()),
+        Err(_) => {
+            Err("timeout durante il salvataggio della copia in Posta inviata (30s)".to_string())
+        }
     }
 }
 

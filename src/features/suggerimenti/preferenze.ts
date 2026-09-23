@@ -1,4 +1,4 @@
-import type { TipoSuggerimento } from "../../lib/tauriTypes";
+import type { SuggerimentiBundle, TipoSuggerimento } from "../../lib/tauriTypes";
 
 export const TIPI_SUGGERIMENTO: readonly TipoSuggerimento[] = [
   "rimborso",
@@ -14,7 +14,7 @@ export interface PreferenzeSuggerimenti {
   tipiAbilitati: TipoSuggerimento[];
   /** Invia notifiche pop-up custom per le azioni da compiere. */
   notificheAttive: boolean;
-  /** Cadenza di notifica: intervallo in giorni tra avvisi successivi per categoria (0 = immediato). */
+  /** Giorni fino al primo avviso e tra i successivi; 0 = solo rivalidazione di 60 secondi. */
   giorniAvviso: Record<TipoSuggerimento, number>;
 }
 
@@ -30,6 +30,25 @@ export const PREFERENZE_SUGGERIMENTI_DEFAULT: PreferenzeSuggerimenti = {
     preventivo: 7,
   },
 };
+
+/** Il ripristino del core precede la persistenza locale: un errore non conferma la bozza. */
+export async function applicaPreferenzeSuggerimenti(
+  preferenze: PreferenzeSuggerimenti,
+  anno: number,
+  ripristinoRichiesto: boolean,
+  ripristina: (value: PreferenzeSuggerimenti & { anno: number }) => Promise<void>,
+  salva: (value: PreferenzeSuggerimenti) => void,
+): Promise<void> {
+  if (ripristinoRichiesto) await ripristina({ ...preferenze, anno });
+  salva(preferenze);
+}
+
+/** Le pause sono già state cancellate dal core: mostra subito le schede locali. */
+export function bundleDopoRipristino(
+  corrente: SuggerimentiBundle | null,
+): SuggerimentiBundle | null {
+  return corrente && { ...corrente, nascosti: [], tipiInPausa: [] };
+}
 
 const èRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

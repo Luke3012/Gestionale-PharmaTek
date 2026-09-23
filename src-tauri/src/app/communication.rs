@@ -3406,6 +3406,8 @@ impl AppState {
         if comunicazione.canale != CanaleComunicazione::Whatsapp {
             return Err("la comunicazione selezionata non è WhatsApp".into());
         }
+        #[cfg(target_os = "windows")]
+        let _monitor_overlay = crate::app::whatsapp_windows::MonitorOverlayInvio::avvia();
         if riprova_fallito && comunicazione.stato == StatoComunicazione::Fallito {
             comunicazione =
                 self.comunicazione_cambia_stato(id, StatoComunicazione::InCoda, true)?;
@@ -3465,40 +3467,49 @@ impl AppState {
         &self,
         mut diagnostica: crate::app::whatsapp_windows::WhatsappDiagnosticaDto,
     ) -> AppResult<crate::app::whatsapp_windows::WhatsappDiagnosticaDto> {
+        // Un singolo messaggio inviato non certifica il collaudo: servono testo e PDF.
+        if diagnostica
+            .ultimo_esito
+            .as_ref()
+            .is_some_and(|esito| esito.riuscito && esito.codice != "collaudo_completato")
+        {
+            diagnostica.ultimo_esito = None;
+        }
         if diagnostica.ultimo_esito.is_none() {
-            if let Some(collaudo) = self
-                .comunicazioni_lista()?
-                .into_iter()
+            let prove = self.comunicazioni_lista()?;
+            if let Some((testo, allegato)) = prove
+                .iter()
                 .filter(|item| {
                     item.canale == CanaleComunicazione::Whatsapp
                         && item.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
-                        && item.stato != StatoComunicazione::Annullato
+                        && item.campagna_id.starts_with("collaudo-whatsapp:")
+                        && !item.allegati.is_empty()
+                        && item.stato.positivo()
                 })
-                .max_by_key(|item| item.stato_aggiornato_ms)
+                .filter_map(|allegato| {
+                    prove
+                        .iter()
+                        .find(|testo| {
+                            testo.campagna_id == allegato.campagna_id
+                                && testo.canale == CanaleComunicazione::Whatsapp
+                                && testo.destinatario_entita == DESTINATARIO_DIAGNOSTICA_WHATSAPP
+                                && testo.allegati.is_empty()
+                                && testo.stato.positivo()
+                        })
+                        .map(|testo| (testo, allegato))
+                })
+                .max_by_key(|(_, allegato)| allegato.stato_aggiornato_ms)
             {
-                let riuscito = collaudo.stato.positivo();
                 diagnostica.ultimo_esito =
                     Some(crate::app::whatsapp_windows::WhatsappUltimoEsitoDto {
-                        riuscito,
-                        codice: if riuscito {
-                            "collaudo_completato".into()
-                        } else if collaudo.errore_codice.is_empty() {
-                            "collaudo_non_completato".into()
-                        } else {
-                            collaudo.errore_codice
-                        },
-                        fase: if riuscito {
-                            "collaudo".into()
-                        } else if collaudo.errore_fase.is_empty() {
-                            "verifica_finale".into()
-                        } else {
-                            collaudo.errore_fase
-                        },
-                        messaggio: collaudo.ultimo_errore,
-                        esito_ambiguo: collaudo.esito_ambiguo,
+                        riuscito: true,
+                        codice: "collaudo_completato".into(),
+                        fase: "collaudo".into(),
+                        messaggio: String::new(),
+                        esito_ambiguo: false,
                         attivita_utente: false,
                         durata_ms: 0,
-                        avvenuto_ms: collaudo.stato_aggiornato_ms,
+                        avvenuto_ms: testo.stato_aggiornato_ms.max(allegato.stato_aggiornato_ms),
                     });
             }
         }
@@ -3574,6 +3585,7 @@ impl AppState {
         }
         crate::app::whatsapp_windows::resetta_ultimo_esito();
 
+        let _monitor_overlay = crate::app::whatsapp_windows::MonitorOverlayInvio::avvia();
         let sessione = ulid::Ulid::generate().to_string();
         let crea = |suffisso: &str,
                     corpo: &str,
@@ -4425,6 +4437,79 @@ mod tests {
             url_whatsapp_con_testo("+39 333 123 4567", "Ciao Luca — prova"),
             "whatsapp://send?phone=393331234567&text=Ciao%20Luca%20%E2%80%94%20prova"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn diagnostica_whatsapp_richiede_testo_e_pdf_della_stessa_sessione() {
+        let (_app, _data, state) = stato_test(true);
+        let invia = |chiave: &str, campagna: &str, allegati: Vec<AllegatoComunicazioneInput>| {
+            let mut input = input_email(chiave);
+            input.destinatario_entita = DESTINATARIO_DIAGNOSTICA_WHATSAPP.into();
+            input.destinatario_id = "Tester".into();
+            input.canale = CanaleComunicazione::Whatsapp;
+            input.recapito = "+393331234567".into();
+            input.oggetto.clear();
+            input.campagna_id = campagna.into();
+            input.allegati = allegati;
+            let bozza = state.comunicazione_crea_bozza(input).unwrap();
+            state.comunicazione_metti_in_coda(&bozza.id).unwrap();
+            let mut adapter = MockCommunicationAdapter {
+                esito: Ok(RicevutaAdattatore {
+                    invio_azionato: true,
+                    consegna_verificata: false,
+                    riferimento_esterno: "prova-simulata".into(),
+                    copia_posta_inviata: false,
+                    avviso: String::new(),
+                }),
+                invocazioni: 0,
+            };
+            state
+                .comunicazione_processa_con_adattatore(&bozza.id, &mut adapter)
+                .unwrap();
+        };
+
+        invia(
+            "collaudo-whatsapp:uno:testo",
+            "collaudo-whatsapp:uno",
+            Vec::new(),
+        );
+        let solo_testo = state
+            .completa_diagnostica_whatsapp(Default::default())
+            .unwrap();
+        assert!(solo_testo.ultimo_esito.is_none());
+
+        let pdf = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "collaudo.pdf".into(),
+                mime: "application/pdf".into(),
+                dati: b"%PDF-1.4\n%%EOF".to_vec(),
+            })
+            .unwrap();
+        invia(
+            "collaudo-whatsapp:uno:allegato",
+            "collaudo-whatsapp:uno",
+            vec![pdf],
+        );
+        let completo = state
+            .completa_diagnostica_whatsapp(Default::default())
+            .unwrap()
+            .ultimo_esito
+            .unwrap();
+        assert!(completo.riuscito);
+        assert_eq!(completo.codice, "collaudo_completato");
+
+        invia(
+            "collaudo-whatsapp:due:testo",
+            "collaudo-whatsapp:due",
+            Vec::new(),
+        );
+        let dopo_prova_parziale = state
+            .completa_diagnostica_whatsapp(Default::default())
+            .unwrap()
+            .ultimo_esito
+            .unwrap();
+        assert_eq!(dopo_prova_parziale.avvenuto_ms, completo.avvenuto_ms);
     }
 
     #[test]

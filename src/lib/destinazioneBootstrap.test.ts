@@ -55,4 +55,12 @@ describe("schermata scelta dal bootstrap", () => {
       dataDirStatus: "not_configured",
     }), true)).toBe("reconnect");
   });
+
+  it("non propone un nuovo onboarding se una configurazione attende l'allineamento", () => {
+    expect(destinazioneBootstrap(boot({
+      onboarded: false,
+      identity: null,
+      dataDirStatus: "ok",
+    }))).toBe("dataProblem");
+  });
 });

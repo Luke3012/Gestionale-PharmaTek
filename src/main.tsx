@@ -663,6 +663,10 @@ function Root() {
     };
 
     const ricevi = async (comunicazione: Comunicazione) => {
+      if (
+        comunicazione.destinatarioEntita === "diagnostica_whatsapp" ||
+        comunicazione.campagnaId?.startsWith("collaudo-whatsapp:")
+      ) return;
       if (!statiOperativi.has(comunicazione.stato)) return;
       const chiave = comunicazione.campagnaId
         ? `campagna:${comunicazione.campagnaId}`

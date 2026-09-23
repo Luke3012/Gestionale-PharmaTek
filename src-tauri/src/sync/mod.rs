@@ -449,7 +449,7 @@ impl Engine {
                 if let Some(snapshot) = self.recovery_snapshot_for_gap(device, first_avail) {
                     eprintln!("Gap rilevato all'avvio: ricostruzione automatica della proiezione.");
                     let mut proj_guard = self.proj.lock().expect("proj poisoned");
-                    proj_guard.wipe()?;
+                    proj_guard.wipe_replicated()?;
                     proj_guard.import(&snapshot)?;
                     drop(proj_guard);
                     self.ingest()?;
@@ -2638,6 +2638,17 @@ mod tests {
         }
         b.ingest().unwrap();
         assert_eq!(b.with_projection(|p| p.list("order").unwrap().len()), 10);
+        b.with_projection(|p| {
+            p.local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+                .unwrap();
+            p.local_notifica_avvisata_set(
+                "u2",
+                "primo_rilevato:2026:produzione",
+                "produzione",
+                456,
+            )
+            .unwrap();
+        });
         drop(b);
 
         for i in 10..30 {
@@ -2652,6 +2663,16 @@ mod tests {
             b_rebuilt.with_projection(|p| p.list("order").unwrap().len()),
             30,
             "il PC indietro deve ripartire dallo snapshot e non perdere eventi compattati"
+        );
+        assert_eq!(
+            b_rebuilt.with_projection(|p| p.local_notifica_avvisata_get_map("u1").unwrap())
+                ["suggerimento:2026:rimborso"],
+            123
+        );
+        assert_eq!(
+            b_rebuilt.with_projection(|p| p.local_notifica_avvisata_get_map("u2").unwrap())
+                ["primo_rilevato:2026:produzione"],
+            456
         );
     }
 

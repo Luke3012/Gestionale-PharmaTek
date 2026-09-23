@@ -101,6 +101,7 @@ describe("numeri lotto nelle distinte corriere", () => {
   it("mantiene la riga Corriere A del collo anche quando non ha numeri lotto", () => {
     const spedizione = spedizioneCorriereA();
     spedizione.righe = spedizione.righe.slice(0, 2).map((riga) => ({ ...riga, numero: "" }));
+    spedizione.numero = "";
 
     const righe = preparaRigheEsportazione([spedizione], "corriere_a");
 
@@ -108,6 +109,88 @@ describe("numeri lotto nelle distinte corriere", () => {
     expect(righe[0].numero).toBe("");
     expect(righe[0].colli).toBe(1);
     expect(righe[0].peso).toBe(1);
+  });
+
+  it("usa il numero aggregato come fallback se le righe esistono ma non hanno numeri", () => {
+    const spedizione = spedizioneCorriereA();
+    spedizione.righe = spedizione.righe.map((riga) => ({ ...riga, numero: "  \n " }));
+    spedizione.numero = "5081999\n5081997\n5081999\n5081998";
+
+    const righe = preparaRigheEsportazione([spedizione], "corriere_a");
+
+    expect(righe).toHaveLength(1);
+    expect(righe[0].numero).toBe("5081997 + 5081998 + 5081999");
+  });
+
+  it("non modifica il formato aggregato fornito a CORRIERE_B e CORRIERE_C", () => {
+    const spedizione = spedizioneCorriereA();
+    spedizione.numero = "5081997/8/9";
+
+    expect(preparaRigheEsportazione([spedizione], "gls")[0].numero).toBe("5081997/8/9");
+    expect(preparaRigheEsportazione([spedizione], "mbe")[0].numero).toBe("5081997/8/9");
+    expect(preparaRigheEsportazione([spedizione], "gls")[0].colli).toBe(3);
+    expect(preparaRigheEsportazione([spedizione], "mbe")[0].peso).toBe(3);
+  });
+
+  it.each(["gls", "mbe"])("%s unisce i colli dello stesso indirizzo e somma i dati logistici", (profilo) => {
+    const prima = spedizioneCorriereA();
+    prima.id = "spedizione-1";
+    prima.corriereProfilo = profilo;
+    prima.corriereId = profilo;
+    prima.corriereNome = profilo.toUpperCase();
+    prima.indirizzo = "VIA ANGELO POLIZIANO 60";
+    prima.citta = "Fonte Nuova";
+    prima.cap = "00013";
+    prima.righe = [{ ...prima.righe[0], numero: "5081997" }];
+    prima.numero = "5081997";
+    prima.colli = 2;
+    prima.peso = 3;
+    prima.mezzo = "contrassegno";
+    prima.contrassegno = 1200;
+    prima.note = "Citofonare";
+
+    const seconda = spedizioneCorriereA();
+    seconda.id = "spedizione-2";
+    seconda.corriereProfilo = profilo;
+    seconda.corriereId = profilo;
+    seconda.corriereNome = profilo.toUpperCase();
+    seconda.clienteId = "altro-cliente";
+    seconda.clienteNome = "Altro destinatario";
+    seconda.indirizzo = "Via Poliziano, 60";
+    seconda.citta = "Fonte Nuova";
+    seconda.cap = "00013";
+    seconda.righe = [{ ...seconda.righe[1], numero: "5081998" }];
+    seconda.numero = "5081998";
+    seconda.colli = 1;
+    seconda.peso = 2;
+    seconda.mezzo = "contrassegno";
+    seconda.contrassegno = 800;
+    seconda.note = "Citofonare";
+
+    const righe = preparaRigheEsportazione([prima, seconda], profilo);
+
+    expect(righe).toHaveLength(1);
+    expect(righe[0]).toMatchObject({
+      numero: "5081997/8",
+      cliente: "Destinatario",
+      colli: 3,
+      peso: 5,
+      importo: 2000,
+      note: "Citofonare",
+    });
+  });
+
+  it.each(["gls", "mbe"])("%s lascia separate date, corrieri e indirizzi distinti", (profilo) => {
+    const base = spedizioneCorriereA();
+    base.corriereProfilo = profilo;
+    base.corriereId = profilo;
+    base.numero = "5081997";
+    const civicoDiverso = { ...base, id: "civico", indirizzo: "Via Roma 2", numero: "5081998" };
+    const altroGiorno = { ...base, id: "giorno", data: "2026-07-15", numero: "5081999" };
+    const altroCorriere = { ...base, id: "corriere", corriereId: "altro", numero: "5082000" };
+    const senzaIndirizzo = { ...base, id: "vuoto", indirizzo: "", numero: "5082001" };
+
+    expect(preparaRigheEsportazione([base, civicoDiverso, altroGiorno, altroCorriere, senzaIndirizzo], profilo)).toHaveLength(5);
   });
 
   it("ordina i lotti in modo naturale crescente e rimuove duplicati", () => {

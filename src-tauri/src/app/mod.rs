@@ -81,8 +81,23 @@ fn clone_native_app_handle(handle: &Option<NativeAppHandle>) -> Option<NativeApp
     *handle
 }
 
+/// Stato durevole del percorso di onboarding locale. Non entra mai nel log condiviso.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalOnboardingState {
+    /// Valore di migrazione per i `config.json` precedenti all'introduzione del campo.
+    #[serde(skip_serializing)]
+    #[default]
+    Legacy,
+    Fresh,
+    Configured,
+    Reconnect,
+    Reset,
+    Retired,
+}
+
 /// Configurazione locale del PC (mai dentro OneDrive).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub device_id: String,
     #[serde(default)]
@@ -92,6 +107,29 @@ pub struct AppConfig {
     /// Cartella locale delle prescrizioni. Non viene mai sincronizzata.
     #[serde(default)]
     pub prescriptions_dir: Option<String>,
+    #[serde(default)]
+    pub onboarding_state: LocalOnboardingState,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            device_id: String::new(),
+            data_dir: None,
+            user_id: None,
+            prescriptions_dir: None,
+            onboarding_state: LocalOnboardingState::Fresh,
+        }
+    }
+}
+
+impl AppConfig {
+    fn reconnect_required(&self) -> bool {
+        matches!(
+            self.onboarding_state,
+            LocalOnboardingState::Reconnect | LocalOnboardingState::Retired
+        )
+    }
 }
 
 /// Motore attivo + watcher (tenuto vivo finché l'app è aperta).
@@ -142,7 +180,6 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub runtime: Mutex<Option<Runtime>>,
     pub app_handle: Mutex<Option<NativeAppHandle>>,
-    reconnect_required: Mutex<bool>,
     /// Impedisce che due finestre dello stesso processo acquisiscano la stessa
     /// lease cooperativa e che una la rilasci mentre l'altra sta ancora lavorando.
     operation_lock_local: Mutex<Option<String>>,
@@ -356,6 +393,35 @@ impl AppState {
             engine
                 .with_projection(|p| p.local_notifica_avvisata_delete_tipo(user_id, tipo))
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    pub(crate) fn esporta_notifiche_locali(
+        &self,
+    ) -> AppResult<Vec<crate::projection::LocalNotificaAvvisata>> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.export_local_notifiche_avvisate())
+                .map_err(es)
+        })
+    }
+
+    pub(crate) fn cancella_suggerimenti_locali(&self, user_id: &str) -> AppResult<()> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.delete_local_suggerimenti(user_id))
+                .map_err(es)
+        })
+    }
+
+    pub(crate) fn importa_notifiche_locali(
+        &self,
+        rows: &[crate::projection::LocalNotificaAvvisata],
+    ) -> AppResult<()> {
+        self.with_engine(|engine| {
+            engine
+                .with_projection(|p| p.import_local_notifiche_avvisate(rows))
+                .map_err(es)
         })
     }
 
@@ -829,7 +895,7 @@ impl AppState {
     }
 
     /// Chiude ogni risorsa locale e rimuove l'intera cartella AppData dell'app.
-    /// La cartella verrà ricreata soltanto quando l'utente avvia un nuovo onboarding.
+    /// Il chiamante ricrea subito il solo `config.json` minimo necessario al nuovo onboarding.
     fn cancella_cartella_locale(&self) -> AppResult<()> {
         self.wipe_local()?;
         if !self.app_dir.exists() {
@@ -893,9 +959,10 @@ impl AppState {
         let mut c = self.config.lock().expect("config poisoned");
         *c = AppConfig {
             device_id,
+            onboarding_state: LocalOnboardingState::Reset,
             ..AppConfig::default()
         };
-        *self.reconnect_required.lock().expect("reconnect poisoned") = false;
+        save_config(&self.app_dir, &c)?;
         Ok(())
     }
 
@@ -968,9 +1035,10 @@ impl AppState {
         let mut c = self.config.lock().expect("config poisoned");
         *c = AppConfig {
             device_id: nuovo_device,
+            onboarding_state: LocalOnboardingState::Fresh,
             ..AppConfig::default()
         };
-        *self.reconnect_required.lock().expect("reconnect poisoned") = false;
+        save_config(&self.app_dir, &c)?;
         Ok(())
     }
 
@@ -3632,7 +3700,18 @@ fn config_path(app_dir: &Path) -> PathBuf {
 
 fn load_config(app_dir: &Path) -> AppResult<AppConfig> {
     match fs::read(config_path(app_dir)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+        Ok(bytes) => {
+            let mut config: AppConfig =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            if config.onboarding_state == LocalOnboardingState::Legacy {
+                config.onboarding_state = if config.data_dir.is_some() && config.user_id.is_some() {
+                    LocalOnboardingState::Configured
+                } else {
+                    LocalOnboardingState::Fresh
+                };
+            }
+            Ok(config)
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
         Err(err) => Err(err.to_string()),
     }

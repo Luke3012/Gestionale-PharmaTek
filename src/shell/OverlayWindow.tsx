@@ -396,21 +396,27 @@ export function OverlayWindow() {
     ultimoPortaDavantiRef.current = adesso;
 
     try {
-      if (whatsappInInvioRef.current) {
-        const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
-        if (interseca) {
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().hide().catch(() => {});
-          return;
+      const [interseca, invioAttivo] = await Promise.all([
+        api.whatsappIntersecaOverlay().catch(() => whatsappInInvioRef.current),
+        api.overlayInvioAttivo().catch(() => whatsappInInvioRef.current),
+      ]);
+      if (interseca) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        if (await win.isVisible().catch(() => false)) {
+          await win.hide().catch(() => {});
         }
+        return;
       }
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const win = getCurrentWindow();
-      await win.show().catch(() => {});
-      await win.unminimize().catch(() => {});
+      if (!(await win.isVisible().catch(() => false))) {
+        await win.show().catch(() => {});
+        await win.unminimize().catch(() => {});
+      }
       // Evitiamo di commutare always-on-top mentre WhatsApp sta digitando o inviando,
       // per non sottrarre il focus alla finestra di chat.
-      if (!whatsappInInvioRef.current) {
+      if (!invioAttivo) {
         await win.setAlwaysOnTop(false).catch(() => {});
         await win.setAlwaysOnTop(true).catch(() => {});
       }
@@ -426,6 +432,10 @@ export function OverlayWindow() {
       if (payload.canale === "whatsapp") {
         whatsappInInvioRef.current = payload.stato === "in_invio";
       }
+      if (
+        payload.destinatarioEntita === "diagnostica_whatsapp" ||
+        payload.campagnaId?.startsWith("collaudo-whatsapp:")
+      ) return;
       if (payload.campagnaId) {
         if (payload.stato === "in_coda") {
           // Una ripresa esplicita dal Centro comunicazioni riattiva anche la
@@ -477,17 +487,7 @@ export function OverlayWindow() {
       });
 
       if (prossimo) {
-        if (payload.canale === "whatsapp" && payload.stato === "in_invio") {
-          const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
-          if (interseca) {
-            const { getCurrentWindow } = await import("@tauri-apps/api/window");
-            await getCurrentWindow().hide().catch(() => {});
-          } else {
-            void portaOverlayDavanti(true);
-          }
-        } else {
-          void portaOverlayDavanti(true);
-        }
+        void portaOverlayDavanti(true);
       } else {
         window.setTimeout(() => {
           if (toastsRef.current.length > 0) void portaOverlayDavanti(true);
@@ -526,9 +526,11 @@ export function OverlayWindow() {
           const operative = compattaComunicazioniOperative(
             comunicazioni.filter(
               (item) =>
-                (!item.campagnaId &&
+                item.destinatarioEntita !== "diagnostica_whatsapp" &&
+                !item.campagnaId?.startsWith("collaudo-whatsapp:") &&
+                ((!item.campagnaId &&
                   ["in_coda", "in_invio", "sospeso"].includes(item.stato)) ||
-                (item.campagnaId && campagneAttive.has(item.campagnaId)),
+                  (item.campagnaId && campagneAttive.has(item.campagnaId))),
             ),
           );
           setToasts((correnti) => {
@@ -538,17 +540,7 @@ export function OverlayWindow() {
             return ordinaToast([...operative, ...nonOperative]).slice(0, MAX_TOAST);
           });
           if (operative.length > 0) {
-            if (waInInvio) {
-              const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
-              if (interseca) {
-                const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                await getCurrentWindow().hide().catch(() => {});
-              } else {
-                void portaOverlayDavanti(true);
-              }
-            } else {
-              void portaOverlayDavanti(true);
-            }
+            void portaOverlayDavanti(true);
           }
         })
         .catch(() => {});
@@ -838,6 +830,11 @@ export function OverlayWindow() {
     return () => window.clearTimeout(t);
   }, [toasts.length, portaOverlayDavanti]);
 
+  useEffect(() => {
+    if (!inTauri) return;
+    void api.overlayImpostaVisibilitaDesiderata(toasts.length > 0).catch(() => {});
+  }, [toasts.length]);
+
   // Ridimensiona la finestra al contenuto + click-through quando è vuota. La misura
   // avviene sul contenitore interno (cambia solo coi toast, non col resize finestra →
   // niente loop). Riposiziona in basso a destra del monitor corrente.
@@ -859,14 +856,27 @@ export function OverlayWindow() {
       // un rettangolo grigio in basso a destra all'avvio (il webview trasparente non era
       // ancora dipinto). La mostriamo solo quando ci sono pop-up da far vedere.
       let mostra = !riduciFinestra;
-      if (mostra && whatsappInInvioRef.current) {
-        const interseca = await api.whatsappIntersecaOverlay().catch(() => false);
+      let invioAttivo = false;
+      if (mostra) {
+        const [interseca, attivo] = await Promise.all([
+          api.whatsappIntersecaOverlay().catch(() => whatsappInInvioRef.current),
+          api.overlayInvioAttivo().catch(() => whatsappInInvioRef.current),
+        ]);
+        invioAttivo = attivo;
         if (interseca) mostra = false;
       }
       const [mon] = await Promise.all([
         currentMonitor().catch(() => null),
         win.setIgnoreCursorEvents(ignoraClick).catch(() => {}),
-        (mostra ? win.show().then(() => win.setAlwaysOnTop(true)) : win.hide()).catch(() => {}),
+        (async () => {
+          const visibile = await win.isVisible().catch(() => false);
+          if (mostra && !visibile) {
+            await win.show();
+            if (!invioAttivo) await win.setAlwaysOnTop(true);
+          } else if (!mostra && visibile) {
+            await win.hide();
+          }
+        })().catch(() => {}),
       ]);
 
       if (annulla) return;

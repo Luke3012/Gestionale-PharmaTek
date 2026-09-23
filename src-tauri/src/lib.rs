@@ -430,6 +430,11 @@ pub fn run() {
                 if overlay.is_visible().unwrap_or(true) {
                     continue;
                 }
+                #[cfg(target_os = "windows")]
+                if crate::app::whatsapp_windows::overlay_invio_sovrapposto() {
+                    crate::app::whatsapp_windows::overlay_rinvia_manutenzione();
+                    continue;
+                }
                 let _ = overlay.show();
                 let _ = app_heartbeat.emit_to("overlay", "pt:background-maintenance", ());
             });
@@ -505,6 +510,8 @@ pub fn run() {
             commands::whatsapp_diagnostica_get,
             commands::whatsapp_stato_get,
             commands::whatsapp_interseca_overlay,
+            commands::overlay_invio_attivo,
+            commands::overlay_imposta_visibilita_desiderata,
             commands::whatsapp_verifica_e_invia_prova,
             commands::comunicazione_elimina,
             commands::comunicazioni_elimina,
@@ -627,6 +634,7 @@ pub fn run() {
             commands::rimborso_extra_precompila,
             commands::tray_badge,
             notifiche::notifiche_config,
+            notifiche::notifiche_ripristina_predefiniti,
             notifiche::notifiche_check,
             notifiche::notifiche_overlay_pronto,
             notifiche::suggerimenti_notifiche_lista,

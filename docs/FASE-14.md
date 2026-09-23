@@ -75,7 +75,7 @@ Da questa regola seguono tre comportamenti:
 `suggerimento_stato`, con l'identificativo della fotografia nascosta. Non viene salvata una
 copia del titolo, del conteggio o dell'azione. La sospensione di una categoria dura 6 ore (anziché 24)
 o fino alla modifica sostanziale delle sorgenti; disattivando le notifiche delle azioni, spegnendo la singola
-categoria o cliccando «Ripristina predefiniti», tutte le relative pause attive vengono immediatamente azzerate.
+categoria o salvando «Ripristina predefiniti», tutte le relative pause attive vengono azzerate.
 La scelta converge tramite il normale log append-only e non può occultare una futura situazione diversa.
 
 **Ignora tutte** applica la stessa regola a tutte le card visibili, ma le registra in un solo
@@ -87,8 +87,8 @@ permette di:
 
 - mostrare o nascondere ciascuna categoria (Provvigioni e Preventivi disattivate di default);
 - abilitare le notifiche pop-up per le azioni;
-- scegliere da 0 a 90 giorni di cadenza di avviso per ciascuna categoria (0 = immediato, N = ripete la notifica ogni N giorni);
-- ripristinare le cadenze predefinite tramite il pulsante **«Ripristina predefiniti»** (che azzera anche eventuali pause attive).
+- scegliere da 0 a 90 giorni di cadenza di avviso per ciascuna categoria (0 = primo avviso dopo 60 secondi di rivalidazione; N > 0 = primo avviso dopo N giorni dalla prima rilevazione e successivi ogni N giorni dall'ultima emissione);
+- ripristinare le preferenze predefinite tramite **«Ripristina predefiniti»** e **Salva**: anche se erano già predefinite, il salvataggio azzera timer e pause di tutte le categorie e rende subito visibili le card. **Annulla** non cambia nulla; un errore del backend lascia il modale aperto.
 
 Per i preventivi la cadenza e la soglia usano giorni civili locali ed è applicata ai singoli candidati prima
 dell'aggregazione della card; `0` significa disponibilità immediata. «Controlla ora» include
@@ -104,7 +104,7 @@ svolta o nascosta temporaneamente (6 ore). I giorni configurati per ciascuna cat
 (l'intervallo con cui viene emesso il pop-up se l'azione non è ancora stata eseguita). Quando una notifica
 viene emessa, il core Rust registra su SQLite locale (`local_notifiche_avvisate`) il timestamp dell'avviso per quella
 categoria (senza produrre eventi sul log condiviso di OneDrive): all'avvio successivo dell'applicazione l'avviso viene silenziato fino allo scadere della cadenza
-impostata.
+impostata. Alla prima scansione di una sessione, le fotografie già mature vengono seminate senza pop-up; una nuova fotografia successiva può invece essere notificata. La tabella locale sopravvive a gap recovery, rebuild manuali, retention e ottimizzazione generazionale, ma viene eliminata dai reset, dalle disconnessioni, dal nuovo onboarding e dai ripristini volontari di backup locali o remoti.
 
 I suggerimenti non vengono inseriti nella lista della campanella (la quale rimane riservata a promemoria,
 scadenze pagamenti e messaggi operativi), ma attivano l'overlay custom con durata impostata a **5 minuti** (300.000 ms),

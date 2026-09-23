@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -233,7 +233,9 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   const [whatsappCaricando, setWhatsappCaricando] = useState(false);
   const [whatsappInvio, setWhatsappInvio] = useState(false);
   const [whatsappErrore, setWhatsappErrore] = useState("");
+  const [whatsappCompletato, setWhatsappCompletato] = useState(false);
   const [whatsappPronto, setWhatsappPronto] = useState(false);
+  const whatsappDiagnosticaVersioneRef = useRef(0);
 
   const carica = useCallback(async () => {
     if (!inTauri) {
@@ -469,21 +471,27 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   };
 
   const caricaDiagnosticaWhatsapp = useCallback(async (rapida = false) => {
+    const versione = ++whatsappDiagnosticaVersioneRef.current;
     if (!inTauri) {
       setWhatsappPronto(true);
       return;
     }
     if (!rapida) setWhatsappCaricando(true);
     try {
-      setWhatsappDiagnostica(
-        rapida
-          ? await api.whatsappStatoGet()
-          : await api.whatsappDiagnosticaGet(),
-      );
+      const diagnostica = rapida
+        ? await api.whatsappStatoGet()
+        : await api.whatsappDiagnosticaGet();
+      if (versione === whatsappDiagnosticaVersioneRef.current) {
+        setWhatsappDiagnostica(diagnostica);
+      }
     } catch (error) {
-      setWhatsappErrore(String(error));
+      if (versione === whatsappDiagnosticaVersioneRef.current) {
+        setWhatsappErrore(String(error));
+      }
     } finally {
-      if (!rapida) setWhatsappCaricando(false);
+      if (!rapida && versione === whatsappDiagnosticaVersioneRef.current) {
+        setWhatsappCaricando(false);
+      }
       setWhatsappPronto(true);
     }
   }, []);
@@ -498,6 +506,7 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
 
   const apriWhatsapp = () => {
     setWhatsappErrore("");
+    setWhatsappCompletato(false);
     setWhatsappAperto(true);
     void caricaDiagnosticaWhatsapp();
   };
@@ -511,8 +520,11 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
       { conferma: "Invia i due messaggi", annulla: "Annulla" },
     );
     if (!confermato) return;
+    ++whatsappDiagnosticaVersioneRef.current;
+    setWhatsappCaricando(false);
     setWhatsappInvio(true);
     setWhatsappErrore("");
+    setWhatsappCompletato(false);
     setWhatsappDiagnostica((cur) =>
       cur ? { ...cur, ultimoEsito: null } : null,
     );
@@ -522,10 +534,14 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
         telefono: whatsappTelefono.trim(),
       });
       setWhatsappDiagnostica(risultato.diagnostica);
-      toast.success("Collaudo WhatsApp completato: testo e PDF inviati.");
+      setWhatsappCompletato(true);
     } catch (error) {
       setWhatsappErrore(String(error));
-      await caricaDiagnosticaWhatsapp();
+      // L'errore di questa operazione resta nel modale: non è un nuovo
+      // collaudo riuscito né un tentativo da mostrare nel Centro Comunicazioni.
+      setWhatsappDiagnostica((cur) =>
+        cur ? { ...cur, ultimoEsito: null } : null,
+      );
     } finally {
       setWhatsappInvio(false);
     }
@@ -575,7 +591,11 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
             titolo="WhatsApp"
             descrizione="Collaudo locale dell'app Windows, del testo e degli allegati."
             stato={
-              whatsappDiagnostica?.ultimoEsito?.riuscito ? (
+              whatsappErrore ? (
+                <Badge color="gray" variant="light">
+                  Questo PC
+                </Badge>
+              ) : whatsappDiagnostica?.ultimoEsito?.riuscito ? (
                 <Badge color="teal" variant="light">
                   Compatibile
                 </Badge>
@@ -951,11 +971,13 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                     color={
                       whatsappInvio
                         ? "blue"
-                        : whatsappDiagnostica?.ultimoEsito?.riuscito
-                          ? "teal"
-                          : whatsappDiagnostica?.ultimoEsito
-                            ? "red"
-                            : "gray"
+                        : whatsappErrore
+                          ? "red"
+                          : whatsappDiagnostica?.ultimoEsito?.riuscito
+                            ? "teal"
+                            : whatsappDiagnostica?.ultimoEsito
+                              ? "red"
+                              : "gray"
                     }
                     variant="light"
                   >
@@ -963,11 +985,13 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                       ? "Controllo…"
                       : whatsappInvio
                         ? "Invio in corso…"
-                        : whatsappDiagnostica?.ultimoEsito?.riuscito
-                          ? "Compatibile"
-                          : whatsappDiagnostica?.ultimoEsito
-                            ? `Errore · ${whatsappDiagnostica.ultimoEsito.fase}`
-                            : "Non collaudato"}
+                        : whatsappErrore
+                          ? "Verifica non riuscita"
+                          : whatsappDiagnostica?.ultimoEsito?.riuscito
+                            ? "Compatibile"
+                            : whatsappDiagnostica?.ultimoEsito
+                              ? `Errore · ${whatsappDiagnostica.ultimoEsito.fase}`
+                              : "Non collaudato"}
                   </Badge>
                 </Group>
 
@@ -1018,6 +1042,11 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                 {whatsappAvviso && (
                   <Alert color="red" variant="light" py="xs">
                     <Text size="xs">{whatsappAvviso}</Text>
+                  </Alert>
+                )}
+                {whatsappCompletato && (
+                  <Alert color="green" variant="light" py="xs">
+                    <Text size="xs">Collaudo completato: testo e PDF inviati.</Text>
                   </Alert>
                 )}
               </Stack>

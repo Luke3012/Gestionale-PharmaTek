@@ -552,6 +552,37 @@ impl Notificatore {
         self.scansiona();
     }
 
+    /// Ripristino esplicito: anche preferenze già identiche ai default devono
+    /// azzerare timer e pause. Il lock impedisce scansioni con stato intermedio.
+    pub fn ripristina_predefiniti(&self, input: SuggerimentiPreferenzeInput) -> Result<(), String> {
+        let _scan_guard = self.scan_lock.lock().expect("scan poisoned");
+        let mut cfg = self.cfg.lock().expect("cfg poisoned");
+        let precedente = cfg.as_ref().ok_or("notificatore non configurato")?;
+        let state = self
+            .app
+            .try_state::<AppState>()
+            .ok_or("stato app non disponibile")?;
+        let user_id = precedente.user_id.clone();
+        let vecchie = state.esporta_notifiche_locali()?;
+        state.cancella_suggerimenti_locali(&user_id)?;
+        if let Err(err) = state.suggerimenti_azzera_pause(None) {
+            state.importa_notifiche_locali(&vecchie)?;
+            return Err(err);
+        }
+        let mut prossima = precedente.clone();
+        prossima.suggerimenti = normalizza_preferenze_suggerimenti(input);
+        *cfg = Some(prossima);
+        *self
+            .suggerimenti_cache
+            .lock()
+            .expect("suggerimenti cache poisoned") = CacheSuggerimenti::default();
+        drop(cfg);
+        drop(_scan_guard);
+        self.segnala_modifica();
+        self.scansiona();
+        Ok(())
+    }
+
     /// Azzera lo storico degli avvisi emessi per i suggerimenti (e i relativi timer di primo rilevamento).
     pub fn azzera_avvisi_suggerimenti(&self, user_id: &str, tipi: Option<&[String]>) {
         if let Some(state) = self.app.try_state::<AppState>() {
@@ -1355,7 +1386,12 @@ impl Notificatore {
 
             if ready_main.load(Ordering::Acquire) {
                 if let Some(overlay) = app_main.get_webview_window("overlay") {
-                    if overlay.show().is_ok() {
+                    #[cfg(target_os = "windows")]
+                    let attendi_whatsapp =
+                        crate::app::whatsapp_windows::overlay_invio_richiedi_visibilita();
+                    #[cfg(not(target_os = "windows"))]
+                    let attendi_whatsapp = false;
+                    if attendi_whatsapp || overlay.show().is_ok() {
                         overlay_operativo = true;
                         if let Some(ref id) = suono_main {
                             suono_consegnato = app_main
@@ -1642,6 +1678,14 @@ fn messaggio_visibile_per_utente(
 #[tauri::command]
 pub fn notifiche_config(config: NotificheConfigInput, nt: State<'_, std::sync::Arc<Notificatore>>) {
     nt.configura(config);
+}
+
+#[tauri::command]
+pub fn notifiche_ripristina_predefiniti(
+    preferenze: SuggerimentiPreferenzeInput,
+    nt: State<'_, std::sync::Arc<Notificatore>>,
+) -> Result<(), String> {
+    nt.ripristina_predefiniti(preferenze)
 }
 
 /// Chiede una nuova scansione (il webview la chiama quando ricarica, da vivo).
@@ -2087,6 +2131,33 @@ mod tests {
             0,
             false,
         ));
+    }
+
+    #[test]
+    fn suggerimento_maturo_al_bootstrap_e_silenzioso_ma_nuova_fotografia_avvisa() {
+        let mut stato = Stato::default();
+        let riattivazioni = HashMap::new();
+        let maturo = Notif {
+            tipo: "suggerimento".into(),
+            ..notif("s14:rimborso:foto-a")
+        };
+        assert!(stato
+            .nuove_da_avvisare_a(vec![maturo.clone()], &riattivazioni, 100)
+            .is_none());
+        assert!(stato
+            .nuove_da_avvisare_a(vec![maturo], &riattivazioni, 101)
+            .unwrap()
+            .is_empty());
+        let nuova = Notif {
+            tipo: "suggerimento".into(),
+            ..notif("s14:rimborso:foto-b")
+        };
+        assert_eq!(
+            ids(&stato
+                .nuove_da_avvisare_a(vec![nuova], &riattivazioni, 102)
+                .unwrap()),
+            vec!["s14:rimborso:foto-b"]
+        );
     }
 
     #[test]

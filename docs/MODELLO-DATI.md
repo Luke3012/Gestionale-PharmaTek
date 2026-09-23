@@ -66,8 +66,9 @@ attiva usa lo stesso `user_id`; viene eliminato soltanto con il ritiro dell'ulti
 La distinzione di bootstrap non è un dato di dominio:
 
 - cartella non leggibile → `data_dir_status = missing_or_empty`, configurazione conservata;
-- identità assente in dati leggibili o device ritirato → `reconnect_required`, pulizia locale;
-- primo avvio/reset volontario → onboarding diretto.
+- identità assente in dati leggibili o device ritirato → stato locale persistito `reconnect`/`retired`,
+  `reconnect_required=true` e pulizia di cache/proiezione con ricreazione del `config.json` minimo;
+- primo avvio/reset volontario → stato `fresh`/`reset` e onboarding diretto.
 
 La panoramica sincronizzazione elenca esclusivamente record `device` attivi. I watermark HLC
 servono solo a calcolare l'ultima attività: un autore orfano proveniente da un vecchio log non può

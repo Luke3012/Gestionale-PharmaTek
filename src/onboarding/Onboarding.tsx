@@ -41,6 +41,15 @@ import { AzioniFotoAvatar, SceltePresetAvatar } from "../ui/ScelteAvatar";
 
 const PASSI = ["Cartella", "Utente", "Avatar", "Riepilogo"];
 
+export function selezioneDopoModificaNome(
+  mode: OnboardingMode,
+  userId: string | null
+): { mode: OnboardingMode; userId: string | null } {
+  return mode === "reconfigure" ? { mode, userId } : { mode: "create", userId: null };
+}
+
+export const profiloOnboardingModificabile = (mode: OnboardingMode): boolean => mode !== "use";
+
 export function Onboarding({
   boot,
   onDone,
@@ -121,6 +130,14 @@ export function Onboarding({
     }
   }
 
+  function creaNuovoUtente() {
+    setMode("create");
+    setUserId(null);
+    setNome("");
+    setAvatarTipo("iniziali");
+    setAvatarPreset("p1");
+  }
+
   const userIdFinale = mode === "create" ? userId ?? createdUserId : userId!;
   const avatarValore =
     avatarTipo === "preset" ? avatarPreset : avatarTipo === "custom" ? `${userIdFinale}.png` : "";
@@ -137,7 +154,7 @@ export function Onboarding({
         avatarTipo,
         avatarValore,
       });
-      if (avatarTipo === "custom" && fotoBytes) {
+      if (mode !== "use" && avatarTipo === "custom" && fotoBytes) {
         await api.saveAvatar(identity.userId, fotoBytes);
         // Semina la cache avatar (come fa la modale Profilo): così la foto compare
         // SUBITO al primo load / schermo d'avvio, senza attendere la lettura da disco.
@@ -239,10 +256,12 @@ export function Onboarding({
                     label="Nome utente"
                     placeholder="Es. Livio"
                     value={nome}
+                    disabled={mode === "use"}
                     onChange={(e) => {
                       setNome(e.currentTarget.value);
-                      setMode("create");
-                      setUserId(null);
+                      const selezione = selezioneDopoModificaNome(mode, userId);
+                      setMode(selezione.mode);
+                      setUserId(selezione.userId);
                     }}
                     size="md"
                     data-autofocus
@@ -259,7 +278,7 @@ export function Onboarding({
                         <Button size="xs" variant={mode === "reconfigure" ? "filled" : "default"} color="accent" onClick={() => risolviDuplicato("reconfigure")}>
                           Riconfiguralo
                         </Button>
-                        <Button size="xs" variant="default" onClick={() => toast.info("Scegli un nome diverso per creare un nuovo utente.")}>
+                        <Button size="xs" variant="default" onClick={creaNuovoUtente}>
                           Crea nuovo
                         </Button>
                       </Group>
@@ -274,7 +293,7 @@ export function Onboarding({
                     titolo="Foto profilo"
                     sub={
                       mode === "use"
-                        ? "Stai usando un utente esistente: puoi tenere il suo avatar o cambiarlo."
+                        ? "Stai usando il profilo esistente senza modificarne l'avatar."
                         : "Scegli un avatar predefinito o carica una tua foto."
                     }
                   />
@@ -288,24 +307,28 @@ export function Onboarding({
                       size={88}
                     />
                   </Group>
-                  <Group gap="sm" justify="center">
-                    <SceltePresetAvatar
-                      nome={nome}
-                      tipo={avatarTipo}
-                      preset={avatarPreset}
-                      dimensione={44}
-                      onSeleziona={(prossimo) => {
-                        setAvatarTipo("preset");
-                        setAvatarPreset(prossimo);
-                      }}
-                    />
-                  </Group>
-                  <AzioniFotoAvatar
-                    fileRef={fileRef}
-                    dimensioneIcona={18}
-                    onCarica={caricaFoto}
-                    onIniziali={() => setAvatarTipo("iniziali")}
-                  />
+                  {profiloOnboardingModificabile(mode) && (
+                    <>
+                      <Group gap="sm" justify="center">
+                        <SceltePresetAvatar
+                          nome={nome}
+                          tipo={avatarTipo}
+                          preset={avatarPreset}
+                          dimensione={44}
+                          onSeleziona={(prossimo) => {
+                            setAvatarTipo("preset");
+                            setAvatarPreset(prossimo);
+                          }}
+                        />
+                      </Group>
+                      <AzioniFotoAvatar
+                        fileRef={fileRef}
+                        dimensioneIcona={18}
+                        onCarica={caricaFoto}
+                        onIniziali={() => setAvatarTipo("iniziali")}
+                      />
+                    </>
+                  )}
                 </Stack>
               )}
 

@@ -42,6 +42,14 @@ type Stato =
 
 const MESSAGGIO_CARTELLA_DATI_NON_DISPONIBILE =
   "La cartella dati condivisa configurata su questo PC è vuota o non è raggiungibile.";
+const MESSAGGIO_ALLINEAMENTO_DATI_NON_PRONTO =
+  "La cartella dati è presente, ma l'allineamento non è ancora completato. Attendi OneDrive e premi Riprova; la configurazione di questo PC è conservata.";
+
+function messaggioProblemaDati(boot: Bootstrap): string {
+  return boot.dataDirStatus === "ok"
+    ? MESSAGGIO_ALLINEAMENTO_DATI_NON_PRONTO
+    : MESSAGGIO_CARTELLA_DATI_NON_DISPONIBILE;
+}
 
 const EVENTI_DATI_RICOSTRUITI = ["pt:proiezione-ricostruita", "pt:ricerca-invalidata"] as const;
 let preloadDashboardPromise: Promise<unknown> | null = null;
@@ -95,7 +103,7 @@ function App({
     const destinazione = destinazioneBootstrap(boot, ricollegamentoRichiesto());
     if (destinazione === "reconnect") return { fase: "reconnect", boot };
     if (destinazione === "dataProblem") {
-      return { fase: "dataProblem", messaggio: MESSAGGIO_CARTELLA_DATI_NON_DISPONIBILE };
+      return { fase: "dataProblem", messaggio: messaggioProblemaDati(boot) };
     }
     if (destinazione === "pronto") return { fase: "pronto", identity: boot.identity! };
     return { fase: "onboarding", boot };
@@ -133,7 +141,7 @@ function App({
         disattivaNotificheSessione();
         setStato({
           fase: "dataProblem",
-          messaggio: MESSAGGIO_CARTELLA_DATI_NON_DISPONIBILE,
+          messaggio: messaggioProblemaDati(nextBoot),
         });
         return;
       }
@@ -435,7 +443,7 @@ function App({
       <Center style={{ flex: 1, padding: 24 }}>
         <Stack align="center" gap="sm" maw={520} ta="center">
           <LogoMark size={48} />
-          <Text fw={700}>Cartella dati non disponibile</Text>
+          <Text fw={700}>Dati condivisi non disponibili</Text>
           <Text c="dimmed" size="sm">
             {stato.messaggio}
           </Text>

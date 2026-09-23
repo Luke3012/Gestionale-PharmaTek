@@ -3210,12 +3210,22 @@ mod tests {
     #[test]
     fn annulla_lotto_fantasma_ripristina_ordine() {
         let (_app, _data, state) = test_state();
-        let order = order_with_rows(&state, 1);
+        let order = order_with_rows(&state, 2);
         state
             .record_update(
                 "riga_ordine",
                 &order.righe[0].id,
                 fields(&[("stato_produzione", json!("arrivato_it"))]),
+            )
+            .unwrap();
+        state
+            .record_update(
+                "riga_ordine",
+                &order.righe[1].id,
+                fields(&[
+                    ("stato_produzione", json!("in_produzione")),
+                    ("lotto_produzione", json!("LOTTO-REALE")),
+                ]),
             )
             .unwrap();
         let phantom_lot = format!("_{}", order.id);
@@ -3226,5 +3236,19 @@ mod tests {
             .unwrap();
         assert_eq!(str_field(&row.data, "stato_produzione"), "");
         assert_eq!(str_field(&row.data, "lotto_produzione"), "");
+        let valid_row = state
+            .record_get("riga_ordine", &order.righe[1].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            str_field(&valid_row.data, "stato_produzione"),
+            "in_produzione"
+        );
+        assert_eq!(
+            str_field(&valid_row.data, "lotto_produzione"),
+            "LOTTO-REALE"
+        );
+        let current_order = state.record_get("ordine", &order.id).unwrap().unwrap();
+        assert_eq!(str_field(&current_order.data, "stato"), "In produzione");
     }
 }

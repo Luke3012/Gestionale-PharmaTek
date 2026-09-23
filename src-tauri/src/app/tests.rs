@@ -912,6 +912,37 @@ fn log_del_pc_cancellato_mantiene_la_configurazione_finche_onedrive_lo_ripristin
 }
 
 #[test]
+fn bootstrap_con_motore_temporaneamente_non_aperto_conserva_identita_e_configurazione() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    let identity = onboarda(&state, data_dir, "Luca");
+
+    // Simula un'apertura locale non riuscita mentre i dati condivisi sono leggibili.
+    *state.runtime.lock().unwrap() = None;
+    let boot = state.bootstrap();
+    assert!(!boot.onboarded);
+    assert_eq!(boot.data_dir_status, "ok");
+    assert_eq!(boot.data_dir.as_deref(), Some(data_dir));
+    assert!(!boot.reconnect_required);
+    assert_eq!(boot.device_id, identity.device_id);
+    let persisted = load_config(app.path()).unwrap();
+    assert_eq!(persisted.device_id, identity.device_id);
+    assert_eq!(
+        persisted.user_id.as_deref(),
+        Some(identity.user_id.as_str())
+    );
+    assert_eq!(persisted.onboarding_state, LocalOnboardingState::Configured);
+
+    drop(state);
+    let restored = AppState::init(app.path().to_path_buf()).unwrap();
+    let boot = restored.bootstrap();
+    assert!(boot.onboarded);
+    assert_eq!(boot.identity.unwrap().device_id, identity.device_id);
+}
+
+#[test]
 fn bootstrap_utente_configurato_cancellato_disconnette_config_locale() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -934,8 +965,8 @@ fn bootstrap_utente_configurato_cancellato_disconnette_config_locale() {
     assert!(cfg.data_dir.is_none());
     assert!(cfg.user_id.is_none());
     assert!(
-        !app.path().exists(),
-        "l'identità non più disponibile deve cancellare tutta la cartella AppData"
+        app.path().join("config.json").is_file(),
+        "la pulizia deve conservare su disco l'identità minima per la riconnessione"
     );
 
     let users = state.open_data_dir(data_dir).unwrap();
@@ -1503,12 +1534,18 @@ fn gestione_utente_esistente_use_e_reconfigure() {
             data_dir: data_dir.to_string(),
             mode: "use".into(),
             user_id: Some(id1.user_id.clone()),
-            nome: "Anna".into(),
-            avatar_tipo: "iniziali".into(),
-            avatar_valore: String::new(),
+            nome: "Nome da ignorare".into(),
+            avatar_tipo: "preset".into(),
+            avatar_valore: "p9".into(),
         })
         .unwrap();
     assert_eq!(id2.user_id, id1.user_id, "stesso utente condiviso");
+    assert_eq!(
+        id2.device_id, id1.device_id,
+        "corrispondenza univoca riadottata"
+    );
+    assert_eq!(id2.nome, "Anna", "use non modifica il nome condiviso");
+    assert_eq!(id2.avatar_tipo, "iniziali", "use non modifica l'avatar");
     // Non si è creato un doppione.
     assert_eq!(s2.get_users().len(), 1);
     assert!(s2
@@ -1517,6 +1554,31 @@ fn gestione_utente_esistente_use_e_reconfigure() {
         .devices
         .iter()
         .any(|device| device.device_id == id2.device_id && device.is_current));
+
+    let riconfigurata = s2
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "reconfigure".into(),
+            user_id: Some(id1.user_id.clone()),
+            nome: "Anna Nuova".into(),
+            avatar_tipo: "preset".into(),
+            avatar_valore: "p2".into(),
+        })
+        .unwrap();
+    assert_eq!(riconfigurata.nome, "Anna Nuova");
+    assert_eq!(riconfigurata.avatar_tipo, "preset");
+    assert_eq!(riconfigurata.avatar_valore, "p2");
+
+    assert!(s2
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "sconosciuta".into(),
+            user_id: None,
+            nome: "Errore".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .is_err());
 
     // Se il profilo viene cancellato fra la lista utenti e la conferma della UI,
     // "usa questo utente" deve ripristinarlo insieme alla nuova postazione.
@@ -4057,6 +4119,7 @@ fn ottimizzazione_forzata_pubblica_checkpoint_con_postazioni_senza_ack() {
             data_dir: Some(data.path().to_string_lossy().into_owned()),
             user_id: Some(identita.user_id),
             prescriptions_dir: None,
+            onboarding_state: LocalOnboardingState::Configured,
         },
     )
     .unwrap();
@@ -4100,6 +4163,12 @@ fn ottimizzazione_generazionale_non_resuscita_tombstone_e_accetta_nuovi_eventi()
             .join(format!("{device_id}.ndjson")),
     )
     .unwrap();
+    state
+        .local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+        .unwrap();
+    state
+        .local_notifica_avvisata_set("u2", "primo_rilevato:2026:produzione", "produzione", 456)
+        .unwrap();
     let coordinamento = state.restore_prepare().unwrap();
     assert_eq!(coordinamento.expected_count, 1);
     assert_eq!(coordinamento.acknowledged, 1);
@@ -4110,6 +4179,14 @@ fn ottimizzazione_generazionale_non_resuscita_tombstone_e_accetta_nuovi_eventi()
     assert!(Path::new(&risultato.backup_path).is_file());
     assert!(risultato.tombstone_rimosse >= 2);
     assert!(risultato.eventi_rimossi > 0);
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u1").unwrap()["suggerimento:2026:rimborso"],
+        123
+    );
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u2").unwrap()["primo_rilevato:2026:produzione"],
+        456
+    );
     assert!(state
         .record_get("cliente", &conservato.id)
         .unwrap()
@@ -4758,7 +4835,23 @@ fn backup_retention_purga_messaggi_vecchi_ma_non_notifiche_vive() {
             .unwrap();
     }
 
+    state
+        .local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+        .unwrap();
+    state
+        .local_notifica_avvisata_set("u2", "primo_rilevato:2026:produzione", "produzione", 456)
+        .unwrap();
+
     state.backup_now(None, None).unwrap();
+
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u1").unwrap()["suggerimento:2026:rimborso"],
+        123
+    );
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u2").unwrap()["primo_rilevato:2026:produzione"],
+        456
+    );
 
     assert!(state.record_get("notifica", "msg:old").unwrap().is_none());
     assert!(state.record_get("notifica", "msg:fresh").unwrap().is_some());
@@ -5317,16 +5410,19 @@ fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
         .unwrap();
 
     state.reset_leggero().unwrap();
+    drop(state);
 
-    // Torna all'onboarding, ma stesso device_id e dati di business conservati.
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+
+    // Torna all'onboarding anche dopo un riavvio, ma conserva device_id e dati di business.
     let boot = state.bootstrap();
     assert!(!boot.onboarded);
     assert!(boot.data_dir.is_none());
     assert!(!boot.reconnect_required);
     assert_eq!(boot.device_id, device, "stesso dispositivo");
     assert!(
-        !app.path().exists(),
-        "il reset leggero deve cancellare tutta la cartella AppData"
+        app.path().join("config.json").is_file(),
+        "il reset leggero deve ricreare soltanto la configurazione minima"
     );
     assert!(
         Path::new(data_dir).join("events").exists(),
@@ -5375,6 +5471,33 @@ fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
 }
 
 #[test]
+fn ricostruzione_tecnica_conserva_avvisi_di_tutti_gli_utenti_reset_li_elimina() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+    state
+        .local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+        .unwrap();
+    state
+        .local_notifica_avvisata_set("u2", "primo_rilevato:2026:produzione", "produzione", 456)
+        .unwrap();
+
+    state.ricostruisci_proiezione_locale().unwrap();
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u1").unwrap()["suggerimento:2026:rimborso"],
+        123
+    );
+    assert_eq!(
+        state.local_notifica_avvisata_get_map("u2").unwrap()["primo_rilevato:2026:produzione"],
+        456
+    );
+
+    state.reset_leggero().unwrap();
+    assert!(!app.path().join("projection.sqlite").exists());
+}
+
+#[test]
 fn reset_leggero_torna_all_onboarding_anche_se_il_bootstrap_non_apre_il_motore() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -5396,8 +5519,8 @@ fn reset_leggero_torna_all_onboarding_anche_se_il_bootstrap_non_apre_il_motore()
     assert!(!boot.reconnect_required);
     assert_eq!(boot.device_id, device);
     assert!(
-        !app.path().exists(),
-        "la cartella locale deve essere rimossa"
+        app.path().join("config.json").is_file(),
+        "la configurazione minima deve sopravvivere al reset"
     );
     assert!(
         data.path().exists(),
@@ -5416,10 +5539,12 @@ fn reset_leggero_non_cancella_un_profilo_condiviso_con_un_altro_device() {
     let id_a = onboarda(&a, data_dir, "Anna");
 
     b.open_data_dir(data_dir).unwrap();
+    // I test girano sullo stesso hostname: `create` evita intenzionalmente la
+    // riadozione univoca e simula una seconda postazione fisica con lo stesso profilo.
     let id_b = b
         .finish_onboarding(FinishOnboarding {
             data_dir: data_dir.to_string(),
-            mode: "use".into(),
+            mode: "create".into(),
             user_id: Some(id_a.user_id.clone()),
             nome: "Anna".into(),
             avatar_tipo: "iniziali".into(),
@@ -5484,8 +5609,11 @@ fn ritiro_dispositivo_corrente_genera_nuovo_device_e_conserva_i_dati() {
         "il ritiro corrente non deve lasciare il processo bloccato"
     );
 
+    drop(state);
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
     let boot = state.bootstrap();
     assert!(!boot.onboarded);
+    assert!(boot.reconnect_required);
     assert!(boot.data_dir.is_none());
     assert_ne!(
         boot.device_id, id.device_id,
@@ -5506,8 +5634,8 @@ fn ritiro_dispositivo_corrente_genera_nuovo_device_e_conserva_i_dati() {
         "il ritiro del PC corrente rimuove la proiezione locale"
     );
     assert!(
-        !app.path().exists(),
-        "il ritiro del PC corrente deve cancellare tutta la cartella AppData"
+        app.path().join("config.json").is_file(),
+        "il ritiro deve conservare il nuovo device id e lo stato locale durevole"
     );
 
     let users = state
@@ -5748,10 +5876,12 @@ fn ritiro_di_un_device_non_cancella_un_utente_usato_da_un_altro_device() {
     let id_a = onboarda(&a, data_dir, "Anna");
 
     b.open_data_dir(data_dir).unwrap();
+    // I test girano sullo stesso hostname: `create` evita intenzionalmente la
+    // riadozione univoca e simula una seconda postazione fisica con lo stesso profilo.
     let id_b = b
         .finish_onboarding(FinishOnboarding {
             data_dir: data_dir.to_string(),
-            mode: "use".into(),
+            mode: "create".into(),
             user_id: Some(id_a.user_id.clone()),
             nome: "Anna".into(),
             avatar_tipo: "iniziali".into(),
@@ -5817,9 +5947,17 @@ fn reset_completo_riporta_allo_stato_iniziale() {
         "il reset completo rimuove la proiezione locale"
     );
     assert!(
-        !app.path().exists(),
-        "il reset completo deve cancellare tutta la cartella AppData"
+        app.path().join("config.json").is_file(),
+        "il reset completo deve lasciare soltanto la nuova identità locale"
     );
+
+    let nuovo_device = boot.device_id;
+    drop(state);
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    let dopo_riavvio = state.bootstrap();
+    assert!(!dopo_riavvio.onboarded);
+    assert!(!dopo_riavvio.reconnect_required);
+    assert_eq!(dopo_riavvio.device_id, nuovo_device);
 
     // Si può ri-onboardare da zero: la cartella contiene solo la barriera,
     // nessun utente o dato di lavoro del dataset precedente.
@@ -6048,6 +6186,11 @@ fn quattro_postazioni_convergono_dopo_restore_ritiro_remoto_e_reset_completo() {
             .is_some());
     }
 
+    for state in [&a, &b, &c, &d] {
+        state
+            .local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+            .unwrap();
+    }
     let coordinamento = a.restore_prepare().unwrap();
     a.ripristina_backup(
         &backup.path,
@@ -6056,6 +6199,7 @@ fn quattro_postazioni_convergono_dopo_restore_ritiro_remoto_e_reset_completo() {
         Some(&coordinamento.restore_id),
     )
     .unwrap();
+    assert!(a.local_notifica_avvisata_get_map("u1").unwrap().is_empty());
 
     // Le tre postazioni remote non devono scambiare il payload del restore per
     // una cartella sparita o una sessione revocata. Prima vedono `ready`, poi
@@ -6070,6 +6214,10 @@ fn quattro_postazioni_convergono_dopo_restore_ritiro_remoto_e_reset_completo() {
             SyncPollOutcome::Rebuild("restore")
         ));
         state.ricostruisci_proiezione_locale().unwrap();
+        assert!(state
+            .local_notifica_avvisata_get_map("u1")
+            .unwrap()
+            .is_empty());
         let dopo = state.bootstrap();
         assert_eq!(dopo.restore_status, "none");
         assert!(dopo.onboarded);
@@ -11089,7 +11237,7 @@ fn suggerimenti_rispettano_anno_di_lavoro_sulle_code_aperte() {
 }
 
 #[test]
-fn riconnessione_onboarding_riadotta_lo_stesso_device_senza_duplicare() {
+fn riconnessione_onboarding_dopo_riavvio_riadotta_lo_stesso_device_senza_duplicare() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
     let app = tempfile::tempdir().unwrap();
@@ -11097,8 +11245,21 @@ fn riconnessione_onboarding_riadotta_lo_stesso_device_senza_duplicare() {
     let id_iniziale = onboarda(&state, data_dir, "Luca");
 
     // Simula la disconnessione della configurazione locale
+    state
+        .local_notifica_avvisata_set("u1", "suggerimento:2026:rimborso", "rimborso", 123)
+        .unwrap();
     state.disconnetti_configurazione_locale().unwrap();
+    assert!(!app.path().join("projection.sqlite").exists());
     assert!(state.bootstrap().reconnect_required);
+    drop(state);
+
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    let boot = state.bootstrap();
+    assert!(
+        boot.reconnect_required,
+        "lo stato di riconnessione deve sopravvivere"
+    );
+    assert_eq!(boot.device_id, id_iniziale.device_id);
 
     // Riconnessione tramite onboarding scegliendo "use" dello stesso utente
     state.open_data_dir(data_dir).unwrap();
@@ -11122,4 +11283,174 @@ fn riconnessione_onboarding_riadotta_lo_stesso_device_senza_duplicare() {
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].device_id, id_iniziale.device_id);
     assert!(devices[0].is_current);
+}
+
+#[test]
+fn onboarding_con_device_omonimi_non_ne_riadotta_uno_arbitrariamente() {
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let app_a = tempfile::tempdir().unwrap();
+    let app_b = tempfile::tempdir().unwrap();
+    let app_c = tempfile::tempdir().unwrap();
+
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    let id_a = onboarda(&a, data_dir, "Luca");
+
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    b.open_data_dir(data_dir).unwrap();
+    let id_b = b
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "create".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+    assert_ne!(id_a.device_id, id_b.device_id);
+
+    let c = AppState::init(app_c.path().to_path_buf()).unwrap();
+    let nuovo_device = c.bootstrap().device_id;
+    c.open_data_dir(data_dir).unwrap();
+    let id_c = c
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "use".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+
+    assert_eq!(id_c.device_id, nuovo_device, "due candidati sono ambigui");
+    assert_ne!(id_c.device_id, id_a.device_id);
+    assert_ne!(id_c.device_id, id_b.device_id);
+
+    a.disconnetti_configurazione_locale().unwrap();
+    drop(a);
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    a.open_data_dir(data_dir).unwrap();
+    let id_a_riconnesso = a
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "use".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        id_a_riconnesso.device_id, id_a.device_id,
+        "l'identità locale esatta prevale anche con candidati omonimi"
+    );
+}
+
+#[test]
+fn onboarding_senza_candidato_omonimo_mantiene_il_nuovo_device() {
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let app_a = tempfile::tempdir().unwrap();
+    let app_b = tempfile::tempdir().unwrap();
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    let id_a = onboarda(&a, data_dir, "Anna");
+    a.record_update(
+        "device",
+        &id_a.device_id,
+        campi(&[("nome", json!("POSTAZIONE-DIVERSA"))]),
+    )
+    .unwrap();
+
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    let nuovo_device = b.bootstrap().device_id;
+    b.open_data_dir(data_dir).unwrap();
+    let id_b = b
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "use".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Anna".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+
+    assert_eq!(id_b.device_id, nuovo_device);
+    assert_ne!(id_b.device_id, id_a.device_id);
+    assert_eq!(b.sync_overview().unwrap().devices.len(), 2);
+}
+
+#[test]
+fn onboarding_dopo_ritiro_non_riadotta_un_altro_device_omonimo() {
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let app_a = tempfile::tempdir().unwrap();
+    let app_b = tempfile::tempdir().unwrap();
+
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    let id_a = onboarda(&a, data_dir, "Luca");
+
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    b.open_data_dir(data_dir).unwrap();
+    let id_b = b
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "create".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+    b.ritira_dispositivo(&id_b.device_id).unwrap();
+    let nuovo_device = b.bootstrap().device_id;
+    drop(b);
+
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    assert!(b.bootstrap().reconnect_required);
+    b.open_data_dir(data_dir).unwrap();
+    let riconnesso = b
+        .finish_onboarding(FinishOnboarding {
+            data_dir: data_dir.to_string(),
+            mode: "use".into(),
+            user_id: Some(id_a.user_id.clone()),
+            nome: "Luca".into(),
+            avatar_tipo: "iniziali".into(),
+            avatar_valore: String::new(),
+        })
+        .unwrap();
+
+    assert_eq!(riconnesso.device_id, nuovo_device);
+    assert_ne!(riconnesso.device_id, id_a.device_id);
+}
+
+#[test]
+fn config_legacy_normalizza_lo_stato_onboarding() {
+    let app = tempfile::tempdir().unwrap();
+    fs::write(
+        app.path().join("config.json"),
+        serde_json::to_vec(&json!({
+            "device_id": "PC-LEGACY",
+            "data_dir": "C:/Dati",
+            "user_id": "utente-legacy"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        load_config(app.path()).unwrap().onboarding_state,
+        LocalOnboardingState::Configured
+    );
+
+    fs::write(
+        app.path().join("config.json"),
+        serde_json::to_vec(&json!({ "device_id": "PC-FRESH" })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        load_config(app.path()).unwrap().onboarding_state,
+        LocalOnboardingState::Fresh
+    );
 }

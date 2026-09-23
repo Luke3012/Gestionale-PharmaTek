@@ -1,8 +1,9 @@
 //! Proiezione locale (read model) costruita dal fold degli eventi.
 //!
 //! È un database **SQLite in `%APPDATA%\PharmaTek\`** (mai dentro OneDrive: un file
-//! DB sincronizzato da più PC è la causa classica di corruzione). Si può cancellare
-//! e rigenerare in qualunque momento ripiegando gli eventi (event sourcing).
+//! DB sincronizzato da più PC è la causa classica di corruzione). La parte
+//! replicata si rigenera ripiegando gli eventi; `local_notifiche_avvisate` invece
+//! va preservata nelle ricostruzioni tecniche perché non compare nei log.
 //!
 //! Lo schema è **generico per entità**: ogni record è una riga in `records` con i
 //! valori dei campi in un blob JSON. Il merge è **per-campo Last-Write-Wins** usando
@@ -71,6 +72,9 @@ pub struct Record {
 pub struct Projection {
     conn: Connection,
 }
+
+/// Stato del solo notificatore locale, escluso dai log e dagli snapshot condivisi.
+pub type LocalNotificaAvvisata = (String, String, String, i64);
 
 impl Projection {
     /// Apre (creando se serve) il DB SQLite al percorso dato.
@@ -768,19 +772,26 @@ impl Projection {
         Ok(())
     }
 
-    /// Svuota completamente la proiezione (usato dal reset). La connessione resta
-    /// valida: più affidabile, su Windows, della cancellazione del file (che può
-    /// restare agganciato finché il processo non rilascia l'handle).
-    pub fn wipe(&self) -> Result<()> {
+    /// Svuota la sola proiezione replicata, conservando gli avvisi locali.
+    pub fn wipe_replicated(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM records;
              DELETE FROM field_clocks;
              DELETE FROM applied_events;
              DELETE FROM log_offsets;
              DELETE FROM purged;
-             DELETE FROM watermarks;
-             DELETE FROM local_notifiche_avvisate;",
+             DELETE FROM watermarks;",
         )?;
+        Ok(())
+    }
+
+    /// Svuota completamente la proiezione (usato dal reset). La connessione resta
+    /// valida: più affidabile, su Windows, della cancellazione del file (che può
+    /// restare agganciato finché il processo non rilascia l'handle).
+    pub fn wipe(&self) -> Result<()> {
+        self.wipe_replicated()?;
+        self.conn
+            .execute("DELETE FROM local_notifiche_avvisate", [])?;
         Ok(())
     }
 
@@ -825,14 +836,47 @@ impl Projection {
 
     // ---- Notifiche avvisate locali (non replicate) ----
 
+    pub fn export_local_notifiche_avvisate(&self) -> Result<Vec<LocalNotificaAvvisata>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT user_id, chiave, tipo, ts FROM local_notifiche_avvisate ORDER BY user_id, chiave",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn import_local_notifiche_avvisate(&self, rows: &[LocalNotificaAvvisata]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (user_id, chiave, tipo, ts) in rows {
+            tx.execute(
+                "INSERT INTO local_notifiche_avvisate(user_id, chiave, tipo, ts)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(user_id, chiave) DO UPDATE SET tipo = excluded.tipo, ts = excluded.ts",
+                params![user_id, chiave, tipo, ts],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_local_suggerimenti(&self, user_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM local_notifiche_avvisate
+             WHERE user_id = ?1 AND (chiave LIKE 'suggerimento:%'
+                                    OR chiave LIKE 'primo_rilevato:%')",
+            params![user_id],
+        )?;
+        Ok(())
+    }
+
     /// Legge la mappa degli ultimi avvisi emessi per un utente: chiave -> timestamp ms.
     pub fn local_notifica_avvisata_get_map(
         &self,
         user_id: &str,
     ) -> Result<std::collections::HashMap<String, i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT chiave, ts FROM local_notifiche_avvisate WHERE user_id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT chiave, ts FROM local_notifiche_avvisate WHERE user_id = ?1")?;
         let rows = stmt.query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let mut map = std::collections::HashMap::new();
         for r in rows {
@@ -1670,7 +1714,12 @@ mod tests {
             EventBody::Created,
         );
         p.apply(&ev1).unwrap();
-        assert!(!p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+        assert!(
+            !p.get("suggerimento_stato", "sugg-1")
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
 
         // 2. Cancellazione a t=20
         let ev2 = Event::new(
@@ -1682,7 +1731,12 @@ mod tests {
             EventBody::Deleted,
         );
         p.apply(&ev2).unwrap();
-        assert!(p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+        assert!(
+            p.get("suggerimento_stato", "sugg-1")
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
 
         // 3. Un vecchio Created fuori ordine a t=15 NON deve resuscitare il record
         let ev_old = Event::new(
@@ -1694,7 +1748,12 @@ mod tests {
             EventBody::Created,
         );
         p.apply(&ev_old).unwrap();
-        assert!(p.get("suggerimento_stato", "sugg-1").unwrap().unwrap().deleted);
+        assert!(
+            p.get("suggerimento_stato", "sugg-1")
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
 
         // 4. Una ricreazione successiva a t=30 riattiva il record (deleted = false)
         let ev3 = Event::new(
@@ -1752,11 +1811,36 @@ mod tests {
 
         // Utente 2 non è stato toccato
         let map_u2_intatto = p.local_notifica_avvisata_get_map("u2").unwrap();
-        assert_eq!(map_u2_intatto.get("suggerimento:2026:provvigione"), Some(&500));
+        assert_eq!(
+            map_u2_intatto.get("suggerimento:2026:provvigione"),
+            Some(&500)
+        );
 
         // Verifica che l'export per snapshot sia completamente vuoto di queste tabelle locali
         let exported = p.export().unwrap();
         assert!(exported.records.is_empty());
     }
-}
 
+    #[test]
+    fn wipe_tecnico_conserva_tutti_gli_utenti_e_wipe_completo_li_elimina() {
+        let p = Projection::open_in_memory().unwrap();
+        let righe = [
+            ("u1", "suggerimento:2026:rimborso", "rimborso", 100),
+            ("u1", "primo_rilevato:2026:rimborso", "rimborso", 50),
+            ("u2", "suggerimento:2026:produzione", "produzione", 200),
+        ];
+        for (u, k, t, ts) in righe {
+            p.local_notifica_avvisata_set(u, k, t, ts).unwrap();
+        }
+        let salvate = p.export_local_notifiche_avvisate().unwrap();
+        p.wipe_replicated().unwrap();
+        assert_eq!(p.export_local_notifiche_avvisate().unwrap(), salvate);
+        p.delete_local_suggerimenti("u1").unwrap();
+        assert!(p.local_notifica_avvisata_get_map("u1").unwrap().is_empty());
+        assert_eq!(p.local_notifica_avvisata_get_map("u2").unwrap().len(), 1);
+        p.import_local_notifiche_avvisate(&salvate).unwrap();
+        assert_eq!(p.export_local_notifiche_avvisate().unwrap(), salvate);
+        p.wipe().unwrap();
+        assert!(p.export_local_notifiche_avvisate().unwrap().is_empty());
+    }
+}

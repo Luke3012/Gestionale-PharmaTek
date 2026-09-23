@@ -933,12 +933,32 @@ pub fn whatsapp_stato_get(
 pub fn whatsapp_interseca_overlay() -> bool {
     #[cfg(target_os = "windows")]
     {
-        crate::app::whatsapp_windows::whatsapp_interseca_overlay()
+        crate::app::whatsapp_windows::overlay_invio_sovrapposto()
     }
     #[cfg(not(target_os = "windows"))]
     {
         false
     }
+}
+
+#[tauri::command]
+pub fn overlay_invio_attivo() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        crate::app::whatsapp_windows::overlay_invio_attivo()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+#[tauri::command]
+pub fn overlay_imposta_visibilita_desiderata(visibile: bool) {
+    #[cfg(target_os = "windows")]
+    crate::app::whatsapp_windows::overlay_imposta_visibilita_desiderata(visibile);
+    #[cfg(not(target_os = "windows"))]
+    let _ = visibile;
 }
 
 #[cfg(target_os = "windows")]

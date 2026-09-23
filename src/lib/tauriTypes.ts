@@ -852,7 +852,7 @@ export interface SpedizioneRiga {
   clienteNome: string;
   /** Linea dell'ordine; numero vaccino e colli sono propri dell'Immunoterapia. */
   categoria?: string;
-  /** Persona a cui appartiene il vaccino; usata per raggruppare la distinta CORRIERE_A. */
+  /** Persona a cui appartiene il vaccino, mostrata nei dettagli del collo. CORRIERE_A mantiene una riga per spedizione. */
   paziente: string;
   /** Numero/lotto del singolo vaccino (per la rimozione singola e il dettaglio). FASE 7. */
   numero: string;
