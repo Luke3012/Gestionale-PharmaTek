@@ -80,6 +80,7 @@ import {
   type Suggerimenti,
 } from "./datiProduzione";
 import { gruppiRigheIncomplete } from "./gruppiProduzione";
+import { numeriAnteprimaProduzione, ultimoNumeroProduzione } from "./numerazioneAnteprima";
 import { CompilaProduzioneModal, type CompilaTarget } from "./CompilaProduzioneModal";
 import { InProduzioneFlourish } from "./InProduzioneFlourish";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
@@ -537,6 +538,10 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   });
   // Seme del N° produzione: ora condiviso fra i PC (modello dati), non più per-PC.
   const [numeroProduzioneBase, setNumeroProduzioneBase] = useState(1);
+  const ultimoNumeroGlobale = useMemo(
+    () => ultimoNumeroProduzione(righe, numeroProduzioneBase),
+    [righe, numeroProduzioneBase],
+  );
   useRicaricaSuEventi(EVENTI_BASE_PRODUZIONE, async () => {
     try {
       setNumeroProduzioneBase(await leggiBaseProduzione());
@@ -1052,14 +1057,21 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
    * vengono assegnati e persistiti dal backend al salvataggio del file. */
   function rowsLaboratorio(g: GruppoLotto, dataPrev: string): RigaLaboratorioPreview[] {
     const out: RigaLaboratorioPreview[] = [];
-    let n = numeroProduzioneBase;
-    for (const o of g.ordini.filter((x) => !isDiagnostica(x))) {
+    // La lista ordini e le righe arrivano in ordine di creazione; l'export ordina
+    // prima per data di produzione e poi conserva quell'ordine a parità di data.
+    const ordini = g.ordini
+      .filter((x) => !isDiagnostica(x))
+      .sort((a, b) => a.dataProduzione.localeCompare(b.dataProduzione));
+    const righeAnteprima = ordini.flatMap((o) => g.righeLotto.get(o.id) ?? []);
+    const numeri = numeriAnteprimaProduzione(righeAnteprima, ultimoNumeroGlobale);
+    let indiceNumero = 0;
+    for (const o of ordini) {
       const rgh = g.righeLotto.get(o.id) ?? [];
       rgh.forEach((r, i) => {
         const all = Array.isArray(r.data.allergeni) ? (r.data.allergeni as string[]) : [];
         out.push({
           acconto: i === 0 ? o.acconto : "",
-          numero: n++,
+          numero: numeri[indiceNumero++],
           dataInvio: ((r.data.data_produzione as string) || "").trim() || o.dataProduzione || g.dataInvio,
           agente: o.agenteNome,
           medico: o.medicoNome || o.clienteNome,
