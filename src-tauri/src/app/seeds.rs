@@ -43,6 +43,7 @@ impl AppState {
                 .and_then(|_| ensure_prodotti_diagnostica(&rt.engine))
                 .and_then(|_| ensure_regole_prezzo_default(&rt.engine))
                 .and_then(|_| ensure_parametri_globali_default(&rt.engine))
+                .and_then(|_| production::ensure_base_produzione_default(&rt.engine))
             {
                 eprintln!("seed anagrafiche default fallito: {err}");
             }

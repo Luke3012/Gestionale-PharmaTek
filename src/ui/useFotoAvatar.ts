@@ -21,5 +21,11 @@ export function useFotoAvatar(setAvatarTipo: Dispatch<SetStateAction<AvatarTipo>
     }
   }
 
-  return { fotoBytes, fotoPreview, fileRef, caricaFoto };
+  function resettaFoto() {
+    setFotoBytes(null);
+    setFotoPreview(undefined);
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  return { fotoBytes, fotoPreview, fileRef, caricaFoto, resettaFoto };
 }

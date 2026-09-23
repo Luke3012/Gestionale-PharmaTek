@@ -8,6 +8,7 @@ export interface AnimatedAutoHeightProps {
   initialHeight?: number | null;
   className?: string;
   duration?: number;
+  headroom?: number;
 }
 
 export function AnimatedAutoHeight({
@@ -16,6 +17,7 @@ export function AnimatedAutoHeight({
   initialHeight = null,
   className,
   duration = 0.35,
+  headroom = 0,
 }: AnimatedAutoHeightProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | null>(() => initialHeight);
@@ -41,7 +43,9 @@ export function AnimatedAutoHeight({
       }}
       style={{ overflow: "hidden", width: "100%" }}
     >
-      <div ref={contentRef}>{children}</div>
+      <div ref={contentRef} style={headroom > 0 ? { paddingBottom: headroom } : undefined}>
+        {children}
+      </div>
     </motion.div>
   );
 }

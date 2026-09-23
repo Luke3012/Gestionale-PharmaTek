@@ -160,6 +160,12 @@ function proprietaEsportazioneDistinta(distinta: Distinta) {
   };
 }
 
+const DISTINTA_FALLBACK: Distinta = {
+  nome: "",
+  profilo: "gls",
+  sped: [],
+};
+
 /** Raggruppa spedizioni per corriere → una distinta per corriere (ordinate per nome). */
 function distintePerCorriere(sped: Spedizione[]): Distinta[] {
   const map = new Map<string, { profilo: string; sped: Spedizione[] }>();
@@ -241,122 +247,93 @@ function Vuoto({
 function DistintaGruppo({
   corrieri,
   compatto,
+  onApriDistinta,
 }: {
   corrieri: Distinta[];
   compatto: boolean;
+  onApriDistinta: (d: Distinta) => void;
 }) {
-  const [scelta, setScelta] = useState<string | null>(null);
   if (corrieri.length === 0) return null;
-
-  const corriereScelto = scelta ? corrieri.find((d) => d.nome === scelta) : null;
 
   if (corrieri.length === 1) {
     const d = corrieri[0];
-    return (
-      <>
-        {compatto ? (
-          <Tooltip label="Crea distinta" withArrow>
-            <ActionIcon
-              size={36}
-              variant="light"
-              color="accent"
-              onClick={(e) => {
-                e.stopPropagation();
-                setScelta(d.nome);
-              }}
-              aria-label="Crea distinta"
-            >
-              <IconFileExport size={18} />
-            </ActionIcon>
-          </Tooltip>
-        ) : (
-          <Button
-            size="compact-sm"
-            variant="light"
-            color="accent"
-            className="pt-azione-adattiva"
-            leftSection={<IconFileExport size={16} />}
-            onClick={(e) => {
-              e.stopPropagation();
-              setScelta(d.nome);
-            }}
-            aria-label="Crea distinta"
-          >
-            <span className="pt-azione-adattiva-label">Crea distinta</span>
-          </Button>
-        )}
-        {corriereScelto && (
-          <EsportaTabella<ReturnType<typeof rigaCorriere>>
-            key={corriereScelto.nome}
-            senzaTrigger
-            aperto
-            onApertoChange={(v) => {
-              if (!v) setScelta(null);
-            }}
-            {...proprietaEsportazioneDistinta(corriereScelto)}
-          />
-        )}
-      </>
+    return compatto ? (
+      <Tooltip label="Crea distinta" withArrow>
+        <ActionIcon
+          size={36}
+          variant="light"
+          color="accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onApriDistinta(d);
+          }}
+          aria-label="Crea distinta"
+        >
+          <IconFileExport size={18} />
+        </ActionIcon>
+      </Tooltip>
+    ) : (
+      <Button
+        size="compact-sm"
+        variant="light"
+        color="accent"
+        className="pt-azione-adattiva"
+        leftSection={<IconFileExport size={16} />}
+        onClick={(e) => {
+          e.stopPropagation();
+          onApriDistinta(d);
+        }}
+        aria-label="Crea distinta"
+      >
+        <span className="pt-azione-adattiva-label">Crea distinta</span>
+      </Button>
     );
   }
 
   // Più corrieri nello stesso gruppo (unito): si sceglie quale distinta generare.
   return (
-    <>
-      <Tooltip label="Crea distinta" withArrow>
-        <Box style={{ display: "inline-block" }}>
-          <Menu position="bottom-end" withinPortal shadow="md">
-            <Menu.Target>
-              {compatto ? (
-                <ActionIcon
-                  size={36}
-                  variant="light"
-                  color="accent"
-                  onClick={(e) => e.stopPropagation()}
-                  aria-label="Crea distinta"
-                >
-                  <IconFileExport size={18} />
-                </ActionIcon>
-              ) : (
-                <Button
-                  size="compact-sm"
-                  variant="light"
-                  color="accent"
-                  className="pt-azione-adattiva"
-                  leftSection={<IconFileExport size={16} />}
-                  rightSection={<IconChevronDown size={14} />}
-                  onClick={(e) => e.stopPropagation()}
-                  aria-label="Crea distinta"
-                >
-                  <span className="pt-azione-adattiva-label">
-                    Crea distinta
-                  </span>
-                </Button>
-              )}
-            </Menu.Target>
-            <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-              <Menu.Label>Quale distinta generare?</Menu.Label>
-              {corrieri.map((d) => (
-                <Menu.Item key={d.nome} onClick={() => setScelta(d.nome)}>
-                  Distinta {d.nome} ({d.sped.length})
-                </Menu.Item>
-              ))}
-            </Menu.Dropdown>
-          </Menu>
-        </Box>
-      </Tooltip>
-      {corriereScelto && (
-        <EsportaTabella<ReturnType<typeof rigaCorriere>>
-          key={corriereScelto.nome}
-          senzaTrigger
-          aperto
-          onApertoChange={(v) => {
-            if (!v) setScelta(null);
-          }}
-          {...proprietaEsportazioneDistinta(corriereScelto)}
-        />
-      )}
-    </>
+    <Tooltip label="Crea distinta" withArrow>
+      <Box style={{ display: "inline-block" }}>
+        <Menu position="bottom-end" withinPortal shadow="md">
+          <Menu.Target>
+            {compatto ? (
+              <ActionIcon
+                size={36}
+                variant="light"
+                color="accent"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Crea distinta"
+              >
+                <IconFileExport size={18} />
+              </ActionIcon>
+            ) : (
+              <Button
+                size="compact-sm"
+                variant="light"
+                color="accent"
+                className="pt-azione-adattiva"
+                leftSection={<IconFileExport size={16} />}
+                rightSection={<IconChevronDown size={14} />}
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Crea distinta"
+              >
+                <span className="pt-azione-adattiva-label">
+                  Crea distinta
+                </span>
+              </Button>
+            )}
+          </Menu.Target>
+          <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+            <Menu.Label>Quale distinta generare?</Menu.Label>
+            {corrieri.map((d) => (
+              <Menu.Item key={d.nome} onClick={() => onApriDistinta(d)}>
+                Distinta {d.nome} ({d.sped.length})
+              </Menu.Item>
+            ))}
+          </Menu.Dropdown>
+        </Menu>
+      </Box>
+    </Tooltip>
   );
 }
 
@@ -393,22 +370,32 @@ function OffriDistinte({
 const DistintaGruppoLotto = memo(function DistintaGruppoLotto({
   spedizioni,
   compatto,
+  onApriDistinta,
 }: {
   spedizioni: Spedizione[];
   compatto: boolean;
+  onApriDistinta: (d: Distinta) => void;
 }) {
   const corrieri = useMemo(() => distintePerCorriere(spedizioni), [spedizioni]);
-  return <DistintaGruppo corrieri={corrieri} compatto={compatto} />;
+  return (
+    <DistintaGruppo
+      corrieri={corrieri}
+      compatto={compatto}
+      onApriDistinta={onApriDistinta}
+    />
+  );
 });
 
 const CellaAzioniLotto = memo(function CellaAzioniLotto({
   g,
   inRicerca,
   onAnnullaLotto,
+  onApriDistinta,
 }: {
   g: GruppoSped;
   inRicerca: boolean;
   onAnnullaLotto: (g: GruppoSped) => void;
+  onApriDistinta: (d: Distinta) => void;
 }) {
   return (
     <Group
@@ -418,7 +405,11 @@ const CellaAzioniLotto = memo(function CellaAzioniLotto({
       justify="flex-end"
       onClick={(e) => e.stopPropagation()}
     >
-      <DistintaGruppoLotto spedizioni={g.spedizioni} compatto={false} />
+      <DistintaGruppoLotto
+        spedizioni={g.spedizioni}
+        compatto={false}
+        onApriDistinta={onApriDistinta}
+      />
       {!inRicerca && (
         <Tooltip label="Annulla tutto (ripristina da spedire)" withArrow>
           <ActionIcon
@@ -542,12 +533,13 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
   // Corrieri della spedizione appena creata: alimentano il bottone «crea distinta» dentro
   // la fioritura «Spedito!» (così la si può stampare subito, seguendo il flusso esistente).
   const [distintaSpedito, setDistintaSpedito] = useState<Distinta[]>([]);
-  // Distinta scelta dalla fioritura «Spedito!»: il suo modale di export vive a livello di
-  // PAGINA (non dentro la card), così sopravvive alla chiusura della card e non resta dietro
-  // l'overlay della fioritura.
-  const [distintaFlourish, setDistintaFlourish] = useState<Distinta | null>(
-    null,
-  );
+  // Distinta da esportare (singola riga, selezione multipla toolbar o fioritura «Spedito!»):
+  // il modale EsportaTabella vive sempre montato a livello di PAGINA per garantire
+  // le animazioni di fade in/out fluide (e il rispetto di "Riduci animazioni").
+  const [distintaExport, setDistintaExport] = useState<Distinta | null>(null);
+  const apriDistinta = useCallback((d: Distinta) => {
+    setDistintaExport(d);
+  }, []);
   const [nuoviLotti, setNuoviLotti] = useState<Set<string>>(new Set());
   // Lotti espansi nelle «Effettuate» (controllato): così, dopo una creazione, il nuovo
   // gruppo si apre da solo mostrando i colli/righe risultanti, come in Produzione.
@@ -751,7 +743,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       setSpedizioneDaAprire(deepLink.apriId);
       setCreaTarget(null);
       setEditor(null);
-      setDistintaFlourish(null);
+      setDistintaExport(null);
       setSpedito(false);
       resettaCerca("");
       setDal("");
@@ -1536,11 +1528,12 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             g={g}
             inRicerca={inRicercaRef.current}
             onAnnullaLotto={annullaLotto}
+            onApriDistinta={apriDistinta}
           />
         ),
       },
     ],
-    [annullaLotto],
+    [annullaLotto, apriDistinta],
   );
 
   const azioni =
@@ -1639,14 +1632,33 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
           </Tooltip>
         )}
         {distinte.map((d) => (
-          <EsportaTabella<ReturnType<typeof rigaCorriere>>
+          <Tooltip
             key={d.nome}
-            variante="bottone"
-            etichetta={`Distinta ${d.nome} (${d.sped.length})`}
-            etichettaCompatta={d.nome}
-            adattivo
-            {...proprietaEsportazioneDistinta(d)}
-          />
+            label={`Distinta ${d.nome} (${d.sped.length})`}
+            withArrow
+          >
+            <Box
+              className="pt-azione-adattiva-wrap"
+              style={{ display: "inline-block", minWidth: 0 }}
+            >
+              <Button
+                variant="light"
+                color="accent"
+                className="pt-azione-adattiva"
+                leftSection={<IconFileExport size={18} />}
+                onClick={() => apriDistinta(d)}
+                aria-label={`Distinta ${d.nome} (${d.sped.length})`}
+                style={{ flexShrink: 0 }}
+              >
+                <span className="pt-azione-adattiva-label">
+                  Distinta {d.nome} ({d.sped.length})
+                </span>
+                <span className="pt-azione-adattiva-label-compatta">
+                  {d.nome}
+                </span>
+              </Button>
+            </Box>
+          </Tooltip>
         ))}
       </Group>
     ) : null;
@@ -1668,25 +1680,22 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
                   // Chiudi la card e apri il modale di export a livello di pagina.
                   setSpedito(false);
                   setDistintaSpedito([]);
-                  setDistintaFlourish(d);
+                  apriDistinta(d);
                 }}
               />
             ) : undefined
           }
         />
 
-        {/* Modale di export della distinta scelta dalla fioritura (a livello di pagina). */}
-        {distintaFlourish && (
-          <EsportaTabella<ReturnType<typeof rigaCorriere>>
-            key={distintaFlourish.nome}
-            senzaTrigger
-            aperto
-            onApertoChange={(v) => {
-              if (!v) setDistintaFlourish(null);
-            }}
-            {...proprietaEsportazioneDistinta(distintaFlourish)}
-          />
-        )}
+        {/* Modale di export distinta centralizzato a livello di pagina: sempre montato per fade in/out fluido */}
+        <EsportaTabella<ReturnType<typeof rigaCorriere>>
+          senzaTrigger
+          aperto={!!distintaExport}
+          onApertoChange={(v) => {
+            if (!v) setDistintaExport(null);
+          }}
+          {...proprietaEsportazioneDistinta(distintaExport ?? DISTINTA_FALLBACK)}
+        />
         <Group
           className={`pt-toolbar-responsive ${vista === "effettuate" ? "pt-spedizioni-toolbar-effettuate" : ""}`}
           justify="space-between"

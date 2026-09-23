@@ -1,7 +1,7 @@
 // Onboarding primo avvio (UI-SPEC §7.1). Ordine: Cartella → Utente → Avatar →
 // Riepilogo. La cartella viene per prima perché serve ad aprire il registro
 // condiviso e rilevare i nomi utente duplicati "mentre digiti".
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -20,26 +20,53 @@ import {
   IconCheck,
   IconFolder,
   IconFolderCheck,
+  IconSparkles,
   IconUserPlus,
 } from "@tabler/icons-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   api,
+  inTauri,
   type AvatarTipo,
   type Bootstrap,
   type Identity,
   type OnboardingMode,
   type UserDto,
 } from "../lib/tauri";
+import {
+  CHIAVE_SETUP_IMPOSTAZIONI_COMPLETATO,
+  impostazioniInizialiDaProporre,
+  usePrefs,
+} from "../lib/prefs";
+import { AnimatedAutoHeight } from "../ui/AnimatedAutoHeight";
 import { Avatar, aggiornaAvatarCache } from "../ui/Avatar";
 import { LogoMark, Wordmark } from "../ui/Brand";
 import { fadeSlide, useAnimazioniRidotte } from "../ui/motion";
 import { toast } from "../ui/toast/store";
 import { useFotoAvatar } from "../ui/useFotoAvatar";
 import { AzioniFotoAvatar, SceltePresetAvatar } from "../ui/ScelteAvatar";
+import {
+  ImpostazioniConsigliateStep,
+  valoriImpostazioniIniziali,
+  type ImpostazioneInizialeId,
+  type ScelteImpostazioniIniziali,
+} from "./ImpostazioniConsigliateStep";
 
-const PASSI = ["Cartella", "Utente", "Avatar", "Riepilogo"];
+type PassoOnboarding = "Cartella" | "Utente" | "Avatar" | "Impostazioni" | "Riepilogo";
+
+export function calcolaPassiOnboarding(mostraImpostazioni: boolean): PassoOnboarding[] {
+  return mostraImpostazioni
+    ? ["Cartella", "Utente", "Avatar", "Impostazioni", "Riepilogo"]
+    : ["Cartella", "Utente", "Avatar", "Riepilogo"];
+}
+
+export function passoVisibileOnboarding(
+  passoCorrente: PassoOnboarding,
+  passi: PassoOnboarding[]
+): PassoOnboarding {
+  return passi.includes(passoCorrente) ? passoCorrente : "Riepilogo";
+}
 
 export function selezioneDopoModificaNome(
   mode: OnboardingMode,
@@ -48,7 +75,19 @@ export function selezioneDopoModificaNome(
   return mode === "reconfigure" ? { mode, userId } : { mode: "create", userId: null };
 }
 
-export const profiloOnboardingModificabile = (mode: OnboardingMode): boolean => mode !== "use";
+export function avatarOnboardingCambiato(
+  mode: OnboardingMode,
+  originale: Pick<UserDto, "avatarTipo" | "avatarValore"> | undefined,
+  avatarTipo: AvatarTipo,
+  avatarValore: string,
+  fotoCaricata: boolean
+): boolean {
+  return mode === "use" && !!originale && (
+    avatarTipo !== originale.avatarTipo ||
+    avatarValore !== originale.avatarValore ||
+    (avatarTipo === "custom" && fotoCaricata)
+  );
+}
 
 export function Onboarding({
   boot,
@@ -58,8 +97,9 @@ export function Onboarding({
   onDone: (id: Identity) => void;
 }) {
   const ridotte = useAnimazioniRidotte();
-  const [step, setStep] = useState(0);
+  const [passoCorrente, setPassoCorrente] = useState<PassoOnboarding>("Cartella");
   const [dataDir, setDataDir] = useState<string | null>(boot.dataDir);
+  const [mostraConfermaCartella, setMostraConfermaCartella] = useState(!!boot.dataDir);
   const [users, setUsers] = useState<UserDto[]>([]);
   const [verificando, setVerificando] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{
@@ -76,7 +116,63 @@ export function Onboarding({
   const [avatarTipo, setAvatarTipo] = useState<AvatarTipo>("iniziali");
   const [avatarPreset, setAvatarPreset] = useState("p1");
   const [salvando, setSalvando] = useState(false);
-  const { fotoBytes, fotoPreview, fileRef, caricaFoto } = useFotoAvatar(setAvatarTipo);
+  const { fotoBytes, fotoPreview, fileRef, caricaFoto, resettaFoto } = useFotoAvatar(setAvatarTipo);
+
+  const { zoomUI, setZoomUI, ordineFinestra, setOrdineFinestra, sogliaSolleciti, setSogliaSolleciti } = usePrefs();
+  const [impostazioniDaProporre] = useState(() =>
+    impostazioniInizialiDaProporre({ zoomUI, ordineFinestra, sogliaSolleciti })
+  );
+  const [mostraImpostazioni, setMostraImpostazioni] = useState(true);
+  const mostraImpostazioniRef = useRef(true);
+  const [applicaImpostazioniScelte, setApplicaImpostazioniScelte] = useState(false);
+  const [impostazioniScelte, setImpostazioniScelte] = useState<ScelteImpostazioniIniziali>({
+    autostart: true,
+    zoom: true,
+    finestra: true,
+    solleciti: true,
+  });
+
+  function scegliImpostazione(id: ImpostazioneInizialeId, consigliata: boolean) {
+    setImpostazioniScelte((precedenti) => ({ ...precedenti, [id]: consigliata }));
+  }
+
+  useEffect(() => {
+    if (!impostazioniDaProporre) {
+      mostraImpostazioniRef.current = false;
+      setMostraImpostazioni(false);
+      setApplicaImpostazioniScelte(false);
+      return;
+    }
+    if (!inTauri) return;
+    let attivo = true;
+    void import("@tauri-apps/plugin-autostart")
+      .then(({ isEnabled }) => isEnabled())
+      .then((enabled) => {
+        if (attivo && enabled) {
+          mostraImpostazioniRef.current = false;
+          setMostraImpostazioni(false);
+          setApplicaImpostazioniScelte(false);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      attivo = false;
+    };
+  }, [impostazioniDaProporre]);
+
+  const passi = useMemo(() => calcolaPassiOnboarding(mostraImpostazioni), [mostraImpostazioni]);
+  const currentPasso = passoVisibileOnboarding(passoCorrente, passi);
+  const step = passi.indexOf(currentPasso);
+
+  function selezionaImpostazioniConsigliate() {
+    setApplicaImpostazioniScelte(true);
+    setPassoCorrente("Riepilogo");
+  }
+
+  function saltaImpostazioni() {
+    setApplicaImpostazioniScelte(false);
+    setPassoCorrente("Riepilogo");
+  }
 
   const duplicato = useMemo(
     () => users.find((u) => u.nome.trim().toLowerCase() === nome.trim().toLowerCase()),
@@ -91,6 +187,7 @@ export function Onboarding({
         title: "Scegli la cartella dati condivisa (PharmaTek-Data)",
       });
       if (typeof scelta !== "string") return;
+      setMostraConfermaCartella(false);
       setVerificando(true);
       setSyncProgress(null);
       let unlisten: (() => void) | undefined;
@@ -107,6 +204,7 @@ export function Onboarding({
       const esistenti = await api.openDataDir(scelta);
       if (unlisten) unlisten();
       setDataDir(scelta);
+      setMostraConfermaCartella(true);
       setUsers(esistenti);
       setSyncProgress(null);
       setVerificando(false);
@@ -119,6 +217,7 @@ export function Onboarding({
 
   function risolviDuplicato(scelta: OnboardingMode) {
     if (!duplicato) return;
+    resettaFoto();
     setMode(scelta);
     if (scelta === "use" || scelta === "reconfigure") {
       setUserId(duplicato.id);
@@ -131,6 +230,7 @@ export function Onboarding({
   }
 
   function creaNuovoUtente() {
+    resettaFoto();
     setMode("create");
     setUserId(null);
     setNome("");
@@ -138,15 +238,22 @@ export function Onboarding({
     setAvatarPreset("p1");
   }
 
+  const utenteSelezionato = mode === "use" ? users.find((utente) => utente.id === userId) : undefined;
   const userIdFinale = mode === "create" ? userId ?? createdUserId : userId!;
   const avatarValore =
-    avatarTipo === "preset" ? avatarPreset : avatarTipo === "custom" ? `${userIdFinale}.png` : "";
+    avatarTipo === "preset"
+      ? avatarPreset
+      : avatarTipo === "custom"
+        ? mode === "use" && !fotoBytes && utenteSelezionato?.avatarTipo === "custom"
+          ? utenteSelezionato.avatarValore
+          : `${userIdFinale}.png`
+        : "";
 
   async function conferma() {
     if (!dataDir) return;
     setSalvando(true);
     try {
-      const identity = await api.finishOnboarding({
+      let identity = await api.finishOnboarding({
         dataDir,
         mode,
         userId: mode === "create" ? userIdFinale : userId ?? undefined,
@@ -154,11 +261,48 @@ export function Onboarding({
         avatarTipo,
         avatarValore,
       });
-      if (mode !== "use" && avatarTipo === "custom" && fotoBytes) {
+      const avatarCambiato = avatarOnboardingCambiato(
+        mode, utenteSelezionato, avatarTipo, avatarValore, !!fotoBytes
+      );
+      if (avatarTipo === "custom" && fotoBytes) {
         await api.saveAvatar(identity.userId, fotoBytes);
         // Semina la cache avatar (come fa la modale Profilo): così la foto compare
         // SUBITO al primo load / schermo d'avvio, senza attendere la lettura da disco.
         if (fotoPreview) aggiornaAvatarCache(identity.userId, fotoPreview);
+      }
+      if (avatarCambiato) {
+        identity = await api.aggiornaProfilo(identity.nome, avatarTipo, avatarValore);
+      }
+      let impostazioniApplicate = true;
+      if (mostraImpostazioniRef.current && applicaImpostazioniScelte) {
+        const valori = valoriImpostazioniIniziali(impostazioniScelte);
+        setZoomUI(valori.zoomUI);
+        setOrdineFinestra(valori.ordineFinestra);
+        setSogliaSolleciti(valori.sogliaSolleciti);
+        if (inTauri) {
+          try {
+            const { enable, disable } = await import("@tauri-apps/plugin-autostart");
+            if (valori.autostart) {
+              await api.traySet(true);
+              try {
+                await enable();
+              } catch {
+                impostazioniApplicate = false;
+                await api.traySet(false).catch(() => {});
+              }
+            } else {
+              await disable();
+              await api.traySet(false);
+            }
+          } catch {
+            impostazioniApplicate = false;
+          }
+        }
+      }
+      if (impostazioniApplicate) {
+        try {
+          localStorage.setItem(CHIAVE_SETUP_IMPOSTAZIONI_COMPLETATO, "true");
+        } catch {}
       }
       onDone(identity);
     } catch (e) {
@@ -169,37 +313,52 @@ export function Onboarding({
   }
 
   const puoAvanzare =
-    step === 0
+    currentPasso === "Cartella"
       ? !!dataDir
-      : step === 1
+      : currentPasso === "Utente"
         ? nome.trim().length > 0 && (!duplicato || mode !== "create")
         : true;
 
   return (
-    <Center style={{ flex: 1, height: "100%", padding: 24, overflow: "auto" }}>
-      <Paper shadow="lg" radius="lg" withBorder p="xl" style={{ width: 560, maxWidth: "100%" }}>
-        <Group justify="space-between" mb="lg">
-          <Group gap="sm">
-            <LogoMark size={34} />
-            <Wordmark />
+    <Center style={{ flex: 1, height: "100%", padding: 20, overflow: "auto" }}>
+      <Paper
+        shadow="sm"
+        radius="lg"
+        withBorder
+        px="xl"
+        py="lg"
+        style={{
+          width: 560,
+          maxWidth: "100%",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        <Box style={{ flexShrink: 0 }}>
+          <Group justify="space-between" mb="md">
+            <Group gap="sm">
+              <LogoMark size={32} />
+              <Wordmark />
+            </Group>
+            <Text size="xs" c="dimmed">
+              Configurazione iniziale
+            </Text>
           </Group>
-          <Text size="xs" c="dimmed">
-            Configurazione iniziale
-          </Text>
-        </Group>
 
-        <Stepper current={step} />
+          <Stepper current={step} passi={passi} />
+        </Box>
 
-        <Box mt="xl" style={{ minHeight: 240 }}>
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={step}
-              variants={fadeSlide}
-              initial={ridotte ? false : "initial"}
-              animate="animate"
-              exit={ridotte ? undefined : "exit"}
-            >
-              {step === 0 && (
+        <Box mt="lg" style={{ flex: 1, minHeight: 0 }}>
+          <AnimatedAutoHeight duration={0.45} reducedMotion={ridotte} headroom={6}>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={currentPasso}
+                variants={fadeSlide}
+                initial={ridotte ? false : "initial"}
+                animate="animate"
+                exit={ridotte ? undefined : "exit"}
+              >
+              {currentPasso === "Cartella" && (
                 <Stack gap="md">
                   <Titolo
                     titolo="Cartella dati condivisa"
@@ -223,18 +382,9 @@ export function Onboarding({
                         color="accent"
                         animated
                       />
-                      <Group justify="space-between">
-                        <Text size="xs" c="dimmed">
-                          {syncProgress.phase}
-                        </Text>
-                        <Text size="xs" c="dimmed">
-                          {syncProgress.current.toLocaleString()} / {syncProgress.total.toLocaleString()} (
-                          {Math.min(100, Math.round((syncProgress.current / syncProgress.total) * 100))}%)
-                        </Text>
-                      </Group>
                     </Stack>
                   )}
-                  {dataDir && (
+                  {dataDir && mostraConfermaCartella && (
                     <Alert color="green" variant="light" icon={<IconCheck size={18} />}>
                       <Text size="sm" style={{ wordBreak: "break-all" }}>
                         {dataDir}
@@ -249,7 +399,7 @@ export function Onboarding({
                 </Stack>
               )}
 
-              {step === 1 && (
+              {currentPasso === "Utente" && (
                 <Stack gap="md">
                   <Titolo titolo="Chi sei?" sub="Il tuo nome serve a tracciare chi fa cosa nel registro condiviso." />
                   <TextInput
@@ -287,13 +437,13 @@ export function Onboarding({
                 </Stack>
               )}
 
-              {step === 2 && (
+              {currentPasso === "Avatar" && (
                 <Stack gap="md">
                   <Titolo
                     titolo="Foto profilo"
                     sub={
                       mode === "use"
-                        ? "Stai usando il profilo esistente senza modificarne l'avatar."
+                        ? "Puoi cambiare l'immagine di questo utente; sarà visibile anche sugli altri PC."
                         : "Scegli un avatar predefinito o carica una tua foto."
                     }
                   />
@@ -307,35 +457,35 @@ export function Onboarding({
                       size={88}
                     />
                   </Group>
-                  {profiloOnboardingModificabile(mode) && (
-                    <>
-                      <Group gap="sm" justify="center">
-                        <SceltePresetAvatar
-                          nome={nome}
-                          tipo={avatarTipo}
-                          preset={avatarPreset}
-                          dimensione={44}
-                          onSeleziona={(prossimo) => {
-                            setAvatarTipo("preset");
-                            setAvatarPreset(prossimo);
-                          }}
-                        />
-                      </Group>
-                      <AzioniFotoAvatar
-                        fileRef={fileRef}
-                        dimensioneIcona={18}
-                        onCarica={caricaFoto}
-                        onIniziali={() => setAvatarTipo("iniziali")}
-                      />
-                    </>
-                  )}
+                  <Group gap="sm" justify="center">
+                    <SceltePresetAvatar
+                      nome={nome}
+                      tipo={avatarTipo}
+                      preset={avatarPreset}
+                      dimensione={44}
+                      onSeleziona={(prossimo) => {
+                        setAvatarTipo("preset");
+                        setAvatarPreset(prossimo);
+                      }}
+                    />
+                  </Group>
+                  <AzioniFotoAvatar
+                    fileRef={fileRef}
+                    dimensioneIcona={18}
+                    onCarica={caricaFoto}
+                    onIniziali={() => setAvatarTipo("iniziali")}
+                  />
                 </Stack>
               )}
 
-              {step === 3 && (
+              {currentPasso === "Impostazioni" && (
+                <ImpostazioniConsigliateStep scelte={impostazioniScelte} onScelta={scegliImpostazione} />
+              )}
+
+              {currentPasso === "Riepilogo" && (
                 <Stack gap="md">
                   <Titolo titolo="Tutto pronto" sub="Controlla e conferma. Potrai cambiare nome e avatar da Impostazioni → Profilo." />
-                  <Paper withBorder radius="md" p="md">
+                  <Paper withBorder radius="md" p="md" shadow="none">
                     <Group>
                       <Avatar
                         nome={nome}
@@ -360,22 +510,55 @@ export function Onboarding({
               )}
             </motion.div>
           </AnimatePresence>
-        </Box>
+        </AnimatedAutoHeight>
+      </Box>
 
-        <Group justify="space-between" mt="xl">
-          <Button variant="subtle" color="gray" disabled={step === 0 || salvando} onClick={() => setStep((s) => s - 1)}>
-            Indietro
+      <Group justify="space-between" align="center" wrap="nowrap" mt="lg" style={{ flexShrink: 0 }}>
+        <Button
+          variant="subtle"
+          color="gray"
+          disabled={step === 0 || salvando}
+          onClick={() => setPassoCorrente(passi[step - 1])}
+        >
+          Indietro
+        </Button>
+        {currentPasso === "Impostazioni" ? (
+          <Group gap="xs" wrap="nowrap">
+            <Button
+              variant="subtle"
+              color="gray"
+              onClick={saltaImpostazioni}
+            >
+              Salta
+            </Button>
+            <Button
+              color="accent"
+              onClick={selezionaImpostazioniConsigliate}
+              leftSection={<IconSparkles size={16} />}
+            >
+              Applica selezionate
+            </Button>
+          </Group>
+        ) : step < passi.length - 1 ? (
+          <Button
+            color="accent"
+            disabled={!puoAvanzare}
+            onClick={() => setPassoCorrente(passi[step + 1])}
+            rightSection={<IconCheck size={16} />}
+          >
+            Avanti
           </Button>
-          {step < 3 ? (
-            <Button color="accent" disabled={!puoAvanzare} onClick={() => setStep((s) => s + 1)} rightSection={<IconCheck size={16} />}>
-              Avanti
-            </Button>
-          ) : (
-            <Button color="accent" loading={salvando} onClick={conferma} leftSection={<IconUserPlus size={18} />}>
-              Entra nel gestionale
-            </Button>
-          )}
-        </Group>
+        ) : (
+          <Button
+            color="accent"
+            loading={salvando}
+            onClick={conferma}
+            leftSection={<IconUserPlus size={18} />}
+          >
+            Entra nel gestionale
+          </Button>
+        )}
+      </Group>
       </Paper>
     </Center>
   );
@@ -394,10 +577,10 @@ function Titolo({ titolo, sub }: { titolo: string; sub: string }) {
   );
 }
 
-function Stepper({ current }: { current: number }) {
+function Stepper({ current, passi }: { current: number; passi: string[] }) {
   return (
     <Box style={{ display: "flex", alignItems: "center", width: "100%" }}>
-      {PASSI.map((p, i) => {
+      {passi.map((p, i) => {
         const done = i < current;
         const active = i === current;
         return (
@@ -413,7 +596,7 @@ function Stepper({ current }: { current: number }) {
                 {done ? <IconCheck size={15} /> : <Text size="xs" fw={700}>{i + 1}</Text>}
               </ThemeIcon>
             </Tooltip>
-            {i < PASSI.length - 1 && (
+            {i < passi.length - 1 && (
               <Box style={{ flex: 1, height: 2, background: done ? "#F4C20D" : "#E3E8EF", borderRadius: 2, margin: "0 6px" }} />
             )}
           </Box>

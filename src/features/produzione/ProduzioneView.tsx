@@ -116,6 +116,7 @@ const EVENTI_RICARICA = [
   "medico:salvato",
   "agente:salvato",
 ] as const;
+const EVENTI_BASE_PRODUZIONE = ["impostazioni:salvato"] as const;
 
 /** Slot animato per le card di Produzione (coda e lotti): all'uscita dalla lista
  *  (ordine mandato in produzione, lotto arrivato/annullato) scivola a destra e collassa.
@@ -536,9 +537,13 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   });
   // Seme del N° produzione: ora condiviso fra i PC (modello dati), non più per-PC.
   const [numeroProduzioneBase, setNumeroProduzioneBase] = useState(1);
-  useEffect(() => {
-    leggiBaseProduzione().then(setNumeroProduzioneBase).catch(() => {});
-  }, []);
+  useRicaricaSuEventi(EVENTI_BASE_PRODUZIONE, async () => {
+    try {
+      setNumeroProduzioneBase(await leggiBaseProduzione());
+    } catch {
+      // La lettura non deve scrivere un default nel log quando il motore non è disponibile.
+    }
+  }, 160, { caricamentoIniziale: true });
   usePaginaPronta(caricamento);
 
   function cambiaVista(v: Vista) {

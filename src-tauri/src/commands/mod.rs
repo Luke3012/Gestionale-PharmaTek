@@ -832,6 +832,19 @@ pub fn record_update(
     result
 }
 
+#[tauri::command]
+pub fn salva_base_produzione(
+    atteso: i64,
+    nuovo: i64,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state.salva_base_produzione(atteso, nuovo)? {
+        emetti_entita_modificate(&app, &["impostazioni".into()]);
+    }
+    Ok(())
+}
+
 /// Crea una bozza durevole e idempotente. Non esegue alcun invio esterno.
 #[tauri::command]
 pub fn comunicazione_crea_bozza(

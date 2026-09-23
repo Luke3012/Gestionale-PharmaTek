@@ -1,6 +1,102 @@
 use super::*;
 
+const IMPOSTAZIONI_PRODUZIONE: &str = "impostazioni";
+const ID_IMPOSTAZIONI_PRODUZIONE: &str = "__app__";
+const CAMPO_BASE_PRODUZIONE: &str = "numero_produzione_base";
+const CAMPO_DEFAULT_PRODUZIONE: &str = "numero_produzione_default";
+
+fn base_produzione_corrente(p: &crate::projection::Projection) -> Result<i64, String> {
+    Ok(p.get(IMPOSTAZIONI_PRODUZIONE, ID_IMPOSTAZIONI_PRODUZIONE)
+        .map_err(|e| e.to_string())?
+        .and_then(|r| r.data.get(CAMPO_BASE_PRODUZIONE).and_then(|v| v.as_i64()))
+        .filter(|n| *n >= 1)
+        .unwrap_or(1))
+}
+
+/// Registra il default condiviso una sola volta, senza toccare un valore scelto.
+/// Il default vive in un campo diverso: un seed arrivato tardi da un altro PC
+/// non può sovrascrivere la scelta esplicita.
+pub(super) fn ensure_base_produzione_default(engine: &Engine) -> AppResult<()> {
+    engine
+        .emit_built_checked(|p| {
+            let record = p
+                .get(IMPOSTAZIONI_PRODUZIONE, ID_IMPOSTAZIONI_PRODUZIONE)
+                .map_err(|e| e.to_string())?;
+            if record.as_ref().is_some_and(|r| {
+                r.data
+                    .get(CAMPO_BASE_PRODUZIONE)
+                    .and_then(|v| v.as_i64())
+                    .is_some_and(|n| n >= 1)
+                    || r.data.get(CAMPO_DEFAULT_PRODUZIONE).is_some()
+            }) {
+                return Ok(Vec::new());
+            }
+            let mut mutations = Vec::new();
+            if record.is_none() {
+                mutations.push(Mutation::new(
+                    IMPOSTAZIONI_PRODUZIONE,
+                    ID_IMPOSTAZIONI_PRODUZIONE,
+                    EventBody::Created,
+                ));
+            }
+            mutations.push(Mutation::new(
+                IMPOSTAZIONI_PRODUZIONE,
+                ID_IMPOSTAZIONI_PRODUZIONE,
+                EventBody::FieldSet {
+                    field: CAMPO_DEFAULT_PRODUZIONE.into(),
+                    value: json!(1),
+                },
+            ));
+            Ok(mutations)
+        })
+        .map_err(es)?;
+    Ok(())
+}
+
 impl AppState {
+    /// Salva solo un cambiamento confermato, verificando la base vista dall'utente.
+    /// La verifica e la scrittura condividono il lock di mutazione del motore.
+    pub fn salva_base_produzione(&self, atteso: i64, nuovo: i64) -> AppResult<bool> {
+        if atteso < 1 || nuovo < 1 {
+            return Err("numero di produzione non valido".into());
+        }
+        self.with_engine(|engine| {
+            engine.ingest().map_err(es)?;
+            let events = engine
+                .emit_built_checked(|p| {
+                    let corrente = base_produzione_corrente(p)?;
+                    if corrente != atteso {
+                        return Err("Il numero di produzione è cambiato su un'altra postazione. Ricarica il valore e conferma di nuovo.".into());
+                    }
+                    if corrente == nuovo {
+                        return Ok(Vec::new());
+                    }
+                    let mut mutations = Vec::new();
+                    if p.get(IMPOSTAZIONI_PRODUZIONE, ID_IMPOSTAZIONI_PRODUZIONE)
+                        .map_err(|e| e.to_string())?
+                        .is_none()
+                    {
+                        mutations.push(Mutation::new(
+                            IMPOSTAZIONI_PRODUZIONE,
+                            ID_IMPOSTAZIONI_PRODUZIONE,
+                            EventBody::Created,
+                        ));
+                    }
+                    mutations.push(Mutation::new(
+                        IMPOSTAZIONI_PRODUZIONE,
+                        ID_IMPOSTAZIONI_PRODUZIONE,
+                        EventBody::FieldSet {
+                            field: CAMPO_BASE_PRODUZIONE.into(),
+                            value: json!(nuovo),
+                        },
+                    ));
+                    Ok(mutations)
+                })
+                .map_err(es)?;
+            Ok(!events.is_empty())
+        })
+    }
+
     /// Salva insieme i dati compilati nel modale di preparazione. Il controllo dello
     /// stato e tutte le patch condividono lo stesso batch: se anche una sola riga non
     /// è più disponibile, è già in lavorazione o è stata spedita, non viene scritto nulla.

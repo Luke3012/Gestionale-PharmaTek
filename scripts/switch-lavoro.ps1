@@ -15,6 +15,8 @@ $script:AppId = 'it.pharmatek.gestionale'
 $script:ProcessNames = @('pharmatek-gestionale', 'Gestionale PharmaTek')
 $script:AppDirectoryOverride = $null
 $script:ProfileLabels = @('Lavoro 1', 'Lavoro 2')
+$script:RestartOnError = $false
+$script:RestartExecutablePath = $null
 
 function Get-AppDirectory {
     if (-not [string]::IsNullOrWhiteSpace($script:AppDirectoryOverride)) {
@@ -40,6 +42,115 @@ function Get-ProfileStatePath {
     Join-Path (Get-ProfileRoot) 'state.json'
 }
 
+function Get-LocalAppDataDirectory {
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        throw "Impossibile individuare la cartella AppData locale dell'utente."
+    }
+    Join-Path $localAppData $script:AppId
+}
+
+function Get-LocalProfileDirectory {
+    param([Parameter(Mandatory)][ValidateSet(1, 2)][int]$Number)
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        throw "Impossibile individuare la cartella AppData locale dell'utente."
+    }
+    Join-Path (Join-Path $localAppData ($script:AppId + '-work-profiles')) ("Lavoro-{0}" -f $Number)
+}
+
+function Get-LocalProfileMarker {
+    param([Parameter(Mandatory)][string]$Path)
+    $markerPath = Join-Path $Path '.pharmatek-profile.json'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
+    try {
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($marker.appId -eq $script:AppId -and $marker.profile -in @(1, 2)) {
+            return [int]$marker.profile
+        }
+    }
+    catch { }
+    throw "Il marcatore del profilo locale non è valido: $markerPath"
+}
+
+function Write-LocalProfileMarker {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][ValidateSet(1, 2)][int]$Number)
+    [void](New-Item -ItemType Directory -Path $Path -Force)
+    $marker = [ordered]@{ appId = $script:AppId; profile = $Number }
+    $json = $marker | ConvertTo-Json
+    [System.IO.File]::WriteAllText(
+        (Join-Path $Path '.pharmatek-profile.json'),
+        $json,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+
+function Set-LocalDataProfile {
+    param(
+        [Parameter(Mandatory)][ValidateSet(1, 2)][int]$ActiveProfile,
+        [Parameter(Mandatory)][ValidateSet(1, 2)][int]$TargetProfile
+    )
+    $live = Get-LocalAppDataDirectory
+    $activeRoot = Get-LocalProfileDirectory -Number $ActiveProfile
+    $targetRoot = Get-LocalProfileDirectory -Number $TargetProfile
+    $liveExists = Test-Path -LiteralPath $live
+
+    if ($liveExists) {
+        $liveItem = Get-Item -LiteralPath $live -Force
+        $isLink = ($liveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        if ($isLink) {
+            $linkedProfile = Get-LocalProfileMarker -Path $live
+            if ($linkedProfile -eq $TargetProfile) { return }
+            if ($linkedProfile -ne $ActiveProfile) {
+                throw "La cartella locale di PharmaTek punta a un profilo non previsto. Non è stata modificata: $live"
+            }
+            [IO.Directory]::Delete($live, $false)
+            if (Test-Path -LiteralPath $live) {
+                throw 'Non riesco a scollegare in sicurezza il profilo WebView2 attivo.'
+            }
+        }
+        else {
+            if (Test-Path -LiteralPath $activeRoot) {
+                throw "Esiste già una copia locale di $($script:ProfileLabels[$ActiveProfile - 1]); non sovrascrivo i dati: $activeRoot"
+            }
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $activeRoot) -Force)
+            Move-Item -LiteralPath $live -Destination $activeRoot
+            Write-LocalProfileMarker -Path $activeRoot -Number $ActiveProfile
+        }
+    }
+    elseif (Test-Path -LiteralPath $targetRoot) {
+        $targetMarker = Get-LocalProfileMarker -Path $targetRoot
+        if ($null -eq $targetMarker) { Write-LocalProfileMarker -Path $targetRoot -Number $TargetProfile }
+        elseif ($targetMarker -ne $TargetProfile) { throw "I dati WebView2 locali hanno un marcatore inatteso: $targetRoot" }
+    }
+    else {
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $activeRoot) -Force)
+        [void](New-Item -ItemType Directory -Path $activeRoot -Force)
+        Write-LocalProfileMarker -Path $activeRoot -Number $ActiveProfile
+    }
+
+    if (-not (Test-Path -LiteralPath $targetRoot)) {
+        [void](New-Item -ItemType Directory -Path $targetRoot -Force)
+        Write-LocalProfileMarker -Path $targetRoot -Number $TargetProfile
+    }
+    else {
+        $targetMarker = Get-LocalProfileMarker -Path $targetRoot
+        if ($null -eq $targetMarker) { Write-LocalProfileMarker -Path $targetRoot -Number $TargetProfile }
+        elseif ($targetMarker -ne $TargetProfile) { throw "I dati WebView2 locali hanno un marcatore inatteso: $targetRoot" }
+    }
+
+    try {
+        [void](New-Item -ItemType Junction -Path $live -Target $targetRoot -ErrorAction Stop)
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $live) -and (Test-Path -LiteralPath $activeRoot)) {
+            try { [void](New-Item -ItemType Junction -Path $live -Target $activeRoot -ErrorAction Stop) }
+            catch { }
+        }
+        throw
+    }
+}
+
 function Read-ProfileState {
     $path = Get-ProfileStatePath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
@@ -51,6 +162,9 @@ function Read-ProfileState {
         if ($state.PSObject.Properties['pendingProfile'] -and $state.pendingProfile -notin @(1, 2)) {
             throw 'Profilo di ripristino non valido.'
         }
+        if ($state.PSObject.Properties['pendingRelaunch'] -and $state.pendingRelaunch -isnot [bool]) {
+            throw 'Indicatore di riapertura non valido.'
+        }
         return $state
     }
     catch {
@@ -61,12 +175,20 @@ function Read-ProfileState {
 function Write-ProfileState {
     param(
         [Parameter(Mandatory)][ValidateSet(1, 2)][int]$ActiveProfile,
-        [AllowNull()][Nullable[int]]$PendingProfile = $null
+        [AllowNull()][Nullable[int]]$PendingProfile = $null,
+        [bool]$PendingRelaunch = $false,
+        [AllowNull()][string]$PendingExecutablePath = $null
     )
     $root = Get-ProfileRoot
     [void](New-Item -ItemType Directory -Path $root -Force)
     $state = [ordered]@{ version = 1; activeProfile = $ActiveProfile }
-    if ($null -ne $PendingProfile) { $state.pendingProfile = [int]$PendingProfile }
+    if ($null -ne $PendingProfile) {
+        $state.pendingProfile = [int]$PendingProfile
+        $state.pendingRelaunch = $PendingRelaunch
+        if (-not [string]::IsNullOrWhiteSpace($PendingExecutablePath)) {
+            $state.pendingExecutablePath = $PendingExecutablePath
+        }
+    }
     $temp = Join-Path $root 'state.json.tmp'
     $destination = Get-ProfileStatePath
     $json = $state | ConvertTo-Json
@@ -228,18 +350,90 @@ function Test-ProfileNeedsOnboarding {
     catch { return $true }
 }
 
-function Stop-PharmaTek {
+function Get-PharmaTekProcessSnapshot {
     $processes = @(
         foreach ($name in $script:ProcessNames) {
             Get-Process -Name $name -ErrorAction SilentlyContinue
         }
     )
     $processes = @($processes | Sort-Object -Property Id -Unique)
-    if ($processes.Count -eq 0) { return }
+    $executablePath = $null
+    if ($processes.Count -gt 0) {
+        foreach ($process in $processes) {
+            try {
+                if (-not [string]::IsNullOrWhiteSpace($process.Path)) {
+                    $executablePath = $process.Path
+                    break
+                }
+            }
+            catch { }
+        }
+        if ([string]::IsNullOrWhiteSpace($executablePath)) {
+            try {
+                $processInfo = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $processes[0].Id) -ErrorAction Stop
+                $executablePath = $processInfo.ExecutablePath
+            }
+            catch { }
+        }
+    }
+    [pscustomobject]@{
+        WasRunning = ($processes.Count -gt 0)
+        ExecutablePath = $executablePath
+        Processes = $processes
+    }
+}
+
+function Get-RunningPharmaTekWebViewProcesses {
+    $webViewData = Join-Path (Get-LocalAppDataDirectory) 'EBWebView'
+    $profileRoots = @(
+        (Get-LocalProfileDirectory -Number 1),
+        (Get-LocalProfileDirectory -Number 2)
+    )
+    try {
+        @(
+            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop |
+                Where-Object {
+                    if (-not $_.CommandLine) { return $false }
+                    if ($_.CommandLine.IndexOf('--webview-exe-name=pharmatek-gestionale.exe', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        return $true
+                    }
+                    if ($_.CommandLine.IndexOf($webViewData, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        return $true
+                    }
+                    foreach ($profileRoot in $profileRoots) {
+                        if ($_.CommandLine.IndexOf($profileRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                            return $true
+                        }
+                    }
+                    return $false
+                }
+        )
+    }
+    catch {
+        throw "Non riesco a verificare la chiusura del profilo WebView2 di PharmaTek. Nessun dato è stato modificato.`n$($_.Exception.Message)"
+    }
+}
+
+function Wait-ForPharmaTekWebViewToClose {
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $remaining = @(Get-RunningPharmaTekWebViewProcesses)
+        if ($remaining.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Il motore WebView2 di PharmaTek è ancora in uso. Nessun dato è stato modificato.'
+}
+
+function Stop-PharmaTek {
+    $snapshot = Get-PharmaTekProcessSnapshot
+    if (-not $snapshot.WasRunning) {
+        Wait-ForPharmaTekWebViewToClose
+        return $snapshot
+    }
 
     $statusY = [Math]::Max(0, [Console]::WindowHeight - 2)
     Write-CenteredLine -Text 'Sto chiudendo PharmaTek...' -Y $statusY -Foreground Yellow
-    $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+    $snapshot.Processes | Stop-Process -Force -ErrorAction SilentlyContinue
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
         Start-Sleep -Milliseconds 150
@@ -253,6 +447,29 @@ function Stop-PharmaTek {
     if ($remaining.Count -gt 0) {
         throw 'PharmaTek non si è chiuso. Nessun file del profilo è stato modificato.'
     }
+    Wait-ForPharmaTekWebViewToClose
+    return $snapshot
+}
+
+function Start-PharmaTek {
+    param([AllowNull()][string]$ExecutablePath)
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        $candidate = Join-Path (Join-Path $localAppData 'Gestionale PharmaTek') 'pharmatek-gestionale.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $ExecutablePath = $candidate }
+    }
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath) -or -not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
+        throw 'PharmaTek era aperto, ma non riesco a individuare il programma per riaprirlo.'
+    }
+
+    [void](Start-Process -FilePath $ExecutablePath -WorkingDirectory (Split-Path -Parent $ExecutablePath) -PassThru)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 250
+        $running = Get-PharmaTekProcessSnapshot
+        if ($running.WasRunning) { return }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'PharmaTek è stato avviato, ma il processo non è rimasto aperto.'
 }
 
 function Set-ConsoleTheme {
@@ -467,7 +684,7 @@ function Show-ResultScreen {
         [int]$ProfileNumber = 0,
         [switch]$IsError,
         [switch]$WaitForKey,
-        [int]$Duration = 1700
+        [int]$Duration = 10000
     )
     Set-ConsoleTheme
     $ruleWidth = [Math]::Min(56, [Math]::Max(10, [Console]::WindowWidth - 8))
@@ -538,13 +755,28 @@ function Invoke-ProfileSwitch {
     $active = if ($state) { [int]$state.activeProfile } else { $null }
 
     if ($state -and $state.PSObject.Properties['pendingProfile']) {
-        Stop-PharmaTek
+        $script:RestartOnError = $false
+        $runningNow = Stop-PharmaTek
         $pending = [int]$state.pendingProfile
+        Set-LocalDataProfile -ActiveProfile $active -TargetProfile $pending
         Restore-Profile -Number $pending
         Write-ProfileState -ActiveProfile $pending
+        $shouldRelaunch = $false
+        $executablePath = $null
+        if ($state.PSObject.Properties['pendingRelaunch']) { $shouldRelaunch = [bool]$state.pendingRelaunch }
+        if ($state.PSObject.Properties['pendingExecutablePath']) { $executablePath = [string]$state.pendingExecutablePath }
+        if ([string]::IsNullOrWhiteSpace($executablePath) -and $shouldRelaunch) {
+            $executablePath = $runningNow.ExecutablePath
+        }
+        $reopened = $false
+        if ($shouldRelaunch) {
+            Start-PharmaTek -ExecutablePath $executablePath
+            $reopened = $true
+        }
+        $relaunchLine = if ($reopened) { 'PharmaTek è stato riaperto.' } else { 'PharmaTek è rimasto chiuso.' }
         Show-ResultScreen -Title 'RIPRISTINO COMPLETATO' -Lines @(
             "$($script:ProfileLabels[$pending - 1]) è stato ripristinato.",
-            'PharmaTek è rimasto chiuso.'
+            $relaunchLine
         ) -ProfileNumber $pending
         return
     }
@@ -566,18 +798,23 @@ function Invoke-ProfileSwitch {
         Show-ResultScreen -Title 'NESSUN CAMBIO NECESSARIO' -Lines @(
             "$($script:ProfileLabels[$target - 1]) è già selezionato.",
             'Le tue impostazioni sono al sicuro.'
-        ) -ProfileNumber $target -Duration 1300
+        ) -ProfileNumber $target -Duration 10000
         return
     }
 
-    Stop-PharmaTek
+    $launchInfo = Stop-PharmaTek
+    $script:RestartExecutablePath = $launchInfo.ExecutablePath
+    $script:RestartOnError = $launchInfo.WasRunning
     Invoke-ProfileTransition -Number $target
 
     # Cattura il profilo corrente prima di cambiare qualunque file attivo.
     Save-ActiveProfile -Number $active
     New-EmptyProfile -Number $target
     $needsOnboarding = Test-ProfileNeedsOnboarding -Number $target
-    Write-ProfileState -ActiveProfile $active -PendingProfile $target
+    Write-ProfileState -ActiveProfile $active -PendingProfile $target `
+        -PendingRelaunch $launchInfo.WasRunning -PendingExecutablePath $launchInfo.ExecutablePath
+    $script:RestartOnError = $false
+    Set-LocalDataProfile -ActiveProfile $active -TargetProfile $target
     Restore-Profile -Number $target
     Write-ProfileState -ActiveProfile $target
 
@@ -585,7 +822,13 @@ function Invoke-ProfileSwitch {
     if ($needsOnboarding) {
         $resultLines += "Al primo avvio, completa l'onboarding di questo lavoro."
     }
-    $resultLines += 'PharmaTek è rimasto chiuso: puoi avviarlo quando vuoi.'
+    $reopened = $false
+    if ($launchInfo.WasRunning) {
+        Start-PharmaTek -ExecutablePath $launchInfo.ExecutablePath
+        $reopened = $true
+    }
+    if ($reopened) { $resultLines += 'PharmaTek è stato riaperto sul lavoro selezionato.' }
+    else { $resultLines += 'PharmaTek è rimasto chiuso: puoi avviarlo quando vuoi.' }
     Show-ResultScreen -Title 'CAMBIO COMPLETATO' -Lines $resultLines -ProfileNumber $target
 }
 
@@ -594,8 +837,18 @@ if ($MyInvocation.InvocationName -ne '.') {
         Invoke-ProfileSwitch
     }
     catch {
+        $errorMessage = $_.Exception.Message
+        if ($script:RestartOnError) {
+            try {
+                Start-PharmaTek -ExecutablePath $script:RestartExecutablePath
+                $errorMessage += "`nPharmaTek è stato riaperto sul profilo precedente."
+            }
+            catch {
+                $errorMessage += "`nNon sono riuscito a riaprire PharmaTek: $($_.Exception.Message)"
+            }
+        }
         try {
-            Show-ResultScreen -Title 'SI È VERIFICATO UN PROBLEMA' -Lines @($_.Exception.Message) -IsError -WaitForKey
+            Show-ResultScreen -Title 'SI È VERIFICATO UN PROBLEMA' -Lines @($errorMessage) -IsError -WaitForKey
         }
         catch { Write-Error $_ }
         exit 1

@@ -39,6 +39,7 @@ import { ImportAnagraficheModal } from "../features/anagrafiche/ImportAnagrafich
 import { ExportArubaModal } from "../features/anagrafiche/ExportArubaModal";
 import { useDeepLink } from "../shell/navigazione";
 import { useModalSnapshot } from "../ui/useModalSnapshot";
+import { useRicaricaSuEventi } from "../lib/useRicaricaSuEventi";
 import { PuliziaDatiBox } from "../features/impostazioni/PuliziaDatiBox";
 import { registraPressioneReset, STATO_SEQUENZA_RESET_INIZIALE } from "../features/impostazioni/sequenzaReset";
 import { ResetProgrammaView } from "../features/impostazioni/ResetProgrammaView";
@@ -52,6 +53,8 @@ type RestorePending = {
   mode: "auto" | "manual";
   descrizione: string;
 };
+
+const EVENTI_BASE_PRODUZIONE = ["impostazioni:salvato"] as const;
 
 function operationId(kind: string) {
   return `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -268,10 +271,80 @@ export function Impostazioni({ identity }: { identity: Identity }) {
     resetApertoRef.current = resetAperto;
   }, [resetAperto]);
   // N° di produzione iniziale: impostazione CONDIVISA (modello dati), non più per-PC.
-  const [numeroProduzioneBase, setNumeroProduzioneBase] = useState(1);
+  const [numeroProduzioneBase, setNumeroProduzioneBase] = useState<number | string>(1);
+  const [baseProduzionePronta, setBaseProduzionePronta] = useState(false);
+  const [baseProduzioneOccupata, setBaseProduzioneOccupata] = useState(false);
+  const baseProduzioneSalvata = useRef(1);
+  const baseProduzioneAlFocus = useRef(1);
+  const baseProduzioneInModifica = useRef(false);
+  const confermaBaseInCorso = useRef(false);
+  useRicaricaSuEventi(EVENTI_BASE_PRODUZIONE, async () => {
+    try {
+      const base = await leggiBaseProduzione();
+      baseProduzioneSalvata.current = base;
+      setBaseProduzionePronta(true);
+      if (!baseProduzioneInModifica.current && !confermaBaseInCorso.current) {
+        setNumeroProduzioneBase(base);
+      }
+    } catch (error) {
+      if (!baseProduzionePronta) toast.error(`Numero di produzione non disponibile: ${error}`);
+    }
+  }, 160, { caricamentoIniziale: true });
+
+  async function confermaNumeroProduzioneBase() {
+    baseProduzioneInModifica.current = false;
+    if (confermaBaseInCorso.current || !baseProduzionePronta) return;
+    const nuovo = typeof numeroProduzioneBase === "number"
+      ? numeroProduzioneBase : Number(numeroProduzioneBase);
+    if (!Number.isSafeInteger(nuovo) || nuovo < 1) {
+      toast.error("Inserisci un numero di produzione intero maggiore di zero.");
+      return;
+    }
+    const precedente = baseProduzioneAlFocus.current;
+    if (nuovo === precedente) {
+      setNumeroProduzioneBase(baseProduzioneSalvata.current);
+      return;
+    }
+    confermaBaseInCorso.current = true;
+    setBaseProduzioneOccupata(true);
+    try {
+      const confermato = await dialog.confirm(
+        "Salvare il numero di produzione iniziale?",
+        `Impostare ${nuovo} come base condivisa per le nuove produzioni? I numeri già assegnati resteranno invariati.`,
+        { conferma: "Salva" },
+      );
+      if (!confermato) {
+        setNumeroProduzioneBase(baseProduzioneSalvata.current);
+        return;
+      }
+      const attuale = await leggiBaseProduzione();
+      let atteso = precedente;
+      if (attuale !== precedente) {
+        baseProduzioneSalvata.current = attuale;
+        const riconfermato = await dialog.confirm(
+          "Numero aggiornato da un'altra postazione",
+          `Nel frattempo il numero condiviso è diventato ${attuale}. Vuoi comunque impostarlo a ${nuovo}?`,
+          { conferma: "Salva comunque" },
+        );
+        if (!riconfermato) {
+          setNumeroProduzioneBase(attuale);
+          return;
+        }
+        atteso = attuale;
+      }
+      await salvaBaseProduzione(atteso, nuovo);
+      baseProduzioneSalvata.current = nuovo;
+      setNumeroProduzioneBase(nuovo);
+    } catch (error) {
+      try { baseProduzioneSalvata.current = await leggiBaseProduzione(); } catch { /* conserva l'ultimo valore noto */ }
+      toast.error(`Numero non salvato: ${error}`);
+    } finally {
+      confermaBaseInCorso.current = false;
+      setBaseProduzioneOccupata(false);
+    }
+  }
   const [cartellaPrescrizioni, setCartellaPrescrizioni] = useState("");
   useEffect(() => {
-    leggiBaseProduzione().then(setNumeroProduzioneBase).catch(() => {});
     if (inTauri) {
       api.prescriptionsFolderGet().then((value) => setCartellaPrescrizioni(value.path)).catch(() => {});
     }
@@ -1097,9 +1170,18 @@ export function Impostazioni({ identity }: { identity: Identity }) {
             >
               <NumberInput
                 min={1}
+                max={Number.MAX_SAFE_INTEGER}
+                allowDecimal={false}
+                allowNegative={false}
+                clampBehavior="none"
                 value={numeroProduzioneBase}
-                onChange={(v) => setNumeroProduzioneBase(typeof v === "number" ? v : Number(v) || 1)}
-                onBlur={() => void salvaBaseProduzione(numeroProduzioneBase)}
+                onFocus={() => {
+                  baseProduzioneInModifica.current = true;
+                  baseProduzioneAlFocus.current = baseProduzioneSalvata.current;
+                }}
+                onChange={setNumeroProduzioneBase}
+                onBlur={() => void confermaNumeroProduzioneBase()}
+                disabled={!baseProduzionePronta || baseProduzioneOccupata}
                 w={120}
                 style={{ flexShrink: 0 }}
               />

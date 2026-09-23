@@ -5397,6 +5397,91 @@ fn record_create_with_id_e_idempotente() {
 }
 
 #[test]
+fn base_produzione_seed_e_salvataggio_non_generano_eventi_ridondanti() {
+    let app_a = tempfile::tempdir().unwrap();
+    let app_b = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    let id_a = onboarda(&a, data.path().to_str().unwrap(), "Livio");
+    let log_a = data
+        .path()
+        .join("events")
+        .join(format!("{}.ndjson", id_a.device_id));
+    let conta_a = || LogStore::read_from(&log_a, 0).unwrap().events.len();
+
+    let impostazioni = a.record_get("impostazioni", "__app__").unwrap().unwrap();
+    assert_eq!(impostazioni.data["numero_produzione_default"], json!(1));
+    assert!(impostazioni.data.get("numero_produzione_base").is_none());
+    let iniziali = conta_a();
+    a.seed_anagrafiche_default();
+    assert_eq!(conta_a(), iniziali, "riapertura/seed non deve riscrivere");
+    assert!(a.salva_base_produzione(1, 7).unwrap());
+    assert_eq!(conta_a(), iniziali + 1);
+    assert!(!a.salva_base_produzione(7, 7).unwrap());
+    assert_eq!(conta_a(), iniziali + 1);
+    assert!(a.salva_base_produzione(1, 8).is_err());
+    assert_eq!(conta_a(), iniziali + 1);
+
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    onboarda(&b, data.path().to_str().unwrap(), "Anna");
+    assert_eq!(
+        b.record_get("impostazioni", "__app__")
+            .unwrap()
+            .unwrap()
+            .data["numero_produzione_base"],
+        json!(7),
+    );
+    assert!(b.salva_base_produzione(7, 9).unwrap());
+    assert!(a.salva_base_produzione(7, 10).is_err());
+    assert_eq!(conta_a(), iniziali + 1, "il conflitto non deve scrivere");
+    assert_eq!(
+        a.record_get("impostazioni", "__app__")
+            .unwrap()
+            .unwrap()
+            .data["numero_produzione_base"],
+        json!(9),
+    );
+}
+
+#[test]
+fn base_produzione_gia_configurata_resta_invariata_durante_onboarding() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    state.open_data_dir(data.path().to_str().unwrap()).unwrap();
+    state
+        .record_create_with_id(
+            "impostazioni",
+            "__app__",
+            campi(&[("numero_produzione_base", json!(42))]),
+        )
+        .unwrap();
+    let id = onboarda(&state, data.path().to_str().unwrap(), "Livio");
+    let log = data
+        .path()
+        .join("events")
+        .join(format!("{}.ndjson", id.device_id));
+    assert_eq!(
+        state
+            .record_get("impostazioni", "__app__")
+            .unwrap()
+            .unwrap()
+            .data["numero_produzione_base"],
+        json!(42)
+    );
+    assert_eq!(
+        LogStore::read_from(&log, 0)
+            .unwrap()
+            .events
+            .iter()
+            .filter(|e| e.entity == "impostazioni")
+            .count(),
+        2,
+        "il seed non deve aggiungere eventi per il valore esistente",
+    );
+}
+
+#[test]
 fn reset_leggero_riconfigura_ma_conserva_i_dati_condivisi() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

@@ -393,6 +393,8 @@ export const api = {
     invoke<RecordDto>("record_create_id", { entity, id, fields }),
   recordUpdate: (entity: string, id: string, fields: Campi) =>
     invoke<RecordDto>("record_update", { entity, id, fields }),
+  salvaBaseProduzione: (atteso: number, nuovo: number) =>
+    invoke<void>("salva_base_produzione", { atteso, nuovo }),
   documentoCacheSalva: (input: DocumentoCacheSalvaInput) =>
     invoke<AllegatoComunicazioneInput>("documento_cache_salva", { input }),
   prescriptionsFolderGet: () =>

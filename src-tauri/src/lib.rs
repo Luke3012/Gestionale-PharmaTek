@@ -500,6 +500,7 @@ pub fn run() {
             commands::record_create,
             commands::record_create_id,
             commands::record_update,
+            commands::salva_base_produzione,
             commands::documento_cache_salva,
             commands::documenti_cache_rilascia,
             commands::comunicazione_crea_bozza,

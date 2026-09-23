@@ -145,6 +145,31 @@ export const CHIAVI_PREFERENZE = {
   preferenzeSuggerimenti: "pt.preferenzeSuggerimenti",
 } as const;
 
+export const CHIAVE_SETUP_IMPOSTAZIONI_COMPLETATO = "pt.impostazioniInizialiConfigurate";
+
+export function impostazioniInizialiDaProporre(
+  prefs: {
+    zoomUI: number;
+    ordineFinestra: OrdineFinestra;
+    sogliaSolleciti: number;
+  },
+  autostartAttivo = false
+): boolean {
+  if (typeof localStorage !== "undefined") {
+    try {
+      if (localStorage.getItem(CHIAVE_SETUP_IMPOSTAZIONI_COMPLETATO) === "true") {
+        return false;
+      }
+    } catch {}
+  }
+  return (
+    prefs.zoomUI === 1 &&
+    prefs.ordineFinestra === "mai" &&
+    prefs.sogliaSolleciti === 0 &&
+    !autostartAttivo
+  );
+}
+
 const CHIAVI_PREFERENZE_VALIDE = new Set<string>(Object.values(CHIAVI_PREFERENZE));
 
 export function calcolaCambiPreferenze(
@@ -177,7 +202,7 @@ function load<T>(key: string, fallback: T): T {
 
 export function PrefsProvider({ children }: { children: ReactNode }) {
   const [sidebar, setSidebar] = useState<StatoSidebar>(() =>
-    load("pt.sidebar", "esteso")
+    load("pt.sidebar", "icone")
   );
   const [ridurreAnimazioni, setRidurreAnimazioni] = useState<boolean>(() =>
     load("pt.ridurreAnimazioni", false)
