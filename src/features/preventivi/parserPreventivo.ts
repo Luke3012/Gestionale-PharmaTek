@@ -1,4 +1,4 @@
-export interface ProdottoParserPreventivo {
+interface ProdottoParserPreventivo {
   id: string;
   nome: string;
   categoria?: string;
@@ -18,9 +18,9 @@ export interface ContestoParserPreventivo {
   };
 }
 
-export type LivelloConfidenza = "alta" | "media" | "bassa";
+type LivelloConfidenza = "alta" | "media" | "bassa";
 
-export interface AlternativaProdottoPreventivo {
+interface AlternativaProdottoPreventivo {
   id: string;
   nome: string;
   categoria: string;
@@ -142,7 +142,7 @@ function trigrammi(value: string): Set<string> {
   return result;
 }
 
-export function similaritaTrigrammi(a: string, b: string): number {
+function similaritaTrigrammi(a: string, b: string): number {
   const sinistra = trigrammi(a);
   const destra = trigrammi(b);
   if (sinistra.size === 0 && destra.size === 0) return 1;

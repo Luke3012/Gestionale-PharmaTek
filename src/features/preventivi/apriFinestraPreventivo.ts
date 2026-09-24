@@ -12,7 +12,7 @@ export const EVENTO_PREVENTIVO_BOZZA_PRONTA = "pt:preventivo-bozza-pronta";
 export const EVENTO_PREVENTIVO_BOZZA_CONSEGNA = "pt:preventivo-bozza-consegna";
 export const EVENTO_PREVENTIVO_BOZZA_MONTATA = "pt:preventivo-bozza-montata";
 
-export interface PreventivoBozzaPronta {
+interface PreventivoBozzaPronta {
   token: string;
 }
 
@@ -21,7 +21,7 @@ export interface PreventivoBozzaConsegna {
   bozza: BozzaPreventivoDaZero;
 }
 
-export const GEOM_PREVENTIVO = {
+const GEOM_PREVENTIVO = {
   width: 900,
   height: 620,
   minWidth: 760,

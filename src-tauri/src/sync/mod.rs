@@ -228,7 +228,7 @@ impl Engine {
         Self::open_internal(data_dir, sqlite_path, device, user, None, reporter)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn open_with_restore_anchor(
         data_dir: impl AsRef<Path>,
         sqlite_path: impl AsRef<Path>,
@@ -478,11 +478,6 @@ impl Engine {
         *self.user.lock().expect("user poisoned") = user.into();
     }
 
-    /// Imposta un reporter per notificare l'avanzamento della sincronizzazione.
-    #[allow(dead_code)]
-    pub fn set_progress_reporter(&self, reporter: Option<ProgressReporter>) {
-        *self.progress_reporter.lock().expect("reporter poisoned") = reporter;
-    }
 
     fn report_progress(&self, current: usize, total: usize, phase: &str) {
         if let Some(reporter) = self

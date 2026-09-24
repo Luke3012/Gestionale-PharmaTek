@@ -14,9 +14,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Box, Center, Group, Stack, Text, ThemeIcon } from "@mantine/core";
+import { Box, Group, Text } from "@mantine/core";
 import { useIntersection } from "@mantine/hooks";
-import { IconTools, type Icon } from "@tabler/icons-react";
 import { motion } from "framer-motion";
 import { dur, easeOut, fadeSlide, useAnimazioniRidotte } from "../ui/motion";
 
@@ -281,35 +280,5 @@ export function Pagina({
       </motion.div>
      </RivelazionePagina.Provider>
     </RegistraCaricamento.Provider>
-  );
-}
-
-export function Segnaposto({
-  titolo,
-  fase,
-  descrizione,
-  Ico = IconTools,
-}: {
-  titolo: string;
-  fase: string;
-  descrizione: string;
-  Ico?: Icon;
-}) {
-  return (
-    <Pagina titolo={titolo}>
-      <Center style={{ height: "100%", minHeight: 360 }}>
-        <Stack align="center" gap="xs" maw={420} ta="center">
-          <ThemeIcon size={56} radius="xl" variant="light" color="gray">
-            <Ico size={28} />
-          </ThemeIcon>
-          <Text fw={600} mt="xs">
-            In arrivo nella {fase}
-          </Text>
-          <Text c="dimmed" size="sm">
-            {descrizione}
-          </Text>
-        </Stack>
-      </Center>
-    </Pagina>
   );
 }

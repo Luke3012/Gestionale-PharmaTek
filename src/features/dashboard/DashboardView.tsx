@@ -55,7 +55,6 @@ import { OrdineEditor, type EditorTarget } from "../giornaliero/OrdineEditor";
 import { vaiAllaPrincipale, type DeepLink } from "../../shell/navigazione";
 import { BachecaPromemoria } from "../promemoria/BachecaPromemoria";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
-import { consumaIntroOverlaySaltata, deveSaltareIntroOverlay } from "./introOverlay";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
 import { formattaEuro as euro } from "../../lib/money";
@@ -232,7 +231,7 @@ export function DashboardView({
 
   const ridotte = useAnimazioniRidotte();
   const primaVoltaRef = useRef(!saltaIntro && !ridotte && (forceIntro || primaVoltaDash));
-  const skipIntroRef = useRef(saltaIntro || deveSaltareIntroOverlay());
+  const skipIntroRef = useRef(saltaIntro);
   const mostraIntroVisiva = testoIntro !== null;
   const [introAttiva, setIntroAttiva] = useState(primaVoltaRef.current && !skipIntroRef.current && mostraIntroVisiva);
   const [splashGone, setSplashGone] = useState(!primaVoltaRef.current || skipIntroRef.current);
@@ -242,7 +241,6 @@ export function DashboardView({
 
   useEffect(() => {
     primaVoltaDash = false;
-    consumaIntroOverlaySaltata();
   }, []);
 
   useEffect(() => {

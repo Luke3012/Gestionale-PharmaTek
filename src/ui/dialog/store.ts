@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 export type DialogTipo = "info" | "success" | "warning" | "error" | "question";
 export type BottoneVariante = "primario" | "secondario" | "pericolo" | "ghost" | "informativo" | "ignora";
 
-export interface DialogBottone<T = unknown> {
+interface DialogBottone<T = unknown> {
   label: string;
   /** Mostra l'azione come scelta visuale nel corpo del dialog invece che nel footer. */
   posizione?: "contenuto" | "footer";

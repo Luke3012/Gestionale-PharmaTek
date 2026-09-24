@@ -4,7 +4,6 @@ import {
   useMemo,
   type ReactNode,
 } from "react";
-import { Navigate } from "react-router-dom";
 import type { RemoteControlStatus } from "../lib/tauri";
 
 export interface PremiumAccess {
@@ -13,7 +12,7 @@ export interface PremiumAccess {
   fromCache: boolean;
 }
 
-export const PREMIUM_ACCESS_LOCKED: PremiumAccess = {
+const PREMIUM_ACCESS_LOCKED: PremiumAccess = {
   enabled: false,
   loaded: false,
   fromCache: true,
@@ -67,11 +66,4 @@ export function PremiumOnly({
 
 export function canOpenPremiumRoute(access: PremiumAccess): boolean {
   return access.loaded && access.enabled;
-}
-
-/** Guardia per future rotte premium: nessun contenuto riservato viene montato. */
-export function PremiumRoute({ children }: { children: ReactNode }) {
-  const access = usePremiumAccess();
-  if (!access.loaded) return null;
-  return canOpenPremiumRoute(access) ? <>{children}</> : <Navigate to="/" replace />;
 }

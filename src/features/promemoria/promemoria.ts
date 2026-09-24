@@ -50,9 +50,6 @@ export const RICORRENZE: RicorrenzaDef[] = [
   { value: "annuale", label: "Ogni anno" },
 ];
 
-export function ricorrenzaDef(value: string): RicorrenzaDef {
-  return RICORRENZE.find((r) => r.value === value) ?? RICORRENZE[0];
-}
 
 /** Metadati per tipo di entità collegata (icona/colore/etichetta). */
 export const COLLEGATO_META: Record<CollegatoTipo, { label: string; color: string; Ico: Icon }> = {
@@ -137,7 +134,7 @@ export function statoScadenza(scadenza: string, avvisoAnticipato = 0, oggi = ogg
 }
 
 /** Calcola l'occorrenza successiva di una scadenza data la ricorrenza ("" se non ricorre). */
-export function prossimaData(scadenza: string, ric: RicorrenzaTipo): string {
+function prossimaData(scadenza: string, ric: RicorrenzaTipo): string {
   if (!scadenza || ric === "nessuna") return "";
   const d = new Date(scadenza + "T00:00:00");
   if (ric === "settimanale") d.setDate(d.getDate() + 7);
@@ -244,9 +241,4 @@ export async function completaPromemoria(p: Promemoria, identity?: Identity): Pr
 
 export async function eliminaPromemoria(id: string): Promise<void> {
   await api.recordDelete("promemoria", id);
-}
-
-/** Riapre un promemoria completato (annulla il «fatto»). */
-export async function riapriPromemoria(id: string): Promise<void> {
-  await api.recordUpdate("promemoria", id, { fatto: false, fatto_da: "", fatto_da_nome: "", fatto_ts: 0 });
 }

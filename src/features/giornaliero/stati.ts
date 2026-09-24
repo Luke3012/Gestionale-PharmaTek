@@ -45,7 +45,3 @@ const STATI_SPEDITI = new Set(["Spedito", "Chiuso"]);
 export function isSpedito(stato: string): boolean {
   return STATI_SPEDITI.has(stato);
 }
-
-export function statoColor(stato: string): string {
-  return statoDef(stato).color;
-}

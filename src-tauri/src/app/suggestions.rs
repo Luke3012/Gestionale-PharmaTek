@@ -830,7 +830,7 @@ fn tipo_suggerimento_in_pausa(
 }
 
 impl AppState {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn suggerimenti_lista_con_soglia_preventivi(
         &self,
         giorni: i64,
@@ -852,7 +852,7 @@ impl AppState {
 
     /// Ricalcolo esplicito richiesto dall'utente: restituisce anche fotografie
     /// nascoste e categorie in pausa, senza modificare i relativi record.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn suggerimenti_lista_completa(&self) -> AppResult<SuggerimentiBundleDto> {
         self.suggerimenti_lista_completa_per_anno(0)
     }

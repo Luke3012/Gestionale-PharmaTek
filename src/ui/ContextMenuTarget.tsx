@@ -14,7 +14,7 @@ export function puntoDaEventoContextMenu(
 }
 
 /** Punto invisibile usato da Mantine per ancorare un menu al clic destro. */
-export const ContextMenuTarget = forwardRef<HTMLDivElement, ContextMenuTargetProps>(
+const ContextMenuTarget = forwardRef<HTMLDivElement, ContextMenuTargetProps>(
   function ContextMenuTarget({ x, y, style, ...props }, ref) {
     return (
       <div

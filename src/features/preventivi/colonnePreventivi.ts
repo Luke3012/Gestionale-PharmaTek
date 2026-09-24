@@ -22,7 +22,7 @@ export const COLONNE_PREVENTIVI = [
   { key: "ultimoInvioMs", label: "Stato invio", defaultVisible: true },
 ] as const;
 
-export type ChiaveColonnaPreventivi = (typeof COLONNE_PREVENTIVI)[number]["key"];
+type ChiaveColonnaPreventivi = (typeof COLONNE_PREVENTIVI)[number]["key"];
 
 const STORAGE = "pt.preventivi.colonne.v2";
 const STORAGE_PRECEDENTE = "pt.preventivi.colonne.v1";

@@ -99,20 +99,3 @@ export const theme = createTheme({
     Select: { defaultProps: { radius: "md" } },
   },
 });
-
-// Token semantici riusati fuori da Mantine (CSS variables in styles.css).
-export const tokens = {
-  bg: "#F5F7FA",
-  surface: "#FFFFFF",
-  border: "#E3E8EF",
-  text: "#1D2733",
-  textMuted: "#5B6B7C",
-  sidebar: "#1A1A1A",
-  sidebarHover: "#242424",
-  sidebarActive: "#2A2A2A",
-  accent: "#F4C20D",
-  danger: "#E03131",
-  success: "#2F9E44",
-  warning: "#F08C00",
-  info: "#1971C2",
-} as const;

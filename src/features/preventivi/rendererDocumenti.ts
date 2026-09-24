@@ -21,7 +21,7 @@ interface BaseNode {
   strokeWidth?: number;
 }
 
-export interface RectNode extends BaseNode {
+interface RectNode extends BaseNode {
   kind: "rect";
   x: number;
   y: number;
@@ -30,7 +30,7 @@ export interface RectNode extends BaseNode {
   radius?: number;
 }
 
-export interface LineNode extends BaseNode {
+interface LineNode extends BaseNode {
   kind: "line";
   x1: number;
   y1: number;
@@ -38,12 +38,12 @@ export interface LineNode extends BaseNode {
   y2: number;
 }
 
-export interface PolygonNode extends BaseNode {
+interface PolygonNode extends BaseNode {
   kind: "polygon";
   points: Array<[number, number]>;
 }
 
-export interface TextNode extends BaseNode {
+interface TextNode extends BaseNode {
   kind: "text";
   x: number;
   y: number;
@@ -55,7 +55,7 @@ export interface TextNode extends BaseNode {
   fontFamily?: "ui" | "arial";
 }
 
-export interface LogoNode extends BaseNode {
+interface LogoNode extends BaseNode {
   kind: "logo";
   x: number;
   y: number;
@@ -74,7 +74,7 @@ export interface DocumentoA4 {
   overflow: string[];
 }
 
-export interface ConfigurazioneDocumento {
+interface ConfigurazioneDocumento {
   denominazione: string;
   indirizzo: string;
   localita: string;
@@ -83,7 +83,7 @@ export interface ConfigurazioneDocumento {
   sito: string;
 }
 
-export const CONFIGURAZIONE_DOCUMENTO_DEFAULT: ConfigurazioneDocumento = {
+const CONFIGURAZIONE_DOCUMENTO_DEFAULT: ConfigurazioneDocumento = {
   denominazione: "PharmaTek",
   indirizzo: "",
   localita: "",
@@ -1925,7 +1925,7 @@ export function documentoPdfBlob(documento: DocumentoA4): Blob {
   return new Blob([new Uint8Array(bytes).buffer], { type: "application/pdf" });
 }
 
-export function scaricaBlob(blob: Blob, nome: string) {
+function scaricaBlob(blob: Blob, nome: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

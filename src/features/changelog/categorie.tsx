@@ -11,7 +11,7 @@ export interface CategoriaMeta {
 }
 
 /** Ordine di presentazione: prima le novità, poi le correzioni, infine il resto. */
-export const ORDINE_CATEGORIE: Categoria[] = ["novita", "correzioni", "altro"];
+const ORDINE_CATEGORIE: Categoria[] = ["novita", "correzioni", "altro"];
 
 export const CATEGORIE: Record<Categoria, CategoriaMeta> = {
   novita: { label: "Novità", color: "accent", Ico: IconSparkles },

@@ -19,7 +19,7 @@ import {
 } from "../../ui/colonneConfigurabili";
 
 /** Definizione della colonna con il metadato aggiuntivo per l'export Excel. */
-export type ColDefCr = DefinizioneColonnaTabella<PagamentoVista> & { esporta?: MetaExport<PagamentoVista> };
+type ColDefCr = DefinizioneColonnaTabella<PagamentoVista> & { esporta?: MetaExport<PagamentoVista> };
 
 /** Etichetta testuale dello stato (per l'export Excel). */
 export function statoCreditoLabel(r: PagamentoVista): string {
@@ -40,7 +40,7 @@ export function scaduta(r: PagamentoVista): boolean {
 }
 
 /** Badge dello stato di un pagamento (potenziale / atteso / da verificare / saldato). */
-export function StatoBadge({ r }: { r: PagamentoVista }) {
+function StatoBadge({ r }: { r: PagamentoVista }) {
   if (!r.saldato) {
     if (potenziale(r)) {
       return (
@@ -70,7 +70,7 @@ export function StatoBadge({ r }: { r: PagamentoVista }) {
   );
 }
 
-export const COLONNE_CREDITI: ColDefCr[] = [
+const COLONNE_CREDITI: ColDefCr[] = [
   { key: "ordine", label: "N°", defaultVisible: true, sortAccessor: (r) => r.ordineNumero, esporta: { valore: (r) => r.ordineNumero }, render: (r) => <span className="tabular" style={{ fontWeight: 600 }}>{r.ordineNumero || "—"}</span> },
   {
     key: "scadenza",

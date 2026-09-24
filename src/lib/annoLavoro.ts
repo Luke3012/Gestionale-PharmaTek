@@ -1,5 +1,5 @@
 /** Estrae l'anno da una data ISO; le date mancanti o malformate non appartengono a un anno. */
-export function annoDaIso(data: string): number | null {
+function annoDaIso(data: string): number | null {
   const valore = Number(data.slice(0, 4));
   return /^\d{4}-\d{2}-\d{2}/.test(data) && Number.isInteger(valore)
     ? valore

@@ -81,7 +81,7 @@ export function rigaCorriere(s: Spedizione): RigaCorriere {
 
 /** Estrae tutti i numeri lotto della spedizione: da s.righe (se presenti) o da s.numero,
  * deduplicati e ordinati naturalmente in senso crescente. */
-export function estraiNumeriLottoSpedizione(s: Spedizione): string[] {
+function estraiNumeriLottoSpedizione(s: Spedizione): string[] {
   const estrai = (valori: string[]): string[] =>
     valori.flatMap((item) =>
       String(item || "")
@@ -101,11 +101,6 @@ export function estraiNumeriLottoSpedizione(s: Spedizione): string[] {
   const univoci = Array.from(new Set(lotti));
   univoci.sort((a, b) => a.localeCompare(b, "it", { numeric: true, sensitivity: "base" }));
   return univoci;
-}
-
-export interface GruppoCorriereA {
-  riga: RigaCorriere;
-  numeri: string[];
 }
 
 /** Prepara le righe per la distinta CORRIERE_A: 1 riga per ogni collo/spedizione presente

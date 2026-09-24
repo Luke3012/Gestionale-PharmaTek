@@ -48,7 +48,7 @@ import {
 } from "./datiProduzione";
 
 /** Un ordine con le sue righe **incomplete** da compilare. */
-export interface GruppoDaCompilare {
+interface GruppoDaCompilare {
   ordine: OrdineDto;
   righe: RecordDto[];
 }
@@ -64,7 +64,7 @@ export interface CompilaTarget {
   righeDaInviare: Array<{ id: string; ordineNumero: string; rigaNumero: number; prodottoNome: string }>;
 }
 
-export type MotivoRigaNonValida = "eliminata" | "spedita" | "lavorata";
+type MotivoRigaNonValida = "eliminata" | "spedita" | "lavorata";
 
 export interface RigaNonValida {
   id: string;
@@ -101,7 +101,7 @@ export function patchProduzione(iniziale: CampiProduzione, corrente: CampiProduz
   return patch;
 }
 
-export function patchDiagnostica(iniziale: CampiDiagnostica, corrente: CampiDiagnostica): Campi {
+function patchDiagnostica(iniziale: CampiDiagnostica, corrente: CampiDiagnostica): Campi {
   const patch: Campi = {};
   const tipoTest = corrente.tipoTest.trim();
   const ml = corrente.ml.trim();

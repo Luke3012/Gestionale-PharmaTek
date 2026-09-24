@@ -10,7 +10,7 @@ import marimbaUrl from "../../assets/sounds/marimba.wav";
 import trilloUrl from "../../assets/sounds/trillo.wav";
 import bollaUrl from "../../assets/sounds/bolla.wav";
 
-export type SuonoId =
+type SuonoId =
   | "nessuno"
   | "campanello"
   | "cristallo"
@@ -38,7 +38,7 @@ export const SUONI: SuonoDef[] = [
   { value: "nessuno", label: "Nessuno", url: null },
 ];
 
-export function suonoDef(value: string): SuonoDef {
+function suonoDef(value: string): SuonoDef {
   return SUONI.find((s) => s.value === value) ?? SUONI[0];
 }
 

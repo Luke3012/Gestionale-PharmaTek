@@ -15,7 +15,6 @@ export {
   indirizzoStrutturatoCompatibile,
   normalizzaIndirizzo,
   pulisciCap,
-  testoConfronto,
 };
 
 export interface IndiceBatchEstratti {
@@ -32,7 +31,7 @@ export interface IndiceClientiEsistenti {
   perEmail: Map<string, RecordDto[]>;
 }
 
-export interface DedupClienteMerge {
+interface DedupClienteMerge {
   canonico: RecordDto;
   duplicati: RecordDto[];
   fields: Campi;
@@ -396,13 +395,6 @@ export function indicizzaBatchEstratto(indice: IndiceBatchEstratti, cliente: Ext
   aggiungiIndiceSet(indice.perEmail, pulisciEmail(cliente.email), idx);
 }
 
-export function trovaDuplicatoBatch(
-  candidato: ExtractedClient,
-  batch: ExtractedClient[],
-): number {
-  return batch.findIndex((esistente) => stessoClienteEstratto(candidato, esistente));
-}
-
 export function trovaDuplicatoBatchIndicizzato(
   candidato: ExtractedClient,
   batch: ExtractedClient[],
@@ -543,12 +535,6 @@ export function trovaCorrispondenzaIndicizzata(
   return null;
 }
 
-export function trovaCorrispondenza(
-  ext: ExtractedClient,
-  dbClients: RecordDto[]
-): RecordDto | null {
-  return trovaCorrispondenzaIndicizzata(ext, creaIndiceClientiEsistenti(dbClients));
-}
 
 export function pianificaDedupClientiAuto(
   dbClients: RecordDto[],

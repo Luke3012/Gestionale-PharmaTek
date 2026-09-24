@@ -8,7 +8,7 @@ import { api, type Identity, type SyncOverview, type UserDto } from "../../lib/t
 import type { CollegatoTipo } from "../promemoria/promemoria";
 
 /** I messaggi riusano l'entità `notifica` prevista in FASE 6E. */
-export const ENTITA_MESSAGGIO = "notifica";
+const ENTITA_MESSAGGIO = "notifica";
 /** Destinatario "broadcast": tutti gli utenti del team (tranne il mittente). */
 export const DEST_TUTTI = "tutti";
 

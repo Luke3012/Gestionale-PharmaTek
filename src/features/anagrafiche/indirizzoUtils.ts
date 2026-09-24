@@ -67,7 +67,7 @@ function distanzaLevenshtein(a: string, b: string): number {
   return dp[a.length][b.length];
 }
 
-export function tokenCompatibile(a: string, b: string): boolean {
+function tokenCompatibile(a: string, b: string): boolean {
   if (a === b) return true;
   if (a.length >= 6 && b.length >= 6 && distanzaLevenshtein(a, b) <= 1) return true;
   return false;

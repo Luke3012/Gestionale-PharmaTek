@@ -198,7 +198,7 @@ export function FormCampiGrid({
   );
 }
 
-export const CampoForm = React.memo(function CampoForm({
+const CampoForm = React.memo(function CampoForm({
   campo,
   valore,
   errore,

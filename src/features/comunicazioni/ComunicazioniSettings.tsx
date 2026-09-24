@@ -65,7 +65,7 @@ const PRESET: ConfigurazioneEmailSalvaInput = {
   password: "",
 };
 
-export const MODELLI_COMUNICAZIONE_DEFAULT: Record<
+const MODELLI_COMUNICAZIONE_DEFAULT: Record<
   TipoModelloComunicazione,
   { titolo: string; oggetto: string; corpo: string }
 > = {

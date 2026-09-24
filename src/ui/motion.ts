@@ -44,29 +44,12 @@ export function stileVistaTabellaParallela(
   };
 }
 export const easeOut = [0.2, 0.8, 0.2, 1] as const;
-export const easeInOut = [0.4, 0, 0.2, 1] as const;
-
-// Solo dissolvenza (niente spostamento): per contenuti annidati dentro un contenitore
-// che già fa il lift (es. Pagina dentro la transizione di rotta) → evita il doppio
-// translate. Usata anche come reveal "fetch-then-render".
-export const fadeOnly: Variants = {
-  initial: { opacity: 0 },
-  animate: { opacity: 1, transition: { duration: dur.base, ease: easeOut } },
-  exit: { opacity: 0, transition: { duration: dur.fast, ease: easeOut } },
-};
 
 // Entrata vista/elemento: fade + leggero slide verso l'alto.
 export const fadeSlide: Variants = {
   initial: { opacity: 0, y: 8 },
   animate: { opacity: 1, y: 0, transition: { duration: dur.base, ease: easeOut } },
   exit: { opacity: 0, y: 6, transition: { duration: dur.fast, ease: easeOut } },
-};
-
-// Modali/pannelli: fade + zoom soft.
-export const fadeZoom: Variants = {
-  initial: { opacity: 0, scale: 0.96 },
-  animate: { opacity: 1, scale: 1, transition: { duration: dur.base, ease: easeOut } },
-  exit: { opacity: 0, scale: 0.97, transition: { duration: dur.fast, ease: easeOut } },
 };
 
 // Toast: slide-in da destra.

@@ -44,7 +44,7 @@ export function cercaCAPDigitato(cap: string): RisultatoCAP | null | undefined {
  * 2. Nomi che contengono la query
  * Dentro ogni gruppo, ordine alfabetico.
  */
-export function cercaPerCitta(query: string, limite = 10): ComuneInfo[] {
+function cercaPerCitta(query: string, limite = 10): ComuneInfo[] {
   const q = query
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")

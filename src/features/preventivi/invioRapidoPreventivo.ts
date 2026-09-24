@@ -87,7 +87,7 @@ export function variabiliPreventivo(
   };
 }
 
-export function canaliDisponibiliPreventivo(
+function canaliDisponibiliPreventivo(
   preventivo: Preventivo,
 ): CanaleComunicazione[] {
   return [

@@ -11,10 +11,8 @@ import {
 } from "@tabler/icons-react";
 import type { RecordDto } from "../../lib/tauri";
 import { CATEGORIE_PRODOTTO } from "./categorie";
-export { CATEGORIE_PRODOTTO, categoriaDef, type CategoriaProdotto } from "./categorie";
-export { centsToEurStr, eurToCents } from "../../lib/money";
 
-export type CampoTipo =
+type CampoTipo =
   | "testo"
   | "email"
   | "tel"
@@ -314,7 +312,7 @@ export const REGISTRO_MEDICO = REGISTRI.find((registro) => registro.entity === "
 
 // ---- Validazione ----
 
-export function validaCampo(campo: Campo, valore: unknown): string | null {
+function validaCampo(campo: Campo, valore: unknown): string | null {
   const s = typeof valore === "string" ? valore.trim() : valore;
   const vuoto = s === undefined || s === null || s === "";
 

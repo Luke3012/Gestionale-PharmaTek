@@ -35,12 +35,12 @@ import {
 import { DebouncedInput } from "../../ui/DebouncedInput";
 import {
   REGISTRI,
-  centsToEurStr,
   type Colonna,
   type ColonnaCtx,
   type Opzione,
   type Registro,
 } from "./registri";
+import { centsToEurStr } from "../../lib/money";
 import { useCloseOnScroll } from "../../lib/closeOnScroll";
 import { dur, durataSwitchTabelleMs, useAnimazioniRidotte } from "../../ui/motion";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";

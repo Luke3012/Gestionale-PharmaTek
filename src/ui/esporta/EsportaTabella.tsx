@@ -36,7 +36,7 @@ import { formattaDataIsoItaliana as formatData } from "../../lib/date";
 import { useModalSnapshot } from "../useModalSnapshot";
 import { setConToggle } from "../../lib/set";
 
-export type TipoCella = "testo" | "euro" | "data" | "numero";
+type TipoCella = "testo" | "euro" | "data" | "numero";
 export type Orientamento = "verticale" | "orizzontale";
 
 /** Definizione di una colonna esportabile (riusabile da qualsiasi vista). */
@@ -101,7 +101,7 @@ function valoreCella<T>(c: ColonnaExport<T>, r: T): string | number {
  * portano `esporta`, marcando come pre-spuntate quelle attualmente `visibili`.
  * `defs` va passato nell'ordine di visualizzazione (così l'output segue le colonne).
  */
-export function colonneEsportabili<T>(
+function colonneEsportabili<T>(
   defs: { key: string; label: string; esporta?: MetaExport<T> }[],
   visibili: Set<string>
 ): ColonnaExport<T>[] {

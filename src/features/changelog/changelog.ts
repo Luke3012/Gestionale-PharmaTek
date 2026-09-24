@@ -40,10 +40,6 @@ export const VERSIONI: VersioneChangelog[] = [
   ...((dati as { versioni: VersioneChangelog[] }).versioni ?? []),
 ].sort((a, b) => confrontaDesc(a.versione, b.versione));
 
-/** Voce changelog di una specifica versione (o `null` se non documentata). */
-export function vociDellaVersione(versione: string): VersioneChangelog | null {
-  return VERSIONI.find((v) => v.versione === versione) ?? null;
-}
 
 /** Chiave localStorage: ultima versione di cui l'utente ha già visto le novità. */
 const CHIAVE_VISTO = "pt.changelogVisto";

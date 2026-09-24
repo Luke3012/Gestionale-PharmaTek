@@ -32,7 +32,6 @@ import {
 } from "../../lib/tauri";
 import { oggiIso } from "../../lib/date";
 import { formattaEuroCentesimi as euroCent } from "../../lib/money";
-export { formattaEuroCentesimi as euroCent } from "../../lib/money";
 import { inviaEventoConConferma, portaFinestraInPrimoPiano } from "../../lib/finestreTauri";
 import { giorniTra, statoScadenza, type CollegatoTipo, type Promemoria } from "../promemoria/promemoria";
 import { DEST_TUTTI, type Messaggio } from "./messaggi";
@@ -347,26 +346,6 @@ function derivaComunicazioni(
     });
 }
 
-export function derivaSuggerimenti(
-  suggerimenti: Suggerimento[],
-): Notifica[] {
-  return suggerimenti.map((suggerimento) => ({
-    id: suggerimento.id,
-    tipo: "suggerimento",
-    titolo: suggerimento.titolo,
-    dettaglio: suggerimento.dettaglio,
-    urgenza:
-      suggerimento.priorita >= 90
-        ? "scaduto"
-        : suggerimento.priorita >= 75
-          ? "oggi"
-          : "info",
-    ts: suggerimento.aggiornatoMs,
-    collegato: null,
-    suggerimento: suggerimento.collegamento,
-  }));
-}
-
 /** Costruisce l'elenco completo delle notifiche correnti della campanella (ordinato). */
 export function derivaNotifiche(d: DatiNotifiche): Notifica[] {
   const oggi = d.oggi ?? oggiIso();
@@ -485,14 +464,6 @@ export async function scartaTutte(ids: string[], identity?: Identity): Promise<v
   await rimuoviDaOverlay(ids);
 }
 
-/** Riporta una notifica stabile allo stato "non vista" per l'utente corrente.
- *  Serve quando lo stesso id rappresenta una nuova occorrenza logica, per esempio
- *  una segnalazione tolta e rimessa rapidamente sullo stesso ordine. */
-export async function riattivaNotifica(notificaId: string, identity?: Identity): Promise<void> {
-  const userId = await userIdStatoNotifiche(identity);
-  await riattivaNotificaPerUser(notificaId, userId);
-}
-
 async function riattivaNotificaPerUser(
   notificaId: string,
   userId: string,
@@ -556,11 +527,6 @@ export async function riattivaPromemoria(promemoriaId: string, identity?: Identi
       })
     )
   );
-}
-
-/** Quante NON viste (= non lette) tra `notifiche`: è il numero del badge. */
-export function contaNonViste(notifiche: Notifica[], viste: Set<string>): number {
-  return notifiche.reduce((n, x) => (viste.has(x.id) ? n : n + 1), 0);
 }
 
 /** Conteggio della campanella includendo gli stati operativi solo-locali. */

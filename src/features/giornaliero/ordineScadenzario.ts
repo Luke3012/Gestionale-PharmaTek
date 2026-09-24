@@ -119,7 +119,7 @@ export function confrontaPagamentiAperti(a: Pagamento, b: Pagamento): number {
  * 3. Se rimangono solo voci a contrassegno, viene proposta la prima di esse.
  * 4. A parità di canale di incasso, ordine cronologico di scadenza (e tie-break su id).
  */
-export function confrontaPagamentiDaSaldare(
+function confrontaPagamentiDaSaldare(
   a: Pagamento,
   b: Pagamento,
   conti?: RecordDto[]

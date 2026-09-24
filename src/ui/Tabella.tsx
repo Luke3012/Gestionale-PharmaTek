@@ -256,7 +256,7 @@ export type TabellaProps<T> = DataTableProps<T> & {
 
 const eventoResetLarghezze = "pt:tabella-reset-larghezze";
 
-export function chiaveLarghezzeTabella(storeColumnsKey: string): string {
+function chiaveLarghezzeTabella(storeColumnsKey: string): string {
   return `pt.tabella.${storeColumnsKey}.columns-width.v2`;
 }
 

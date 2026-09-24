@@ -21,7 +21,7 @@ export interface StatoPagDef {
   manuale: boolean;
 }
 
-export const STATI_PAGAMENTO: StatoPagDef[] = [
+const STATI_PAGAMENTO: StatoPagDef[] = [
   { value: "da_saldare", label: "Da saldare", color: "red", Ico: IconAlertCircle, manuale: true },
   { value: "saldato", label: "Saldato", color: "teal", Ico: IconCircleCheck, manuale: true },
   { value: "saldato_da_verificare", label: "Da verificare", color: "lime", Ico: IconEye, manuale: true },

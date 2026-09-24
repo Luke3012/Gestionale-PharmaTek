@@ -27,13 +27,13 @@ export type FiltriModo = "compatti" | "auto" | "espansi";
 /** Densità delle tabelle globali. */
 export type DensitaTabelle = "compatta" | "standard";
 
-export const ZOOM_UI_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5] as const;
+const ZOOM_UI_STEPS = [0.8, 0.9, 1, 1.1, 1.25, 1.5] as const;
 export const ZOOM_UI_OPTIONS = ZOOM_UI_STEPS.map((value) => ({
   value: String(value),
   label: value === 1 ? "100% (predefinito)" : `${Math.round(value * 100)}%`,
 }));
 
-export function prossimoZoomUI(attuale: number, direzione: 1 | -1): number {
+function prossimoZoomUI(attuale: number, direzione: 1 | -1): number {
   const corrente = Number.isFinite(attuale) && attuale > 0 ? attuale : 1;
   if (direzione > 0) {
     return ZOOM_UI_STEPS.find((step) => step > corrente + 0.001) ?? ZOOM_UI_STEPS[ZOOM_UI_STEPS.length - 1];
@@ -106,9 +106,9 @@ interface Prefs {
 
 const PrefsContext = createContext<Prefs | null>(null);
 
-export const EVENTO_PREFERENZE_CAMBIATE = "pt:preferenze-cambiate";
+const EVENTO_PREFERENZE_CAMBIATE = "pt:preferenze-cambiate";
 
-export type ValorePreferenza =
+type ValorePreferenza =
   | string
   | number
   | boolean

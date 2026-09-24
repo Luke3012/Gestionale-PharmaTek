@@ -3,7 +3,7 @@
 
 export type ToastTipo = "info" | "success" | "warning" | "error" | "loading";
 
-export interface ToastAzione {
+interface ToastAzione {
   label: string;
   onClick: () => void;
 }

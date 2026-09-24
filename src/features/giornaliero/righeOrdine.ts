@@ -124,7 +124,7 @@ export function azzeraRigaForm(riga: RigaForm, diag = false): RigaForm {
   };
 }
 
-export function totaleRigaForm(riga: RigaForm): number {
+function totaleRigaForm(riga: RigaForm): number {
   return (riga.prezzo === "" ? 0 : Math.round(Number(riga.prezzo) * 100)) * (riga.qta || 0);
 }
 

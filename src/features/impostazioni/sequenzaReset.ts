@@ -1,5 +1,5 @@
-export const PRESSIONI_RESET = 5;
-export const FINESTRA_RESET_MS = 1_500;
+const PRESSIONI_RESET = 5;
+const FINESTRA_RESET_MS = 1_500;
 
 export type StatoSequenzaReset = {
   conteggio: number;
