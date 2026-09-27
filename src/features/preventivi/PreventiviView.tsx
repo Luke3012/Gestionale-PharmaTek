@@ -217,7 +217,7 @@ function targetComunicazionePreventivo(
 
 export function PreventiviView({ identity }: { identity: Identity }) {
   const { link: deepLink, consuma } = useDeepLink("/preventivi");
-  const { anno, giorniSollecitoPreventivi, ordineFinestra } = usePrefs();
+  const { anno, giorniSollecitoPreventivi, ordineFinestra, filtriModo } = usePrefs();
   const sogliaGiorniSollecito = giorniSollecitoPreventivi;
   const colonne = useColonnePreventivi();
   const [preventivi, setPreventivi] = useState<Preventivo[]>([]);
@@ -1103,13 +1103,13 @@ export function PreventiviView({ identity }: { identity: Identity }) {
       }
     >
       <Stack h="100%" gap="sm">
-        <Group gap="sm" wrap="nowrap" align="flex-end">
+        <Group gap="sm" wrap={filtriModo === "espansi" ? "wrap" : "nowrap"} align="flex-end">
           <DebouncedInput
             leftSection={<IconSearch size={16} />}
             placeholder="Cerca preventivo, cliente o lotto…"
             value={cerca}
             onChange={setCerca}
-            style={{ flex: "0 1 230px", width: 230, maxWidth: "100%" }}
+            style={{ flex: filtriModo === "espansi" ? "1 1 230px" : "0 1 230px", width: 230, maxWidth: filtriModo === "espansi" ? 360 : "100%" }}
           />
           <FiltriPopover
             attivi={nFiltri}

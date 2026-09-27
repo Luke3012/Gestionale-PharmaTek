@@ -618,6 +618,7 @@ pub fn run() {
             commands::righe_da_spedire,
             commands::spedizioni_lista,
             commands::spedizione_crea,
+            commands::spedizioni_crea_batch,
             commands::spedizione_riga_rimuovi,
             commands::spedizione_collo_manuale,
             commands::spedizione_annulla,

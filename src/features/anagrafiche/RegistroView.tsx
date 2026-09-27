@@ -26,6 +26,7 @@ import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
 import { Tabella, type DataTableColumn, type DataTableSortStatus } from "../../ui/Tabella";
 import { FiltriPopover } from "../../ui/FiltriPopover";
+import { usePrefs } from "../../lib/prefs";
 import { StoricoModal } from "../../ui/StoricoModal";
 import {
   catturaOrigineCestino,
@@ -109,6 +110,7 @@ export function RegistroView({
   const ridotte = useAnimazioniRidotte();
   const [records, setRecords] = useState<RecordDto[]>(() => cacheRecords.get(registro.entity) ?? []);
   const [caricamento, setCaricamento] = useState(() => !cacheRecords.has(registro.entity));
+  const { filtriModo } = usePrefs();
   const [cerca, setCerca] = useState("");
   const cercaDifferita = useDeferredValue(cerca);
   const [mostraTuttiClienti, setMostraTuttiClienti] = useState(() => localStorage.getItem(CLIENTI_TUTTI_STORAGE) === "1");
@@ -635,13 +637,13 @@ export function RegistroView({
       }}
     >
       <Group justify="space-between" wrap="wrap" align="flex-end">
-        <Group gap="xs" wrap="nowrap" align="flex-end" style={{ flex: 1, minWidth: 0 }}>
+        <Group gap="xs" wrap={filtriModo === "espansi" ? "wrap" : "nowrap"} align="flex-end" style={{ flex: 1, minWidth: 0 }}>
           <DebouncedInput
             placeholder={`Cerca tra i ${registro.etichetta.toLowerCase()}…`}
             leftSection={<IconSearch size={16} />}
             value={cerca}
             onChange={setCerca}
-            style={{ flex: "1 1 200px", maxWidth: 300 }}
+            style={{ flex: "1 1 200px", maxWidth: filtriModo === "espansi" ? 360 : 300 }}
           />
           {filtriAnagrafiche.length > 0 && (
             <FiltriPopover

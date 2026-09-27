@@ -474,7 +474,7 @@ export function ProvvigioniView({
   /** Deep-link dashboard: periodo (dal/al) e agente da pre-applicare. */
   filtroIniziale?: FiltroProvvigioniIniziale;
 } = {}) {
-  const { anno, ridurreAnimazioni } = usePrefs();
+  const { anno, ridurreAnimazioni, filtriModo } = usePrefs();
   const [agenti, setAgenti] = useState<RecordDto[]>([]);
   const [agenteId, setAgenteId] = useState<string | null>(null);
   const [periodo, setPeriodo] = useState<Periodo>("tutto");
@@ -633,7 +633,7 @@ export function ProvvigioniView({
       ridurreAnimazioni={ridurreAnimazioni}
     >
       {/* Barra filtri + export */}
-      <Group gap="sm" wrap="nowrap" align="flex-end">
+      <Group gap="sm" wrap={filtriModo === "espansi" ? "wrap" : "nowrap"} align="flex-end">
         <FiltriPopover
           attivi={nFiltri}
           onAzzera={azzeraFiltri}

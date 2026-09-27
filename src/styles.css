@@ -2186,7 +2186,11 @@ body,
   min-width: 120px;
 }
 
-.pt-crediti-filtri,
+.pt-crediti-filtri {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .pt-crediti-sollecita,
 .pt-crediti-toolbar > .pt-azione-adattiva-wrap,
 .pt-crediti-toolbar > .pt-colonne-adattive {
@@ -2198,9 +2202,6 @@ body,
 }
 
 @container crediti-toolbar (max-width: 960px) {
-  .pt-crediti-ricerca {
-    max-width: none !important;
-  }
 
   .pt-crediti-label-estesa,
   .pt-crediti-toolbar

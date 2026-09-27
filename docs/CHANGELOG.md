@@ -2,6 +2,10 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.3 — 2026-09-27
+
+🤖 Sono stati risolti alcuni problemini estetici e di performance.
+
 ## 0.8.2 — 2026-09-23
 
 🚛 Migliorie, per offrire l'esperienza migliore di sempre.

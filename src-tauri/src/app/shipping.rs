@@ -1,5 +1,40 @@
 use super::*;
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GruppoDestinatarioIn {
+    pub ordine_id: String,
+    pub row_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpedizioneBatchIn {
+    pub data: String,
+    pub corriere_id: String,
+    pub colli: i64,
+    pub peso: i64,
+    #[serde(default)]
+    pub servizi: String,
+    pub preavviso: bool,
+    #[serde(default)]
+    pub mezzo: String,
+    #[serde(default)]
+    pub contrassegno: i64,
+    #[serde(default)]
+    pub note: String,
+    pub numeri: Vec<RigaNumeroIn>,
+    #[serde(default)]
+    pub gruppi_destinatari: Vec<GruppoDestinatarioIn>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpedizioniCreaBatchIn {
+    pub lotto: String,
+    pub shipments: Vec<SpedizioneBatchIn>,
+}
+
 pub(super) struct SpedizioneCreateParams<'a> {
     pub data: &'a str,
     pub corriere_id: &'a str,
@@ -22,15 +57,15 @@ fn pianifica_pagamenti_alla_consegna(
     projection: &crate::projection::Projection,
     params: &SpedizioneCreateParams<'_>,
     spedizione_id: &str,
-) -> Result<Vec<Mutation>, String> {
+) -> Result<(Vec<Mutation>, HashMap<String, i64>), String> {
     let conto_transito = match params.mezzo {
         "contrassegno" => CONTO_CONTRASSEGNO,
         "assegno" => CONTO_ASSEGNO,
-        _ => return Ok(Vec::new()),
+        _ => return Ok((Vec::new(), HashMap::new())),
     };
     let importo_consegna = params.contrassegno.max(0);
     if importo_consegna == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashMap::new()));
     }
 
     let mut ordini_ids = Vec::new();
@@ -139,7 +174,7 @@ fn pianifica_pagamenti_alla_consegna(
 
     let totale_aperto: i64 = piani.iter().map(|piano| piano.totale).sum();
     if totale_aperto <= 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashMap::new()));
     }
     let importo_da_allineare = importo_consegna.min(totale_aperto);
     let quote_ordini = ripartisci_importo_proporzionale(
@@ -147,8 +182,10 @@ fn pianifica_pagamenti_alla_consegna(
         &piani.iter().map(|piano| piano.totale).collect::<Vec<_>>(),
     );
     let mut mutations = Vec::new();
+    let mut quote_per_ordine = HashMap::new();
 
     for (piano, quota_consegna) in piani.into_iter().zip(quote_ordini) {
+        quote_per_ordine.insert(piano.ordine_id.clone(), quota_consegna);
         if quota_consegna <= 0 {
             continue;
         }
@@ -269,7 +306,7 @@ fn pianifica_pagamenti_alla_consegna(
         }
     }
 
-    Ok(mutations)
+    Ok((mutations, quote_per_ordine))
 }
 
 /// Unica costruzione delle mutazioni di un collo: il flusso manuale e la bollettazione
@@ -281,6 +318,15 @@ pub(super) fn prepara_spedizione_mutations(
     lotto: &str,
     params: &SpedizioneCreateParams<'_>,
 ) -> Result<Vec<Mutation>, String> {
+    Ok(prepara_spedizione_mutations_e_quote(projection, id, lotto, params)?.0)
+}
+
+fn prepara_spedizione_mutations_e_quote(
+    projection: &crate::projection::Projection,
+    id: &str,
+    lotto: &str,
+    params: &SpedizioneCreateParams<'_>,
+) -> Result<(Vec<Mutation>, HashMap<String, i64>), String> {
     let corriere = if params.corriere_id.is_empty() {
         None
     } else {
@@ -386,7 +432,126 @@ pub(super) fn prepara_spedizione_mutations(
             ));
         }
     }
-    mutations.extend(pianifica_pagamenti_alla_consegna(projection, params, id)?);
+    let (pagamenti, quote) = pianifica_pagamenti_alla_consegna(projection, params, id)?;
+    mutations.extend(pagamenti);
+    Ok((mutations, quote))
+}
+
+/// Crea il collo completo con il consueto piano pagamenti e aggiunge, nello stesso
+/// batch, i record nascosti che permettono di separare gli ordini in seguito.
+pub(super) fn prepara_spedizione_con_destinatari_mutations(
+    projection: &crate::projection::Projection,
+    id: &str,
+    lotto: &str,
+    params: &SpedizioneCreateParams<'_>,
+    gruppi: &[GruppoDestinatarioIn],
+) -> Result<Vec<Mutation>, String> {
+    if gruppi.is_empty() {
+        return prepara_spedizione_mutations(projection, id, lotto, params);
+    }
+    if gruppi.len() < 2 {
+        return Err("un collo unito richiede almeno due ordini".into());
+    }
+    let mut ordini = HashSet::new();
+    let mut righe_gruppi = HashSet::new();
+    for gruppo in gruppi {
+        if gruppo.ordine_id.is_empty()
+            || gruppo.row_ids.is_empty()
+            || !ordini.insert(gruppo.ordine_id.as_str())
+        {
+            return Err("gruppi destinatari non validi".into());
+        }
+        for rid in &gruppo.row_ids {
+            if !righe_gruppi.insert(rid.as_str()) {
+                return Err("una riga compare in più destinatari".into());
+            }
+            let riga = projection
+                .get("riga_ordine", rid)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "una riga del destinatario non esiste più".to_string())?;
+            if str_field(&riga.data, "ordine_id") != gruppo.ordine_id {
+                return Err("una riga non appartiene all'ordine indicato".into());
+            }
+        }
+    }
+    let righe_collo: HashSet<&str> = params.righe.iter().map(|r| r.riga_id.as_str()).collect();
+    if righe_collo.len() != params.righe.len() || righe_collo != righe_gruppi {
+        return Err("i destinatari non coprono le righe del collo".into());
+    }
+
+    let (mut mutations, quote) =
+        prepara_spedizione_mutations_e_quote(projection, id, lotto, params)?;
+    let mut quote_collo: Vec<i64> = gruppi
+        .iter()
+        .map(|g| quote.get(&g.ordine_id).copied().unwrap_or(0))
+        .collect();
+    let pesi_righe: Vec<i64> = gruppi.iter().map(|g| g.row_ids.len() as i64).collect();
+    let dividi_colli = |totale: i64| -> Vec<i64> {
+        let extra = (totale - gruppi.len() as i64).max(0);
+        ripartisci_importo_proporzionale(extra, &pesi_righe)
+            .into_iter()
+            .map(|quota| quota + 1)
+            .collect()
+    };
+    let colli_separati = dividi_colli(params.colli);
+    let pesi_separati = dividi_colli(params.peso);
+    // L'importo configurato può superare il saldo aperto: la quota non pianificata
+    // resta sulla primaria, come avveniva nel collo unico precedente.
+    quote_collo[0] += (params.contrassegno - quote_collo.iter().sum::<i64>()).max(0);
+    for (field, value) in [
+        ("dest_ordine_primario_id", json!(gruppi[0].ordine_id)),
+        ("dest_unione_creata_a_priori", json!(true)),
+        ("dest_unione_colli_pre", json!(colli_separati[0])),
+        ("dest_unione_peso_pre", json!(pesi_separati[0])),
+        ("dest_unione_contrassegno_pre", json!(quote_collo[0])),
+        ("dest_unione_preavviso_pre", json!(params.preavviso)),
+    ] {
+        mutations.push(Mutation::new(
+            "spedizione",
+            id,
+            EventBody::FieldSet {
+                field: field.into(),
+                value,
+            },
+        ));
+    }
+    for (index, (gruppo, quota)) in gruppi.iter().zip(quote_collo).enumerate().skip(1) {
+        let sid = Ulid::generate().to_string();
+        mutations.push(Mutation::new("spedizione", &sid, EventBody::Created));
+        for (field, value) in [
+            ("lotto", json!(lotto)),
+            ("data", json!(params.data)),
+            ("corriere_id", json!(params.corriere_id)),
+            ("colli", json!(colli_separati[index])),
+            ("peso", json!(pesi_separati[index])),
+            ("servizi", json!(params.servizi)),
+            ("preavviso", json!(params.preavviso)),
+            ("mezzo", json!(params.mezzo)),
+            ("contrassegno", json!(quota)),
+            ("note", json!("")),
+            ("dest_unito_in", json!(id)),
+            ("dest_unione_creata_a_priori", json!(true)),
+        ] {
+            mutations.push(Mutation::new(
+                "spedizione",
+                &sid,
+                EventBody::FieldSet {
+                    field: field.into(),
+                    value,
+                },
+            ));
+        }
+        for rid in &gruppo.row_ids {
+            mutations.push(Mutation::new(
+                "riga_ordine",
+                rid,
+                EventBody::FieldSet {
+                    field: "spedizione_pre_dest".into(),
+                    value: json!(sid),
+                },
+            ));
+        }
+    }
     Ok(mutations)
 }
 
@@ -761,8 +926,11 @@ impl AppState {
                             }
                         };
                         // Info collo dal primo ordine incluso (stesso destinatario).
+                        let ordine_primario = str_field(&r.data, "dest_ordine_primario_id");
                         let ordine_id = righe
-                            .first()
+                            .iter()
+                            .find(|x| x.ordine_id == ordine_primario)
+                            .or_else(|| righe.first())
                             .map(|x| x.ordine_id.clone())
                             .unwrap_or_default();
                         let (cliente_id, medico_id, agente_id, _) =
@@ -967,13 +1135,97 @@ impl AppState {
         })
     }
 
+    /// Crea tutti i colli del modale in un solo batch verificato. Le unioni
+    /// preventive sono costruite insieme alle spedizioni, senza chiamate successive.
+    pub fn spedizioni_crea_batch(
+        &self,
+        input: SpedizioniCreaBatchIn,
+    ) -> AppResult<Vec<SpedizioneDto>> {
+        if input.shipments.is_empty() {
+            return Err("nessuna spedizione preparata".into());
+        }
+        let ids: Vec<String> = input
+            .shipments
+            .iter()
+            .map(|_| Ulid::generate().to_string())
+            .collect();
+        let lotto = if input.lotto.is_empty() {
+            Ulid::generate().to_string()
+        } else {
+            input.lotto.clone()
+        };
+        self.with_engine(|engine| {
+            engine
+                .emit_built_checked(|projection| {
+                    let mut mutations = Vec::new();
+                    let mut righe_viste = HashSet::new();
+                    for (shipment, id) in input.shipments.iter().zip(&ids) {
+                        if shipment.numeri.is_empty() {
+                            return Err("una spedizione non contiene righe".into());
+                        }
+                        for numero in &shipment.numeri {
+                            if !righe_viste.insert(numero.riga_id.as_str()) {
+                                return Err("la stessa riga compare in più spedizioni".into());
+                            }
+                        }
+                        let params = SpedizioneCreateParams {
+                            data: &shipment.data,
+                            corriere_id: &shipment.corriere_id,
+                            colli: shipment.colli,
+                            peso: shipment.peso,
+                            servizi: &shipment.servizi,
+                            preavviso: shipment.preavviso,
+                            mezzo: &shipment.mezzo,
+                            contrassegno: shipment.contrassegno,
+                            note: &shipment.note,
+                            righe: &shipment.numeri,
+                        };
+                        mutations.extend(prepara_spedizione_con_destinatari_mutations(
+                            projection,
+                            id,
+                            &lotto,
+                            &params,
+                            &shipment.gruppi_destinatari,
+                        )?);
+                    }
+                    Ok(mutations)
+                })
+                .map_err(es)?;
+
+            let mut ordini = HashSet::new();
+            for shipment in &input.shipments {
+                for numero in &shipment.numeri {
+                    if let Some(riga) = engine
+                        .with_projection(|p| p.get("riga_ordine", &numero.riga_id).ok().flatten())
+                    {
+                        let oid = str_field(&riga.data, "ordine_id");
+                        if !oid.is_empty() {
+                            ordini.insert(oid);
+                        }
+                    }
+                }
+            }
+            let soglia_chiusura = data_giorni_fa(GIORNI_CHIUSURA);
+            for oid in &ordini {
+                conferma_se_nuovo(engine, oid)?;
+                aggiorna_stato_evasione(engine, oid)?;
+                let data_sped = engine.with_projection(|p| ordine_data_spedizione(p, oid));
+                riallinea_scadenze_da_spedizione(engine, oid, &data_sped)?;
+                prova_chiudi_ordine(engine, oid, &soglia_chiusura)?;
+            }
+            ids.iter()
+                .map(|id| self.spedizione_dto(engine, id))
+                .collect()
+        })
+    }
+
     /// Rimuove un **singolo prodotto** da un collo effettuato (FASE 7): la riga torna fra
     /// quelle «da spedire» (conserva il suo numero), si ricalcola lo stato di evasione
     /// dell'ordine e — se il collo resta senza righe — la spedizione viene eliminata
     /// (`Purged`, non va nel Cestino, come l'annullo). No-op se la riga non è spedita.
     pub fn spedizione_riga_rimuovi(&self, riga_id: &str) -> AppResult<()> {
         self.with_engine(|engine| {
-            let (sid, oid) = engine.with_projection(|p| {
+            let (sid, oid, pre_dest) = engine.with_projection(|p| {
                 p.get("riga_ordine", riga_id)
                     .ok()
                     .flatten()
@@ -981,6 +1233,7 @@ impl AppState {
                         (
                             str_field(&r.data, "spedizione_id"),
                             str_field(&r.data, "ordine_id"),
+                            str_field(&r.data, "spedizione_pre_dest"),
                         )
                     })
                     .unwrap_or_default()
@@ -995,8 +1248,42 @@ impl AppState {
                 &[
                     ("stato_riga", json!("da_spedire")),
                     ("spedizione_id", json!("")),
+                    ("spedizione_pre_dest", json!("")),
                 ],
             )?;
+            if !pre_dest.is_empty() {
+                let altre_righe = engine.with_projection(|p| {
+                    p.list("riga_ordine")
+                        .unwrap_or_default()
+                        .into_iter()
+                        .any(|r| str_field(&r.data, "spedizione_pre_dest") == pre_dest)
+                });
+                if !altre_righe {
+                    engine
+                        .emit("spedizione", &pre_dest, EventBody::Purged)
+                        .map_err(es)?;
+                    let restano_destinatari = engine.with_projection(|p| {
+                        p.list("spedizione")
+                            .unwrap_or_default()
+                            .into_iter()
+                            .any(|s| str_field(&s.data, "dest_unito_in") == sid)
+                    });
+                    if !restano_destinatari {
+                        set_fields(
+                            engine,
+                            "spedizione",
+                            &sid,
+                            &[
+                                ("dest_unione_colli_pre", json!(0)),
+                                ("dest_unione_peso_pre", json!(0)),
+                                ("dest_unione_contrassegno_pre", json!(0)),
+                                ("dest_unione_preavviso_pre", json!(false)),
+                                ("dest_unione_creata_a_priori", json!(false)),
+                            ],
+                        )?;
+                    }
+                }
+            }
             // Se il collo resta senza righe, eliminalo del tutto.
             let (restanti, current_colli, current_contrassegno, mezzo) =
                 engine.with_projection(|p| {
@@ -1022,9 +1309,7 @@ impl AppState {
                 });
 
             if restanti == 0 {
-                engine
-                    .emit("spedizione", &sid, EventBody::Purged)
-                    .map_err(es)?;
+                annulla_spedizione_inner(engine, &sid)?;
             } else {
                 let nuovo_colli = std::cmp::min(current_colli, restanti as i64);
                 let target_contrassegno = if !mezzo.is_empty() {
@@ -1384,6 +1669,17 @@ impl AppState {
             if recs.len() != ids.len() {
                 return Err("una delle spedizioni selezionate non esiste più".into());
             }
+            let sorgente_gia_unita = engine.with_projection(|p| {
+                p.list("spedizione")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|r| sorgenti.contains(&str_field(&r.data, "dest_unito_in")))
+            });
+            if sorgente_gia_unita {
+                return Err(
+                    "un collo con destinatari già uniti deve restare quello principale".into(),
+                );
+            }
             let target_data = recs
                 .get(&target)
                 .ok_or_else(|| "spedizione principale non trovata".to_string())?;
@@ -1488,8 +1784,35 @@ impl AppState {
             if sorgenti.is_empty() {
                 return Err("questa spedizione non risulta piu unita ad altri destinatari".into());
             }
+            let preventiva = bool_field(&target_data, "dest_unione_creata_a_priori");
+            let mut contrassegno_pre = i64_field(&target_data, "dest_unione_contrassegno_pre");
+            if preventiva {
+                // Se il totale del collo è stato modificato dopo la creazione, ripartiamo
+                // il valore corrente secondo le quote originali prima di separare.
+                let mut pesi = vec![contrassegno_pre];
+                pesi.extend(engine.with_projection(|p| {
+                    sorgenti
+                        .iter()
+                        .map(|sid| {
+                            p.get("spedizione", sid)
+                                .ok()
+                                .flatten()
+                                .map(|s| i64_field(&s.data, "contrassegno"))
+                                .unwrap_or(0)
+                        })
+                        .collect::<Vec<_>>()
+                }));
+                let quote = ripartisci_importo_proporzionale(
+                    i64_field(&target_data, "contrassegno").max(0),
+                    &pesi,
+                );
+                contrassegno_pre = quote[0];
+                for (sid, quota) in sorgenti.iter().zip(quote.into_iter().skip(1)) {
+                    set_fields(engine, "spedizione", sid, &[("contrassegno", json!(quota))])?;
+                }
+            }
             let sorgenti_set: HashSet<String> = sorgenti.iter().cloned().collect();
-            let righe: Vec<(String, String)> = engine.with_projection(|p| {
+            let righe: Vec<(String, String, String)> = engine.with_projection(|p| {
                 p.list("riga_ordine")
                     .unwrap_or_default()
                     .into_iter()
@@ -1498,14 +1821,48 @@ impl AppState {
                         if str_field(&r.data, "spedizione_id") == spedizione_id
                             && sorgenti_set.contains(&pre)
                         {
-                            Some((r.id, pre))
+                            Some((r.id, pre, str_field(&r.data, "ordine_id")))
                         } else {
                             None
                         }
                     })
                     .collect()
             });
-            for (rid, sid) in righe {
+            if preventiva {
+                let sorgenti_preventive: HashSet<String> = engine.with_projection(|p| {
+                    sorgenti
+                        .iter()
+                        .filter(|sid| {
+                            p.get("spedizione", sid)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|s| bool_field(&s.data, "dest_unione_creata_a_priori"))
+                        })
+                        .cloned()
+                        .collect()
+                });
+                let per_ordine: HashMap<String, String> = righe
+                    .iter()
+                    .filter(|(_, sid, _)| sorgenti_preventive.contains(sid))
+                    .map(|(_, sid, oid)| (oid.clone(), sid.clone()))
+                    .collect();
+                let pagamenti: Vec<(String, String)> = engine.with_projection(|p| {
+                    p.list("pagamento")
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|pag| str_field(&pag.data, "spedizione_id") == spedizione_id)
+                        .filter_map(|pag| {
+                            per_ordine
+                                .get(&str_field(&pag.data, "ordine_id"))
+                                .map(|sid| (pag.id, sid.clone()))
+                        })
+                        .collect()
+                });
+                for (pid, sid) in pagamenti {
+                    set_fields(engine, "pagamento", &pid, &[("spedizione_id", json!(sid))])?;
+                }
+            }
+            for (rid, sid, _) in righe {
                 set_fields(
                     engine,
                     "riga_ordine",
@@ -1517,18 +1874,26 @@ impl AppState {
                 )?;
             }
             for sid in &sorgenti {
-                set_fields(engine, "spedizione", sid, &[("dest_unito_in", json!(""))])?;
+                set_fields(
+                    engine,
+                    "spedizione",
+                    sid,
+                    &[
+                        ("dest_unito_in", json!("")),
+                        ("dest_unione_creata_a_priori", json!(false)),
+                    ],
+                )?;
             }
 
             let colli_pre = i64_field(&target_data, "dest_unione_colli_pre");
             let peso_pre = i64_field(&target_data, "dest_unione_peso_pre");
-            let contrassegno_pre = i64_field(&target_data, "dest_unione_contrassegno_pre");
             let preavviso_pre = bool_field(&target_data, "dest_unione_preavviso_pre");
             let mut fields = vec![
                 ("dest_unione_colli_pre", json!(0)),
                 ("dest_unione_peso_pre", json!(0)),
                 ("dest_unione_contrassegno_pre", json!(0)),
                 ("dest_unione_preavviso_pre", json!(false)),
+                ("dest_unione_creata_a_priori", json!(false)),
             ];
             if colli_pre > 0 {
                 fields.push(("colli", json!(colli_pre)));
@@ -1778,8 +2143,11 @@ impl AppState {
                     .collect();
                 righe.sort_by(|a, b| a.ordine_numero.cmp(&b.ordine_numero));
                 let corriere_id = str_field(&r.data, "corriere_id");
+                let ordine_primario = str_field(&r.data, "dest_ordine_primario_id");
                 let ordine_id = righe
-                    .first()
+                    .iter()
+                    .find(|x| x.ordine_id == ordine_primario)
+                    .or_else(|| righe.first())
                     .map(|x| x.ordine_id.clone())
                     .unwrap_or_default();
                 let (cliente_id, medico_id, agente_id, _) =

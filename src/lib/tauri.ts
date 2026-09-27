@@ -60,6 +60,7 @@ import type {
   BollettazioneAnalisi,
   BollettazioneConfermaInput,
   BollettazioneConfermaResult,
+  SpedizioneBatchInput,
   Spedizione,
   SpedizioneRiepilogo,
   Pagamento,
@@ -781,6 +782,8 @@ export const api = {
       note: args.note,
       numeri: args.numeri,
     }),
+  spedizioniCreaBatch: (input: { lotto: string; shipments: SpedizioneBatchInput[] }) =>
+    invoke<Spedizione[]>("spedizioni_crea_batch", { input }),
   spedizioneRigaRimuovi: (rigaId: string) =>
     invoke<void>("spedizione_riga_rimuovi", { rigaId }),
   spedizioneColloManuale: (args: {

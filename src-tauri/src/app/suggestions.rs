@@ -231,9 +231,16 @@ pub(crate) fn spedizioni_da_avvisare_per_lotto(
             .get(&spedizione.id)
             .cloned()
             .unwrap_or_default();
+        let primario = str_field(&spedizione.data, "dest_ordine_primario_id");
         let cliente_id = righe
             .iter()
-            .find_map(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
+            .find(|(_, _, ordine_id)| *ordine_id == primario)
+            .and_then(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
+            .or_else(|| {
+                righe
+                    .iter()
+                    .find_map(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
+            })
             .cloned()
             .unwrap_or_default();
         if cliente_id.is_empty() || !clienti_contattabili.contains(&cliente_id) {

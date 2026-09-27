@@ -18,6 +18,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Divider,
   Group,
   Loader,
   Modal,
@@ -1124,12 +1125,30 @@ function SnoozeMenu({
     return isoLocale(d); // niente toISOString: in fuso positivo "+1 giorno" tornava lo stesso
   };
 
+  const dataDefault = useMemo(() => {
+    return scadenza && scadenza > oggiIso() ? scadenza : addGiorni(oggiIso(), 1);
+  }, [scadenza]);
+
+  const [dataScelta, setDataScelta] = useState(dataDefault);
+
+  useEffect(() => {
+    if (aperto) {
+      setDataScelta(dataDefault);
+    }
+  }, [aperto, dataDefault]);
+
   const piu = (giorni: number) => {
     let nuova = addGiorni(base, giorni);
     // Se l'avviso anticipato la rimetterebbe subito in finestra (oggi/presto), spingi la
     // scadenza oltre l'anticipo: così «+N giorni» = N giorni di silenzio per davvero.
     if (statoScadenza(nuova, avviso) !== "futuro") nuova = addGiorni(oggiIso(), giorni + avviso);
     onSnooze(nuova);
+    setAperto(false);
+  };
+
+  const confermaData = () => {
+    if (!dataScelta || dataScelta < oggiIso()) return;
+    onSnooze(dataScelta);
     setAperto(false);
   };
 
@@ -1153,20 +1172,31 @@ function SnoozeMenu({
           <Button size="compact-sm" variant="default" justify="flex-start" onClick={() => piu(7)}>
             +1 settimana
           </Button>
+          <Divider my={2} />
           <TextInput
             ref={dataRef}
             type="date"
             size="xs"
             label="Al giorno"
-            defaultValue={base}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
-              if (v) {
-                onSnooze(v);
-                setAperto(false);
+            min={oggiIso()}
+            value={dataScelta}
+            onChange={(e) => setDataScelta(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                confermaData();
               }
             }}
           />
+          <Button
+            size="compact-xs"
+            variant="light"
+            color="accent"
+            disabled={!dataScelta || dataScelta < oggiIso()}
+            onClick={confermaData}
+          >
+            Posticipa
+          </Button>
         </Stack>
       </Popover.Dropdown>
     </Popover>

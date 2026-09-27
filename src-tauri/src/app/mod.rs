@@ -65,6 +65,8 @@ use restore_coordination::{
     scrivi_restore_manifest, scrivi_restore_prepare,
 };
 use seed_catalog::*;
+#[allow(unused_imports)]
+pub use shipping::{GruppoDestinatarioIn, SpedizioniCreaBatchIn};
 
 #[cfg(not(test))]
 type NativeAppHandle = tauri::AppHandle;
@@ -2957,6 +2959,7 @@ fn annulla_spedizione_inner(engine: &Engine, id: &str) -> AppResult<Vec<String>>
             &[
                 ("stato_riga", json!("da_spedire")),
                 ("spedizione_id", json!("")),
+                ("spedizione_pre_dest", json!("")),
             ],
         )?;
         if !oid.is_empty() && !ordini.contains(oid) {

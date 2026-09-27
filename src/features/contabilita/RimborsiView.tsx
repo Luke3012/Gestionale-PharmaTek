@@ -87,7 +87,7 @@ export function RimborsiView({
   filtroIniziale?: FiltroRimborsiIniziale;
   attiva?: boolean;
 } = {}) {
-  const { anno, ridurreAnimazioni } = usePrefs();
+  const { anno, ridurreAnimazioni, filtriModo } = usePrefs();
   const { righe, caricamento, carica } = useListaContabilita(api.rimborsiLista, "Caricamento rimborsi non riuscito");
   const [statiSel, setStatiSel] = useState<string[]>([]);
   const [originiSel, setOriginiSel] = useState<string[]>([]);
@@ -270,7 +270,7 @@ export function RimborsiView({
       nascosta={!attiva || (caricamento && righe.length === 0)}
       ridurreAnimazioni={ridurreAnimazioni}
     >
-      <Group gap="sm" wrap="nowrap" align="flex-end">
+      <Group gap="sm" wrap={filtriModo === "espansi" ? "wrap" : "nowrap"} align="flex-end">
         <Button leftSection={<IconPlus size={16} />} color="accent" onClick={() => setTarget({})}>
           Nuovo rimborso
         </Button>

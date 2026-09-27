@@ -144,7 +144,7 @@ export function PagamentiView({
   /** Deep-link completo: il nonce riapplica il filtro anche se si ripete lo stesso comando. */
   filtroIniziale?: FiltroPagamentiIniziale;
 }) {
-  const { anno, ridurreAnimazioni } = usePrefs();
+  const { anno, ridurreAnimazioni, filtriModo } = usePrefs();
   const premium = usePremiumAccess();
   const [agenti, setAgenti] = useState<RecordDto[]>([]);
   const [medici, setMedici] = useState<RecordDto[]>([]);
@@ -826,7 +826,7 @@ export function PagamentiView({
       <Group
         className="pt-crediti-toolbar"
         gap="sm"
-        wrap="nowrap"
+        wrap={filtriModo === "espansi" ? "wrap" : "nowrap"}
         align="flex-end"
       >
         <DebouncedInput
@@ -835,9 +835,12 @@ export function PagamentiView({
           leftSection={<IconSearch size={16} />}
           value={cerca}
           onChange={setCerca}
-          style={{ flex: "1 1 200px", maxWidth: 300 }}
+          style={{ flex: "1 1 200px", maxWidth: filtriModo === "espansi" ? 360 : 300 }}
         />
-        <Box className="pt-crediti-filtri">
+        <Box
+          className="pt-crediti-filtri"
+          style={filtriModo === "espansi" ? { display: "contents" } : undefined}
+        >
           <FiltriPopover
             attivi={nFiltri}
             onAzzera={azzeraFiltri}

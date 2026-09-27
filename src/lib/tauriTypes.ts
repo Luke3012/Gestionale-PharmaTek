@@ -826,6 +826,11 @@ export interface BollettazioneSpedizione {
   contrassegno: number;
   note: string;
   rowIds: string[];
+  gruppiDestinatari?: { ordineId: string; rowIds: string[] }[];
+}
+
+export interface SpedizioneBatchInput extends Omit<BollettazioneSpedizione, "rowIds"> {
+  numeri: { rigaId: string; numero: string }[];
 }
 
 export interface BollettazioneConfermaInput {

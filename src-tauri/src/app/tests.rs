@@ -1,3 +1,4 @@
+use super::shipping::SpedizioneBatchIn;
 use super::*;
 use calamine::Reader;
 use serde_json::json;
@@ -7286,6 +7287,280 @@ fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
 }
 
 #[test]
+fn unione_preventiva_mantiene_pagamenti_e_si_separa_per_ordine() {
+    for stesso_cliente in [false, true] {
+        let app = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let state = AppState::init(app.path().to_path_buf()).unwrap();
+        onboarda(&state, data.path().to_str().unwrap(), "Livio");
+        let corriere = state
+            .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+            .unwrap();
+        let cliente_a = state
+            .record_create("cliente", campi(&[("nome", json!("Cliente A"))]))
+            .unwrap();
+        let cliente_b = if stesso_cliente {
+            cliente_a.id.clone()
+        } else {
+            state
+                .record_create("cliente", campi(&[("nome", json!("Cliente B"))]))
+                .unwrap()
+                .id
+        };
+        let crea = |cliente_id: &str, prezzo: i64| {
+            let ordine = state
+                .record_create(
+                    "ordine",
+                    campi(&[
+                        ("stato", json!("Confermato")),
+                        ("cliente_id", json!(cliente_id)),
+                        ("data", json!("2026-06-01")),
+                    ]),
+                )
+                .unwrap();
+            let riga = state
+                .record_create(
+                    "riga_ordine",
+                    campi(&[
+                        ("ordine_id", json!(ordine.id)),
+                        ("prodotto_nome", json!("Vaccino")),
+                        ("qta", json!(1)),
+                        ("prezzo", json!(prezzo)),
+                    ]),
+                )
+                .unwrap();
+            let pagamento = state
+                .pagamento_registra(
+                    &ordine.id,
+                    "saldo",
+                    prezzo,
+                    false,
+                    "2026-07-01",
+                    "",
+                    "",
+                    false,
+                    None,
+                )
+                .unwrap();
+            (ordine.id, riga.id, pagamento.id)
+        };
+        let (oa, ra, pa) = crea(&cliente_a.id, 10_000);
+        let (ob, rb, pb) = crea(&cliente_b, 20_000);
+        let colli_richiesti = if stesso_cliente { 3 } else { 1 };
+        let risultato = state
+            .spedizioni_crea_batch(SpedizioniCreaBatchIn {
+                lotto: "lotto-preventivo".into(),
+                shipments: vec![SpedizioneBatchIn {
+                    data: "2026-06-05".into(),
+                    corriere_id: corriere.id.clone(),
+                    colli: colli_richiesti,
+                    peso: colli_richiesti,
+                    servizi: String::new(),
+                    preavviso: true,
+                    mezzo: "contrassegno".into(),
+                    contrassegno: 12_000,
+                    note: "Nota unita".into(),
+                    numeri: vec![rn(&ra, "A"), rn(&rb, "B")],
+                    gruppi_destinatari: vec![
+                        GruppoDestinatarioIn {
+                            ordine_id: ob.clone(),
+                            row_ids: vec![rb.clone()],
+                        },
+                        GruppoDestinatarioIn {
+                            ordine_id: oa.clone(),
+                            row_ids: vec![ra.clone()],
+                        },
+                    ],
+                }],
+            })
+            .unwrap();
+        assert_eq!(risultato.len(), 1);
+        let unita = state.spedizioni_lista().unwrap();
+        assert_eq!(unita.len(), 1);
+        assert_eq!(unita[0].id, risultato[0].id);
+        assert_eq!(unita[0].n_righe, 2);
+        assert_eq!(unita[0].contrassegno, 12_000);
+        assert_eq!(unita[0].colli, colli_richiesti);
+        assert!(unita[0].destinatari_uniti);
+        assert_eq!(unita[0].cliente_id, cliente_b);
+        for (pid, quota) in [(&pa, 4_000), (&pb, 8_000)] {
+            let pagamento = state.record_get("pagamento", pid).unwrap().unwrap();
+            assert_eq!(pagamento.data["importo"], json!(quota));
+            assert_eq!(pagamento.data["spedizione_id"], json!(risultato[0].id));
+            assert_eq!(str_field(&pagamento.data, "scadenza"), "2026-07-05");
+        }
+        for (oid, totale) in [(&oa, 10_000), (&ob, 20_000)] {
+            let pagamenti: Vec<_> = state
+                .records_list("pagamento")
+                .unwrap()
+                .into_iter()
+                .filter(|p| str_field(&p.data, "ordine_id") == *oid)
+                .collect();
+            assert_eq!(
+                pagamenti
+                    .iter()
+                    .map(|p| i64_field(&p.data, "importo"))
+                    .sum::<i64>(),
+                totale
+            );
+            assert!(pagamenti
+                .iter()
+                .any(|p| str_field(&p.data, "scadenza") == "2026-06-12"));
+        }
+        if !stesso_cliente {
+            let (_, terza_riga, _) = crea(&cliente_a.id, 5_000);
+            let terza = state
+                .spedizione_crea(
+                    "lotto-preventivo",
+                    "2026-06-05",
+                    &corriere.id,
+                    1,
+                    1,
+                    "",
+                    false,
+                    "",
+                    0,
+                    "",
+                    &[rn(&terza_riga, "C")],
+                )
+                .unwrap();
+            assert!(state
+                .spedizione_destinatari_unisci(vec![terza.id.clone(), risultato[0].id.clone()])
+                .is_err());
+            state
+                .spedizione_destinatari_unisci(vec![risultato[0].id.clone(), terza.id.clone()])
+                .unwrap();
+            assert!(
+                state
+                    .spedizioni_lista()
+                    .unwrap()
+                    .iter()
+                    .find(|s| s.id == risultato[0].id)
+                    .unwrap()
+                    .destinatari_uniti
+            );
+        }
+        state
+            .spedizione_destinatari_separa(&risultato[0].id)
+            .unwrap();
+        let separate = state.spedizioni_lista().unwrap();
+        assert_eq!(separate.len(), if stesso_cliente { 2 } else { 3 });
+        assert!(separate.iter().all(|s| !s.destinatari_uniti));
+        assert_eq!(separate.iter().map(|s| s.contrassegno).sum::<i64>(), 12_000);
+        let sp_a = separate
+            .iter()
+            .find(|s| s.righe.iter().any(|r| r.riga_id == ra))
+            .unwrap();
+        let sp_b = separate
+            .iter()
+            .find(|s| s.righe.iter().any(|r| r.riga_id == rb))
+            .unwrap();
+        assert_eq!((sp_a.colli, sp_a.contrassegno), (1, 4_000));
+        assert_eq!(
+            (sp_b.colli, sp_b.contrassegno),
+            (if stesso_cliente { 2 } else { 1 }, 8_000)
+        );
+        assert_eq!(
+            state.record_get("pagamento", &pa).unwrap().unwrap().data["spedizione_id"],
+            json!(sp_a.id)
+        );
+        assert_eq!(
+            state.record_get("pagamento", &pb).unwrap().unwrap().data["spedizione_id"],
+            json!(sp_b.id)
+        );
+    }
+}
+
+#[test]
+fn batch_spedizioni_standard_non_salva_nulla_se_un_collo_fallisce() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Livio");
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Cliente"))]))
+        .unwrap();
+    let corriere = state
+        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[
+                ("stato", json!("Confermato")),
+                ("cliente_id", json!(cliente.id)),
+            ]),
+        )
+        .unwrap();
+    let righe: Vec<String> = (0..2)
+        .map(|_| {
+            state
+                .record_create(
+                    "riga_ordine",
+                    campi(&[
+                        ("ordine_id", json!(ordine.id)),
+                        ("prodotto_nome", json!("Vaccino")),
+                        ("qta", json!(1)),
+                        ("prezzo", json!(10_000)),
+                    ]),
+                )
+                .unwrap()
+                .id
+        })
+        .collect();
+    let shipment = |corriere_id: String, rid: &str| SpedizioneBatchIn {
+        data: "2026-06-05".into(),
+        corriere_id,
+        colli: 1,
+        peso: 1,
+        servizi: String::new(),
+        preavviso: false,
+        mezzo: String::new(),
+        contrassegno: 0,
+        note: String::new(),
+        numeri: vec![rn(rid, "LOT")],
+        gruppi_destinatari: Vec::new(),
+    };
+    let result = state.spedizioni_crea_batch(SpedizioniCreaBatchIn {
+        lotto: "lotto-rollback".into(),
+        shipments: vec![
+            shipment(corriere.id.clone(), &righe[0]),
+            shipment("__missing_courier__".into(), &righe[1]),
+        ],
+    });
+    assert!(result.is_err());
+    assert!(state.spedizioni_lista().unwrap().is_empty());
+    for rid in &righe {
+        let riga = state.record_get("riga_ordine", rid).unwrap().unwrap();
+        assert_eq!(str_field(&riga.data, "spedizione_id"), "");
+    }
+    let gruppi_errati = state.spedizioni_crea_batch(SpedizioniCreaBatchIn {
+        lotto: "lotto-gruppi-errati".into(),
+        shipments: vec![SpedizioneBatchIn {
+            numeri: vec![rn(&righe[0], "LOT-A"), rn(&righe[1], "LOT-B")],
+            gruppi_destinatari: vec![GruppoDestinatarioIn {
+                ordine_id: ordine.id,
+                row_ids: vec![righe[0].clone()],
+            }],
+            ..shipment(corriere.id.clone(), &righe[0])
+        }],
+    });
+    assert!(gruppi_errati.is_err());
+    assert!(state.spedizioni_lista().unwrap().is_empty());
+    let created = state
+        .spedizioni_crea_batch(SpedizioniCreaBatchIn {
+            lotto: "lotto-successo".into(),
+            shipments: vec![
+                shipment(corriere.id.clone(), &righe[0]),
+                shipment(corriere.id, &righe[1]),
+            ],
+        })
+        .unwrap();
+    assert_eq!(created.len(), 2);
+    assert_eq!(state.spedizioni_lista().unwrap().len(), 2);
+}
+
+#[test]
 fn scadenze_si_ancorano_alla_spedizione() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -8176,22 +8451,28 @@ fn contrassegno_casi_estremi_multi_spedizione_parziali_e_rate_libere() {
         .find(|o| o.ordine_id == ordine.id)
         .unwrap();
     assert_eq!(o3.cod_importo, 10000);
+    assert_eq!(o3.cod_mezzo, "contrassegno");
 
+    // Anche l'ingresso batch di «Aggiungi collo» deve usare la rata COD ancora libera.
     let sped3 = state
-        .spedizione_crea(
-            "lotto-3",
-            "2026-06-20",
-            &corriere.id,
-            1,
-            1,
-            "",
-            false,
-            "contrassegno",
-            10000,
-            "",
-            &[rn(&r3.id, "L3")],
-        )
+        .spedizioni_crea_batch(SpedizioniCreaBatchIn {
+            lotto: "lotto-3".into(),
+            shipments: vec![SpedizioneBatchIn {
+                data: "2026-06-20".into(),
+                corriere_id: corriere.id.clone(),
+                colli: 1,
+                peso: 1,
+                servizi: String::new(),
+                preavviso: false,
+                mezzo: o3.cod_mezzo.clone(),
+                contrassegno: o3.cod_importo,
+                note: String::new(),
+                numeri: vec![rn(&r3.id, "L3")],
+                gruppi_destinatari: Vec::new(),
+            }],
+        })
         .unwrap();
+    let sped3 = &sped3[0];
 
     // Tutte le 3 righe sono spedite: nessuna riga rimasta in da_spedire per questo ordine
     let da_spedire_vuoto = state.righe_da_spedire().unwrap();

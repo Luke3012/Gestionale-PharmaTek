@@ -38,8 +38,8 @@ use crate::app::{
     PrezzoSuggeritoProdottoDto, ProduzioneRigaPatchInput, ProrogaPagamentoInput,
     ProvvigioniReportDto, PuliziaDatiArgs, PuliziaPreviewDto, PuliziaResultDto, RataInput,
     RecordDto, RigaNumeroIn, RimborsoDto, RimborsoExtraDto, RitiroDispositivoResult, SpedizioneDto,
-    SpedizioneRiepilogoDto, StoricoDto, SuggerimentiBundleDto, SuggerimentiPreferenzeInput,
-    SyncOverviewDto, SyncPollOutcome, UserDto,
+    SpedizioneRiepilogoDto, SpedizioniCreaBatchIn, StoricoDto, SuggerimentiBundleDto,
+    SuggerimentiPreferenzeInput, SyncOverviewDto, SyncPollOutcome, UserDto,
 };
 use crate::data_events::{emetti_entita_modificate, EVENTO_RICERCA_INVALIDATA};
 
@@ -2280,6 +2280,19 @@ pub fn spedizione_crea(
         &numeri,
     );
     emetti_se_ok(&app, result, &["spedizione"])
+}
+
+#[tauri::command]
+pub fn spedizioni_crea_batch(
+    input: SpedizioniCreaBatchIn,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<SpedizioneDto>, String> {
+    emetti_se_ok(
+        &app,
+        state.spedizioni_crea_batch(input),
+        &["ordine", "riga_ordine", "spedizione"],
+    )
 }
 
 /// Rimuove un singolo prodotto da un collo effettuato: torna fra quelli da spedire (FASE 7).

@@ -532,7 +532,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   const [esportaLotto, setEsportaLotto] = useState<GruppoLotto | null>(null);
   const [prescrizioni, setPrescrizioni] = useState<{ lot: string; intent: PrescrizioniIntento } | null>(null);
 
-  const { ordineFinestra, anno, ridurreAnimazioni } = usePrefs();
+  const { ordineFinestra, anno, ridurreAnimazioni, filtriModo } = usePrefs();
   useCloseOnScroll(!!contextMenu, (v) => {
     if (!v) setContextMenu(null);
   });
@@ -2065,9 +2065,9 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
           />
           <Group
             gap="sm"
-            wrap="nowrap"
+            wrap={filtriModo === "espansi" ? "wrap" : "nowrap"}
             align="flex-end"
-            justify="flex-end"
+            justify={filtriModo === "espansi" ? "flex-start" : "flex-end"}
             style={{ minWidth: 0, width: "100%" }}
           >
             <DebouncedInput
@@ -2075,7 +2075,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
               leftSection={<IconSearch size={16} />}
               value={cerca}
               onChange={setCerca}
-              style={{ flex: "0 1 320px", width: 320, minWidth: 170, maxWidth: 320 }}
+              style={{ flex: filtriModo === "espansi" ? "1 1 200px" : "0 1 320px", width: 320, minWidth: 170, maxWidth: filtriModo === "espansi" ? 360 : 320 }}
             />
             <FiltriPopover
               attivi={nFiltri}

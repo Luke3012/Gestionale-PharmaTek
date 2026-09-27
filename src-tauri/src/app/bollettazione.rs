@@ -4,7 +4,7 @@
 //! entità. Le mutazioni passano sempre dagli stessi record e dalle stesse regole di
 //! produzione/spedizione usate dal resto dell'applicazione.
 
-use super::shipping::{prepara_spedizione_mutations, SpedizioneCreateParams};
+use super::shipping::{prepara_spedizione_con_destinatari_mutations, SpedizioneCreateParams};
 use super::*;
 use calamine::{open_workbook_auto, Data, Reader};
 use serde::{Deserialize, Serialize};
@@ -186,6 +186,8 @@ pub struct BollettazioneSpedizioneIn {
     #[serde(default)]
     pub note: String,
     pub row_ids: Vec<String>,
+    #[serde(default)]
+    pub gruppi_destinatari: Vec<GruppoDestinatarioIn>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1966,11 +1968,12 @@ impl AppState {
                                 note: &shipment.note,
                                 righe: &numbers,
                             };
-                            mutations.extend(prepara_spedizione_mutations(
+                            mutations.extend(prepara_spedizione_con_destinatari_mutations(
                                 projection,
                                 &shipment_ids[shipment_index],
                                 &lotto,
                                 &params,
+                                &shipment.gruppi_destinatari,
                             )?);
                         }
                         if shipment_rows != row_ids {
@@ -3128,6 +3131,7 @@ mod tests {
                     contrassegno: 0,
                     note: String::new(),
                     row_ids: vec![order.righe[0].id.clone()],
+                    gruppi_destinatari: Vec::new(),
                 },
                 BollettazioneSpedizioneIn {
                     data: "2026-08-01".into(),
@@ -3140,6 +3144,7 @@ mod tests {
                     contrassegno: 0,
                     note: String::new(),
                     row_ids: vec![order.righe[1].id.clone()],
+                    gruppi_destinatari: Vec::new(),
                 },
             ],
         });
@@ -3150,6 +3155,54 @@ mod tests {
             assert_eq!(str_field(&current.data, "numero"), "");
             assert_eq!(str_field(&current.data, "spedizione_id"), "");
         }
+    }
+
+    #[test]
+    fn conferma_spedizione_unita_traccia_destinatari_nello_stesso_batch() {
+        let (_app, _data, state) = test_state();
+        let a = order_with_rows(&state, 1);
+        let b = order_with_rows(&state, 1);
+        let courier = state.records_list("corriere").unwrap()[0].id.clone();
+        let ra = a.righe[0].id.clone();
+        let rb = b.righe[0].id.clone();
+        let result = state
+            .bollettazione_conferma(BollettazioneConfermaIn {
+                mode: "spedizione".into(),
+                data_arrivo: "2026-08-01".into(),
+                rows: vec![confirmation(&a, 0, "LOT-A"), confirmation(&b, 0, "LOT-B")],
+                shipments: vec![BollettazioneSpedizioneIn {
+                    data: "2026-08-01".into(),
+                    corriere_id: courier,
+                    colli: 1,
+                    peso: 1,
+                    servizi: String::new(),
+                    preavviso: true,
+                    mezzo: String::new(),
+                    contrassegno: 0,
+                    note: String::new(),
+                    row_ids: vec![ra.clone(), rb.clone()],
+                    gruppi_destinatari: vec![
+                        GruppoDestinatarioIn {
+                            ordine_id: a.id,
+                            row_ids: vec![ra.clone()],
+                        },
+                        GruppoDestinatarioIn {
+                            ordine_id: b.id,
+                            row_ids: vec![rb.clone()],
+                        },
+                    ],
+                }],
+            })
+            .unwrap();
+        assert_eq!(result.shipments.len(), 1);
+        let spedizioni = state.spedizioni_lista().unwrap();
+        assert_eq!(spedizioni.len(), 1);
+        assert!(spedizioni[0].destinatari_uniti);
+        assert_eq!(spedizioni[0].n_righe, 2);
+        state
+            .spedizione_destinatari_separa(&result.shipments[0].id)
+            .unwrap();
+        assert_eq!(state.spedizioni_lista().unwrap().len(), 2);
     }
 
     #[test]
@@ -3191,6 +3244,7 @@ mod tests {
                     contrassegno: 0,
                     note: String::new(),
                     row_ids: vec![order.righe[0].id.clone()],
+                    gruppi_destinatari: Vec::new(),
                 }],
             })
             .unwrap();

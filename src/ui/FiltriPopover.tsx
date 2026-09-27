@@ -34,6 +34,7 @@ export function FiltriPopover({
   filtri,
   width = 300,
   allineaDestra = false,
+  className,
 }: {
   /** Numero di filtri attivi (badge; 0 = nessuno). */
   attivi: number;
@@ -44,6 +45,7 @@ export function FiltriPopover({
   width?: number;
   /** Dispone filtri inline e pulsante sul bordo destro dello spazio disponibile. */
   allineaDestra?: boolean;
+  className?: string;
 }) {
   const { filtriModo, sidebar } = usePrefs();
   const [open, setOpen] = useState(false);
@@ -171,9 +173,41 @@ export function FiltriPopover({
     </Popover>
   );
 
+  if (filtriModo === "espansi") {
+    return (
+      <Box className={className} style={{ display: "contents" }}>
+        {filtri.map((f) => (
+          <Box
+            key={f.chiave}
+            style={{
+              flex: `1 1 ${f.larghezza ?? LARGH_DEFAULT}px`,
+              minWidth: Math.min(f.larghezza ?? LARGH_DEFAULT, 160),
+              maxWidth: Math.max(Math.round((f.larghezza ?? LARGH_DEFAULT) * 1.35), 260),
+            }}
+          >
+            {f.nodo}
+          </Box>
+        ))}
+        {conFiltri && (
+          <Button
+            variant="subtle"
+            color="gray"
+            leftSection={<IconFilterOff size={16} />}
+            onClick={onAzzera}
+            style={{ flexShrink: 0, alignSelf: "flex-end" }}
+            px={usaTesto ? undefined : 8}
+          >
+            {usaTesto ? "Azzera" : ""}
+          </Button>
+        )}
+      </Box>
+    );
+  }
+
   return (
     <Group
       ref={wrapRef}
+      className={className}
       gap={GAP}
       wrap="nowrap"
       align="flex-end"

@@ -209,7 +209,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
         perCliente.set(cKey, arr);
       }
       for (const [cKey, arr] of perCliente.entries()) {
-        if (arr.length > 1) {
+        if (arr.length > 1 && arr.filter((s) => s.destinatariUniti).length <= 1) {
           out.push({
             key: `cli:${cKey}|${arr.map((s) => s.id).join(":")}`,
             tipo: "cliente",
@@ -230,22 +230,21 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
       for (const arr of gruppiIndirizzo) {
         if (arr.length > 1) {
           const clienti = new Set(arr.map((s) => s.clienteId || s.clienteNome));
-          if (clienti.size > 1) {
-            const vistiCli = new Set<string>();
-            const clientiDistinti: { id: string; nome: string }[] = [];
+          if (clienti.size > 1 && arr.filter((s) => s.destinatariUniti).length <= 1) {
+            const clientiDistintiMap = new Map<string, { id: string; nome: string }>();
             for (const s of arr) {
               const ck = s.clienteId || s.clienteNome;
-              if (!vistiCli.has(ck)) {
-                vistiCli.add(ck);
-                clientiDistinti.push({ id: s.id, nome: s.clienteNome || "(destinatario)" });
+              if (!clientiDistintiMap.has(ck) || s.destinatariUniti) {
+                clientiDistintiMap.set(ck, { id: s.id, nome: s.clienteNome || "(destinatario)" });
               }
             }
+            const clientiDistinti = [...clientiDistintiMap.values()];
             const indKey = chiaveIndirizzoConfronto(arr[0]);
             out.push({
               key: `ind:${indKey}|${arr.map((s) => s.id).join(":")}`,
               tipo: "indirizzo",
               spedizioni: arr,
-              nome: arr[0].clienteNome || "(destinatario)",
+              nome: (arr.find((s) => s.destinatariUniti) || arr[0]).clienteNome || "(destinatario)",
               indirizzo: formattaIndirizzoSintetico(arr[0]),
               corriere: nomeCorriere(arr[0]),
               colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
@@ -642,7 +641,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                                   value: c.id,
                                   label: c.nome,
                                 }))}
-                                value={targetPrimario[g.key] || g.spedizioni[0].id}
+                                value={g.spedizioni.find((s) => s.destinatariUniti)?.id || targetPrimario[g.key] || g.spedizioni[0].id}
                                 onChange={(v) =>
                                   v &&
                                   setTargetPrimario((prev) => ({
@@ -651,6 +650,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                                   }))
                                 }
                                 allowDeselect={false}
+                                disabled={g.spedizioni.some((s) => s.destinatariUniti)}
                                 comboboxProps={{ withinPortal: true, zIndex: 1450 }}
                               />
                             </Group>
@@ -666,7 +666,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                           color="accent"
                           leftSection={<IconArrowMerge size={14} />}
                           onClick={() => {
-                            const primario = targetPrimario[g.key] || g.spedizioni[0].id;
+                            const primario = g.spedizioni.find((s) => s.destinatariUniti)?.id || targetPrimario[g.key] || g.spedizioni[0].id;
                             const ids = [
                               primario,
                               ...g.spedizioni.filter((s) => s.id !== primario).map((s) => s.id),

@@ -1,10 +1,11 @@
 // «Aggiungi collo» a una spedizione già effettuata (lotto). Due strade:
 // 1. Scegli da «Da spedire»: uno o più ordini rimasti fuori entrano in QUESTO lotto
-//    (riusa `spedizione_crea` col lotto esistente; mantiene l'eventuale contrassegno).
+//    (usa il batch col lotto esistente; mantiene l'eventuale contrassegno).
 // 2. Riga manuale: un collo SENZA ordine a sistema, coi dati destinatario a mano (servono
 //    per la distinta corriere CORRIERE_B/CORRIERE_A) → `spedizione_collo_manuale`.
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
+  Autocomplete,
   Badge,
   Box,
   Button,
@@ -12,6 +13,7 @@ import {
   Group,
   Modal,
   NumberInput,
+  Popover,
   SegmentedControl,
   Select,
   SimpleGrid,
@@ -34,6 +36,10 @@ import { FooterAzioniModale } from "../../ui/FooterAzioniModale";
 import { calcolaImportoSpedizione, colliDistintaAuto, OPZIONI_PAGAMENTO_CONSEGNA } from "./CreaSpedizioneModal";
 import { normalizzaColliPesoCorriere } from "./profiliCorriere";
 import { ordineHaDatiVaccino } from "./datiVaccino";
+import { cercaCittaSelezionata, type ComuneInfo } from "../../lib/cap-lookup";
+import { useScelteCap } from "../../ui/useScelteCap";
+import { ScelteCapPopover } from "../../ui/ScelteCapPopover";
+import { tabCompleta } from "../../ui/tabCompleta";
 
 type Mezzo = "prepagato" | "contrassegno" | "assegno";
 
@@ -156,7 +162,7 @@ function Corpo({
     }
     setSalvando(true);
     try {
-      for (const { ordine: o, righe: righeScelte } of scelti) {
+      const shipments = scelti.map(({ ordine: o, righe: righeScelte }) => {
         const righeCheck = Object.fromEntries(o.righe.map((r) => [r.rigaId, sel.has(r.rigaId)]));
         const mezzo = o.codMezzo || "";
         const contrassegno = mezzo
@@ -170,8 +176,7 @@ function Corpo({
         const colli = haDatiVaccino
           ? colliDistintaAuto(corriereSelezionato?.profilo || "gls", righeScelte.length)
           : 1;
-        await api.spedizioneCrea({
-          lotto,
+        return {
           data,
           corriereId,
           colli,
@@ -185,8 +190,9 @@ function Corpo({
             rigaId: r.rigaId,
             numero: haDatiVaccino ? r.numero || "" : "",
           })),
-        });
-      }
+        };
+      });
+      await api.spedizioniCreaBatch({ lotto, shipments });
       const usaColli = scelti.some(({ ordine }) => ordineHaDatiVaccino(ordine));
       toast.success(
         usaColli
@@ -223,6 +229,34 @@ function Corpo({
     note: "",
   });
   const setF = <K extends keyof typeof m>(k: K, v: (typeof m)[K]) => setM((s) => ({ ...s, [k]: v }));
+  const {
+    suggerimentiCitta, capAmbiguo, capCittaMultiplo, capPopoverAperto,
+    setCapPopoverAperto, dopoSceltaComune, gestisciCap, suggerisciCitta,
+  } = useScelteCap();
+
+  const usaComune = (
+    info: ComuneInfo,
+    opzioni: { capSelezionato?: string; mostraCapMultipli?: boolean } = {},
+  ) => {
+    setM((corrente) => ({
+      ...corrente,
+      citta: info.nome,
+      prov: info.sigla,
+      regione: info.regione,
+      cap: opzioni.capSelezionato || (info.cap.length === 1 ? info.cap[0] : corrente.cap),
+    }));
+    dopoSceltaComune(info, opzioni.mostraCapMultipli);
+  };
+
+  const cambiaCap = (cap: string) => {
+    setF("cap", cap);
+    gestisciCap(cap, (comune) => usaComune(comune, { capSelezionato: cap }));
+  };
+
+  const selezionaCitta = (nome: string) => {
+    const comune = cercaCittaSelezionata(nome);
+    if (comune) usaComune(comune, { mostraCapMultipli: true });
+  };
 
   async function aggiungiManuale() {
     if (!m.cliente.trim()) {
@@ -432,8 +466,22 @@ function Corpo({
                 onChange={(e) => setF("indirizzo", e.currentTarget.value)}
               />
               <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
-                <TextInput label="Cap" value={m.cap} onChange={(e) => setF("cap", e.currentTarget.value)} />
-                <TextInput label="Città" value={m.citta} onChange={(e) => setF("citta", e.currentTarget.value)} />
+                <Popover opened={capPopoverAperto && !!(capAmbiguo || capCittaMultiplo)} onChange={setCapPopoverAperto} position="bottom-start" shadow="md" radius="md" width={280} withArrow zIndex={1400}>
+                  <Popover.Target>
+                    <TextInput label="Cap" maxLength={5} value={m.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} />
+                  </Popover.Target>
+                  <ScelteCapPopover capCittaMultiplo={capCittaMultiplo} capAmbiguo={capAmbiguo} onScegli={usaComune} proteggiEscape />
+                </Popover>
+                <Autocomplete
+                  label="Città"
+                  value={m.citta}
+                  onChange={(citta) => { setF("citta", citta); suggerisciCitta(citta); }}
+                  onOptionSubmit={selezionaCitta}
+                  onKeyDown={tabCompleta(suggerimentiCitta, m.citta, selezionaCitta)}
+                  data={suggerimentiCitta}
+                  limit={10}
+                  comboboxProps={{ withinPortal: true, zIndex: 1400 }}
+                />
                 <TextInput label="Prov" value={m.prov} onChange={(e) => setF("prov", e.currentTarget.value)} />
                 <TextInput label="Regione" value={m.regione} onChange={(e) => setF("regione", e.currentTarget.value)} />
               </SimpleGrid>

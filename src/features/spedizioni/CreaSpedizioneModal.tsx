@@ -9,7 +9,7 @@
 // **Bundling (4C-2):** se più ordini selezionati sono dello **stesso cliente**, in cima si
 // propone di **unirli in un unico collo** (colli e contrassegno sommati, righe di tutti gli
 // ordini): diventano una sola spedizione (il backend `spedizione_crea` accetta righe di
-// ordini diversi).
+// ordini diversi). Il batch salva anche i destinatari nascosti necessari alla separazione.
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
@@ -70,7 +70,7 @@ export interface BozzaRiga {
 }
 
 /** Stato editabile per un **collo** (uno o più ordini uniti). */
-interface PerCollo {
+export interface PerCollo {
   colli: number | "";
   /** `true` finché l'utente non tocca a mano il nº colli. Per CORRIERE_A il profilo
    * forza comunque sempre colli/peso a 1. */
@@ -90,13 +90,86 @@ interface PerCollo {
 }
 
 /** Un collo da creare = uno o più ordini (uniti se stesso cliente o stesso indirizzo). */
-interface Collo {
+export interface Collo {
   key: string;
   clienteId: string;
   clienteNome: string;
   ordini: OrdineDaSpedire[];
   unito: boolean;
   unitoPer?: "cliente" | "indirizzo";
+}
+
+/** Ogni ordine entra in un solo collo, anche quando i suggerimenti per cliente e indirizzo si sovrappongono. */
+export function preparaColliSpedizioni(ordini: OrdineDaSpedire[], unisci: Set<string>): Collo[] {
+  const gruppiIndirizzo = raggruppaPerIndirizzoCompatibile(ordini, (o) => o);
+  const ordineToIndKey = new Map<string, string>();
+  const perIndirizzo = new Map<string, OrdineDaSpedire[]>();
+  for (const arr of gruppiIndirizzo) {
+    if (arr.length > 1) {
+      const key = chiaveIndirizzoConfronto(arr[0]);
+      if (key) {
+        perIndirizzo.set(key, arr);
+        for (const o of arr) ordineToIndKey.set(o.ordineId, key);
+      }
+    }
+  }
+
+  const perCliente = new Map<string, OrdineDaSpedire[]>();
+  for (const o of ordini) {
+    if (!o.clienteId) continue;
+    const gruppo = perCliente.get(o.clienteId) ?? [];
+    gruppo.push(o);
+    perCliente.set(o.clienteId, gruppo);
+  }
+
+  const out: Collo[] = [];
+  const visti = new Set<string>();
+  for (const o of ordini) {
+    if (visti.has(o.ordineId)) continue;
+
+    const indKey = ordineToIndKey.get(o.ordineId);
+    const stessoIndirizzo = indKey && unisci.has(`ind:${indKey}`)
+      ? perIndirizzo.get(indKey)?.filter((ordine) => !visti.has(ordine.ordineId))
+      : undefined;
+    if (stessoIndirizzo && stessoIndirizzo.length > 1) {
+      out.push({
+        key: `ind:${indKey}`,
+        clienteId: o.clienteId,
+        clienteNome: o.clienteNome || "(cliente)",
+        ordini: stessoIndirizzo,
+        unito: true,
+        unitoPer: "indirizzo",
+      });
+      stessoIndirizzo.forEach((ordine) => visti.add(ordine.ordineId));
+      continue;
+    }
+
+    const stessoCliente = o.clienteId && unisci.has(`cli:${o.clienteId}`)
+      ? perCliente.get(o.clienteId)?.filter((ordine) => !visti.has(ordine.ordineId))
+      : undefined;
+    if (stessoCliente && stessoCliente.length > 1) {
+      out.push({
+        key: `cli:${o.clienteId}`,
+        clienteId: o.clienteId,
+        clienteNome: o.clienteNome || "(cliente)",
+        ordini: stessoCliente,
+        unito: true,
+        unitoPer: "cliente",
+      });
+      stessoCliente.forEach((ordine) => visti.add(ordine.ordineId));
+      continue;
+    }
+
+    out.push({
+      key: `ord:${o.ordineId}`,
+      clienteId: o.clienteId,
+      clienteNome: o.clienteNome || "(cliente)",
+      ordini: [o],
+      unito: false,
+    });
+    visti.add(o.ordineId);
+  }
+  return out;
 }
 
 function chiaveCollo(collo: Collo): string {
@@ -168,6 +241,123 @@ function profiloCorriere(corriere?: RecordDto): string {
 export function colliDistintaAuto(profilo: string, prodottiInclusi: number): number {
   void prodottiInclusi;
   return normalizzaColliPesoCorriere(profilo, 1, 1).colli;
+}
+
+export interface ShipmentToCreate {
+  data: string;
+  corriereId: string;
+  colli: number;
+  peso: number;
+  servizi: string;
+  preavviso: boolean;
+  mezzo: string;
+  contrassegno: number;
+  note: string;
+  rowIds: string[];
+  numeri: Array<{ rigaId: string; numero: string }>;
+  gruppiDestinatari: Array<{ ordineId: string; rowIds: string[] }>;
+}
+
+export function preparaPianificazioneSpedizioni({
+  data,
+  corriereId,
+  profiloCorriere,
+  colli,
+  stato,
+}: {
+  data: string;
+  corriereId: string;
+  profiloCorriere: string;
+  colli: Collo[];
+  stato: Record<string, PerCollo>;
+}): {
+  lavoriCount: number;
+  flatShipments: ShipmentToCreate[];
+} {
+  const lavori: Array<{
+    ordiniConRighe: Array<{
+      ordine: OrdineDaSpedire;
+      numeri: Array<{ rigaId: string; numero: string }>;
+    }>;
+    colliN: number;
+    mezzo: string;
+    contrassegno: number;
+    note: string;
+    preavviso: boolean;
+    isUnito: boolean;
+  }> = [];
+
+  for (const c of colli) {
+    const ps = stato[c.key];
+    if (!ps) continue;
+    const primarioId = ps.primarioClienteId || c.ordini[0]?.clienteId;
+    const ordiniOrdinati = [...c.ordini].sort(
+      (a, b) => Number(b.clienteId === primarioId) - Number(a.clienteId === primarioId),
+    );
+    const ordiniConRighe = ordiniOrdinati
+      .map((o) => ({
+        ordine: o,
+        numeri: o.righe
+          .filter((r) => ps.righeCheck[r.rigaId])
+          .map((r) => ({ rigaId: r.rigaId, numero: (ps.numeri[r.rigaId] ?? "").trim() })),
+      }))
+      .filter((x) => x.numeri.length > 0);
+
+    if (ordiniConRighe.length === 0) continue;
+
+    const totNumeri = ordiniConRighe.reduce((acc, curr) => acc + curr.numeri.length, 0);
+    const haDatiVaccino = c.ordini.some(ordineHaDatiVaccino);
+    const colliN = !haDatiVaccino || profiloCorriere === "corriere_a"
+      ? 1
+      : ps.colliAuto
+        ? colliDistintaAuto(profiloCorriere, totNumeri)
+        : ps.colli === ""
+          ? colliDistintaAuto(profiloCorriere, totNumeri)
+          : Number(ps.colli);
+    const mezzo = ps.mezzo === "prepagato" ? "" : ps.mezzo;
+    const contrassegno = mezzo && ps.importo !== "" ? eurToCents(Number(ps.importo)) : 0;
+    const isUnito = c.unito && ordiniConRighe.length > 1;
+
+    lavori.push({
+      ordiniConRighe,
+      colliN,
+      mezzo,
+      contrassegno,
+      note: ps.note.trim(),
+      preavviso: ps.preavviso,
+      isUnito,
+    });
+  }
+
+  const flatShipments: ShipmentToCreate[] = [];
+
+  for (const lav of lavori) {
+    const allNumeri = lav.ordiniConRighe.flatMap((x) => x.numeri);
+    flatShipments.push({
+      data,
+      corriereId,
+      colli: lav.colliN,
+      peso: lav.colliN,
+      servizi: "",
+      preavviso: lav.preavviso,
+      mezzo: lav.mezzo,
+      contrassegno: lav.contrassegno,
+      note: lav.note,
+      rowIds: allNumeri.map((n) => n.rigaId),
+      numeri: allNumeri,
+      gruppiDestinatari: lav.isUnito
+        ? lav.ordiniConRighe.map(({ ordine, numeri }) => ({
+            ordineId: ordine.ordineId,
+            rowIds: numeri.map((n) => n.rigaId),
+          }))
+        : [],
+    });
+  }
+
+  return {
+    lavoriCount: lavori.length,
+    flatShipments,
+  };
 }
 
 export function CreaSpedizioneModal({
@@ -280,7 +470,6 @@ function Form({
       .map(([clienteId, arr]) => ({
         clienteId,
         nome: arr[0].clienteNome || "(cliente)",
-        ordini: arr,
         n: arr.length,
       }));
   }, [ordini]);
@@ -301,7 +490,6 @@ function Form({
           chiaveIndirizzo,
           indirizzoFormattato: formattaIndirizzoSintetico(arr[0]),
           nomiClienti,
-          ordini: arr,
           n: arr.length,
         };
       });
@@ -321,92 +509,8 @@ function Form({
     return initial;
   });
 
-  // Colli da creare: ordini aggregati per indirizzo (se attivo) o per cliente (se attivo), altrimenti singoli.
-  const colli = useMemo<Collo[]>(() => {
-    const gruppiIndirizzo = raggruppaPerIndirizzoCompatibile(ordini, (o) => o);
-    const ordineToIndKey = new Map<string, string>();
-    const perIndirizzo = new Map<string, OrdineDaSpedire[]>();
-    for (const arr of gruppiIndirizzo) {
-      if (arr.length > 1) {
-        const key = chiaveIndirizzoConfronto(arr[0]);
-        if (key) {
-          perIndirizzo.set(key, arr);
-          for (const o of arr) {
-            ordineToIndKey.set(o.ordineId, key);
-          }
-        }
-      }
-    }
-
-    const perCliente = new Map<string, OrdineDaSpedire[]>();
-    for (const o of ordini) {
-      if (o.clienteId) {
-        const cArr = perCliente.get(o.clienteId) ?? [];
-        cArr.push(o);
-        perCliente.set(o.clienteId, cArr);
-      }
-    }
-
-    const out: Collo[] = [];
-    const visti = new Set<string>();
-
-    for (const o of ordini) {
-      if (visti.has(o.ordineId)) continue;
-
-      const indKey = ordineToIndKey.get(o.ordineId);
-      const stessoIndirizzo = indKey ? perIndirizzo.get(indKey) : undefined;
-      const unisciInd = !!(
-        indKey &&
-        stessoIndirizzo &&
-        stessoIndirizzo.length > 1 &&
-        unisci.has(`ind:${indKey}`)
-      );
-
-      if (unisciInd && stessoIndirizzo) {
-        out.push({
-          key: `ind:${indKey}`,
-          clienteId: o.clienteId,
-          clienteNome: o.clienteNome || "(cliente)",
-          ordini: stessoIndirizzo,
-          unito: true,
-          unitoPer: "indirizzo",
-        });
-        stessoIndirizzo.forEach((x) => visti.add(x.ordineId));
-        continue;
-      }
-
-      const stessoCliente = o.clienteId ? perCliente.get(o.clienteId) : undefined;
-      const unisciCli = !!(
-        o.clienteId &&
-        stessoCliente &&
-        stessoCliente.length > 1 &&
-        unisci.has(`cli:${o.clienteId}`)
-      );
-
-      if (unisciCli && stessoCliente) {
-        out.push({
-          key: `cli:${o.clienteId}`,
-          clienteId: o.clienteId,
-          clienteNome: o.clienteNome || "(cliente)",
-          ordini: stessoCliente,
-          unito: true,
-          unitoPer: "cliente",
-        });
-        stessoCliente.forEach((x) => visti.add(x.ordineId));
-        continue;
-      }
-
-      out.push({
-        key: `ord:${o.ordineId}`,
-        clienteId: o.clienteId,
-        clienteNome: o.clienteNome || "(cliente)",
-        ordini: [o],
-        unito: false,
-      });
-      visti.add(o.ordineId);
-    }
-    return out;
-  }, [ordini, unisci]);
+  // Colli da creare: indirizzo attivo prima del cliente, senza ripetere ordini nei gruppi sovrapposti.
+  const colli = useMemo(() => preparaColliSpedizioni(ordini, unisci), [ordini, unisci]);
 
   // Stato per-collo. Init = tutti singoli; un effetto lo riallinea quando si unisce/divide.
   const [stato, setStato] = useState<Record<string, PerCollo>>(() => {
@@ -530,61 +634,26 @@ function Form({
       focusInvalidField('[data-pt-field="crea-spedizione-data"]');
       return;
     }
-    const lavori = colli
-      .map((c) => {
-        const ps = stato[c.key];
-        const primarioId = ps?.primarioClienteId || c.ordini[0]?.clienteId;
-        const ordiniOrdinati = [...c.ordini].sort((a, b) => {
-          if (a.clienteId === primarioId) return -1;
-          if (b.clienteId === primarioId) return 1;
-          return 0;
-        });
-        const numeri = ordiniOrdinati
-          .flatMap((o) => o.righe)
-          .filter((r) => ps?.righeCheck[r.rigaId])
-          .map((r) => ({ rigaId: r.rigaId, numero: (ps?.numeri[r.rigaId] ?? "").trim() }));
-        return {
-          ps,
-          numeri,
-          haDatiVaccino: c.ordini.some(ordineHaDatiVaccino),
-        };
-      })
-      .filter((x) => x.ps && x.numeri.length > 0);
+    const pianificazione = preparaPianificazioneSpedizioni({
+      data,
+      corriereId,
+      profiloCorriere: profiloSelezionato,
+      colli,
+      stato,
+    });
 
-    if (lavori.length === 0) {
+    if (pianificazione.lavoriCount === 0) {
       toast.warning("Nessuna riga selezionata da spedire.");
       return;
     }
 
     setSalvando(true);
     try {
-      const shipments = lavori.map(({ ps, numeri, haDatiVaccino }) => {
-        const colliN = !haDatiVaccino || profiloSelezionato === "corriere_a"
-          ? 1
-          : ps!.colliAuto
-            ? colliDistintaAuto(profiloSelezionato, numeri.length)
-            : ps!.colli === ""
-              ? colliDistintaAuto(profiloSelezionato, numeri.length)
-              : ps!.colli;
-        const mezzo = ps!.mezzo === "prepagato" ? "" : ps!.mezzo;
-        const contrassegno = mezzo && ps!.importo !== "" ? eurToCents(Number(ps!.importo)) : 0;
-        return {
-          data,
-          corriereId,
-          colli: colliN,
-          peso: colliN, // legacy: peso = colli (modificabile in futuro)
-          servizi: "",
-          preavviso: ps!.preavviso,
-          mezzo,
-          contrassegno,
-          note: ps!.note.trim(),
-          rowIds: numeri.map((numero) => numero.rigaId),
-          numeri,
-        };
-      });
+      const { flatShipments, lavoriCount } = pianificazione;
+
       if (bollettazioneRows) {
         const includedRows = new Set(
-          shipments.flatMap((shipment) => shipment.rowIds),
+          flatShipments.flatMap((shipment) => shipment.rowIds),
         );
         await api.bollettazioneConferma({
           mode: "spedizione",
@@ -592,26 +661,16 @@ function Form({
           rows: bollettazioneRows.filter((row) =>
             includedRows.has(row.rowId),
           ),
-          shipments: shipments.map(({ numeri: _numeri, ...shipment }) => shipment),
+          shipments: flatShipments.map(({ numeri: _numeri, ...shipment }) => shipment),
         });
       } else {
-        for (const shipment of shipments) {
-          await api.spedizioneCrea({
-            lotto,
-            data: shipment.data,
-            corriereId: shipment.corriereId,
-            colli: shipment.colli,
-            peso: shipment.peso,
-            servizi: shipment.servizi,
-            preavviso: shipment.preavviso,
-            mezzo: shipment.mezzo,
-            contrassegno: shipment.contrassegno,
-            note: shipment.note,
-            numeri: shipment.numeri,
-          });
-        }
+        await api.spedizioniCreaBatch({
+          lotto,
+          shipments: flatShipments.map(({ rowIds: _rowIds, ...shipment }) => shipment),
+        });
       }
-      toast.success(lavori.length === 1 ? "Spedizione creata." : `${lavori.length} spedizioni create.`);
+
+      toast.success(lavoriCount === 1 ? "Spedizione creata." : `${lavoriCount} spedizioni create.`);
       onDone();
     } catch (e) {
       toast.error(`Creazione spedizione non riuscita: ${e}`);
@@ -653,8 +712,8 @@ function Form({
   return (
     <Box className="pt-modal-shell">
       <Box className="pt-modal-scroll">
-        <Stack gap="md">
-          <SimpleGrid cols={2} spacing="md">
+        <Stack gap="sm">
+          <SimpleGrid cols={2} spacing="sm">
             <Box data-pt-field="crea-spedizione-data">
               <TextInput
                 label="Data spedizione"
@@ -677,28 +736,25 @@ function Form({
             </Box>
           </SimpleGrid>
           <Switch
+            size="sm"
             label="Preavviso telefonico per tutti"
-            description="Aggiunge «PREAVVISO TELEFONICO …». Puoi poi attivarlo/disattivarlo per il singolo collo."
             checked={preavvisoTutti}
             onChange={(e) => setPreavvisoTutti(e.currentTarget.checked)}
           />
 
       {(clientiDuplicati.length > 0 || indirizziDuplicati.length > 0) && (
         <Box
-          p="sm"
+          p="xs"
           style={{
             border: "1px solid var(--mantine-color-default-border)",
             borderRadius: 8,
             background: "var(--mantine-color-default-hover)",
           }}
         >
-          <Text size="sm" fw={600}>
+          <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb={6}>
             Suggerimenti di unione
           </Text>
-          <Text size="xs" c="dimmed" mb={8}>
-            Puoi riunire ordini dello stesso cliente o con lo stesso indirizzo in un’unica spedizione, mantenendo tutte le righe e sommando il contrassegno.
-          </Text>
-          <Stack gap={10}>
+          <Stack gap={6}>
             {clientiDuplicati.map((d) => (
               <Switch
                 key={`cli:${d.clienteId}`}
@@ -708,8 +764,8 @@ function Form({
                     <Badge size="xs" variant="light" color="teal" style={{ flexShrink: 0 }}>
                       Stesso cliente
                     </Badge>
-                    <Text size="sm" truncate>
-                      Unisci «{d.nome}» — {d.n} ordini in un’unica spedizione
+                    <Text size="xs" fw={500} truncate>
+                      {d.nome} · {d.n} ordini
                     </Text>
                   </Group>
                 }
@@ -726,12 +782,11 @@ function Form({
                     <Badge size="xs" variant="light" color="orange" style={{ flexShrink: 0 }}>
                       Stesso indirizzo
                     </Badge>
-                    <Text size="sm" truncate>
-                      Unisci per «{d.indirizzoFormattato}» — {d.n} ordini in un’unica spedizione
+                    <Text size="xs" fw={500} truncate>
+                      {d.indirizzoFormattato} · {d.n} ordini ({d.nomiClienti.join(", ")})
                     </Text>
                   </Group>
                 }
-                description={`Clienti diversi: ${d.nomiClienti.join(", ")}`}
                 checked={unisci.has(`ind:${d.chiaveIndirizzo}`)}
                 onChange={(e) => setUnione(`ind:${d.chiaveIndirizzo}`, e.currentTarget.checked)}
               />
@@ -740,7 +795,7 @@ function Form({
         </Box>
       )}
 
-      <Divider label="Spedizioni da creare" labelPosition="left" />
+      <Divider label="Spedizioni da creare" labelPosition="left" my={2} />
 
       <VirtualFlow
         items={colli}

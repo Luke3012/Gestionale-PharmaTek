@@ -1065,6 +1065,12 @@ fn valida_collegamenti_periodo(
         }
         if ordini.iter().all(|oid| selected_orders.contains(oid)) {
             plan.add("spedizione", &sped.id);
+            for sorgente in spedizioni
+                .iter()
+                .filter(|s| str_field(&s.data, "dest_unito_in") == sped.id)
+            {
+                plan.add("spedizione", &sorgente.id);
+            }
         } else {
             plan.blocca(
                 "Spedizione mista",

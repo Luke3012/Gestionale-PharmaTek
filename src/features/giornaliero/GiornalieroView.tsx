@@ -206,7 +206,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
   const [sort, setSort] = useState<DataTableSortStatus<OrdineDto>>({ columnAccessor: "data", direction: "desc" });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; record: OrdineDto } | null>(null);
   const origineMenuAzioniRef = useRef<PuntoVoloCestino | null>(null);
-  const { ordineFinestra, anno } = usePrefs();
+  const { ordineFinestra, anno, filtriModo } = usePrefs();
   const colonne = useColonneGiornaliero();
   useCloseOnScroll(!!contextMenu, (v) => {
     if (!v) setContextMenu(null);
@@ -567,13 +567,13 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
       azioni={<NuovoOrdineMenu onNuovo={(categoria) => apri(null, undefined, categoria)} />}
     >
       <Stack gap="sm" style={{ height: "100%" }}>
-        <Group gap="sm" wrap="nowrap" align="flex-end">
+        <Group gap="sm" wrap={filtriModo === "espansi" ? "wrap" : "nowrap"} align="flex-end">
           <DebouncedInput
             placeholder="Cerca numero, cliente, medico, telefono o lotto…"
             leftSection={<IconSearch size={16} />}
             value={cerca}
             onChange={setCerca}
-            style={{ flex: "1 1 200px", maxWidth: 300 }}
+            style={{ flex: "1 1 200px", maxWidth: filtriModo === "espansi" ? 360 : 300 }}
           />
           <FiltriPopover
             attivi={nFiltri}
