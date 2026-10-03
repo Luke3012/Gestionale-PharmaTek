@@ -26,6 +26,7 @@ import {
   api,
   inTauri,
   type CanaleComunicazione,
+  type ComunicazioneCreaInput,
   type ModelloComunicazione,
   type RecordDto,
 } from "../../lib/tauri";
@@ -42,6 +43,7 @@ import {
   EVENTO_APRI_COMUNICAZIONE,
   type ComunicazioneTarget,
   variabiliNomeDestinatario,
+  variabiliAnagraficaDestinatario,
 } from "./apriComunicazione";
 import { formattaStimaInvio, stimaInvioSecondi } from "./stimaInvio";
 import {
@@ -52,6 +54,7 @@ import { RecapitoRapidoPopover } from "./RecapitoRapidoPopover";
 import {
   risolviModello,
   variabiliMancantiNeiTesti,
+  aggiornaTestoModelloNonModificato,
 } from "./modelliComunicazione";
 import {
   ComunicazioneNonDisponibile,
@@ -60,7 +63,6 @@ import {
   leggiPayloadComunicazione,
   TitoloNuovaComunicazione,
 } from "./ElementiComunicazione";
-import { accodaBozzeComunicazione } from "./operazioniComunicazioni";
 
 export {
   emailComunicazioneValida,
@@ -189,7 +191,7 @@ export function ComunicazioneComposerHost({
         telefono: dati.telefono,
         variabili: {
           ...corrente.variabili,
-          ...variabiliNomeDestinatario(dati.nome),
+          ...variabiliAnagraficaDestinatario(record, dati.nome, corrente.destinatarioEntita === "cliente"),
         },
       };
     });
@@ -327,6 +329,20 @@ export function ComunicazioneComposerHost({
   const modelloSelezionato = modelli.find(
     (item) => item.attivo && item.id === modelloId,
   );
+  const targetPrecedenteRef = useRef(mostrato);
+  useEffect(() => {
+    const precedente = targetPrecedenteRef.current;
+    targetPrecedenteRef.current = mostrato;
+    if (!precedente || !mostrato || !modelloSelezionato
+      || precedente.richiestaId !== mostrato.richiestaId
+      || precedente.origineId !== mostrato.origineId
+      || chiaveDestinatarioComunicazione(precedente) !== chiaveDestinatarioComunicazione(mostrato)
+      || precedente.variabili?.indirizzo_consegna === mostrato.variabili?.indirizzo_consegna) return;
+    const vecchieVariabili = variabiliTarget(precedente);
+    const nuoveVariabili = variabiliTarget(mostrato);
+    setOggettoEmail(corrente => aggiornaTestoModelloNonModificato(corrente, modelloSelezionato.oggetto, vecchieVariabili, nuoveVariabili));
+    setCorpo(corrente => aggiornaTestoModelloNonModificato(corrente, modelloSelezionato.corpo, vecchieVariabili, nuoveVariabili));
+  }, [mostrato, modelloSelezionato]);
   const composizioneLibera = !mostrato?.tipo && !mostrato?.origineId;
   const mancanti = useMemo(
     () =>
@@ -388,10 +404,9 @@ export function ComunicazioneComposerHost({
             return generati;
           })
         : {};
-      const bozze = [];
+      const inputs: ComunicazioneCreaInput[] = [];
       for (const canale of canali) {
-        bozze.push(
-          await api.comunicazioneCreaBozza({
+        inputs.push({
             idempotencyKey: `${intentoRef.current}:${canale}`,
             destinatarioEntita: mostrato.destinatarioEntita,
             destinatarioId: mostrato.destinatarioId,
@@ -426,11 +441,11 @@ export function ComunicazioneComposerHost({
             // E-mail e WhatsApp avviati dallo stesso click formano un'unica
             // azione: la X della notifica deve poterli annullare insieme.
             campagnaId: canali.length > 1 ? intentoRef.current : "",
-          }),
-        );
+          });
       }
+      const bozze = await api.comunicazioniCreaBozze(inputs, intentoRef.current);
       if (invia) {
-        await accodaBozzeComunicazione(bozze, api.comunicazioneMettiInCoda);
+        await api.comunicazioniMettiInCoda(bozze.map((bozza) => bozza.id));
         toast.success(
           bozze.length === 1
             ? "Invio avviato."
@@ -448,7 +463,7 @@ export function ComunicazioneComposerHost({
       setErrore(String(e));
     } finally {
       await rilasciaAllegati().catch((error) => {
-        setErrore(`Pulizia del documento temporaneo non riuscita: ${error}`);
+        setErrore((corrente) => [corrente, `Pulizia del documento temporaneo non riuscita: ${error}`].filter(Boolean).join("\n"));
       });
       setSalvataggio(null);
     }

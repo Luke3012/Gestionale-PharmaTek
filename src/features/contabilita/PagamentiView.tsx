@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 // Tab Crediti (FASE 3): vista UNICA dei pagamenti — attesi e saldati insieme — con
 // numero ordine, tipo, importo, scadenza/incasso, stato e verifica. Filtri (agente,
 // conto, periodo, stato), colonne ordinabili/configurabili come il Giornaliero.
@@ -439,8 +440,9 @@ export function PagamentiView({
   // Filtri MULTIPLI simultanei (client-side): ricerca testuale, agenti, conti, stati, periodo.
   const filtrateFinali = useMemo(() => {
     const q = cercaDifferita.trim().toLowerCase();
+    const corrisponde = preparaRicercaTesto(q);
     return righeConBlob.filter((r) => {
-      if (q && !r._searchBlob.includes(q)) return false;
+      if (q && !corrisponde(r._searchBlob)) return false;
       if (anno !== 0 && annoByOrder.get(r.ordineId) !== anno) return false;
       if (
         agentiSet.size > 0 &&

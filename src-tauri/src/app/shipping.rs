@@ -734,6 +734,7 @@ impl AppState {
     pub fn spedizioni_lista(&self) -> AppResult<Vec<SpedizioneDto>> {
         self.with_engine(|engine| {
             Ok(engine.with_projection(|p| {
+                let avvisi = super::shipping_communication::ContestoAvvisiSpedizione::new(p);
                 let numeri = numeri_ordini(p);
                 let prodotti = nome_map(p, "prodotto");
                 let corrieri = nome_map(p, "corriere");
@@ -884,10 +885,15 @@ impl AppState {
                                     .unwrap_or(0)
                                     .max(1);
                                 let acconto = acconti.get(&ordine_id).copied().unwrap_or(0).max(0);
-                                let quota_acconto =
-                                    ((acconto as f64 / n_totali as f64) * n_spedite as f64).round()
-                                        as i64;
-                                (ordine_id, (valore_spedito - quota_acconto).max(0))
+                                (
+                                    ordine_id,
+                                    importo_netto_spedito(
+                                        n_spedite,
+                                        valore_spedito,
+                                        n_totali,
+                                        acconto,
+                                    ),
+                                )
                             })
                             .collect();
                         (spedizione_id, importi)
@@ -978,10 +984,15 @@ impl AppState {
                                     .map(|riga| (riga.riga_id.as_str(), riga.numero.as_str())),
                             );
 
+                        let destinatari_comunicazione = avvisi.destinatari(&r);
                         let ultimo_avviso_fingerprint =
                             str_field(&r.data, "ultimo_avviso_fingerprint");
-                        let avvisato = !comunicazione_fingerprint.is_empty()
-                            && ultimo_avviso_fingerprint == comunicazione_fingerprint;
+                        let avvisato = if destinatari_comunicazione.is_empty() {
+                            !comunicazione_fingerprint.is_empty()
+                                && ultimo_avviso_fingerprint == comunicazione_fingerprint
+                        } else {
+                            destinatari_comunicazione.iter().all(|d| d.avvisato)
+                        };
                         let ultimo_avviso_canale = {
                             let c = str_field(&r.data, "ultimo_avviso_canale");
                             if c.is_empty() {
@@ -995,7 +1006,19 @@ impl AppState {
                             .get("ultimo_avviso_ms")
                             .and_then(serde_json::Value::as_u64);
 
+                        let (ultimo_avviso_canale, ultimo_avviso_ms) =
+                            if destinatari_comunicazione.is_empty() {
+                                (ultimo_avviso_canale, ultimo_avviso_ms)
+                            } else {
+                                destinatari_comunicazione
+                                    .iter()
+                                    .filter(|d| d.avvisato)
+                                    .max_by_key(|d| d.ultimo_avviso_ms.unwrap_or(0))
+                                    .map(|d| (d.ultimo_avviso_canale.clone(), d.ultimo_avviso_ms))
+                                    .unwrap_or((None, None))
+                            };
                         Some(SpedizioneDto {
+                            destinatari_comunicazione,
                             comunicazione_fingerprint,
                             lotto: str_field(&r.data, "lotto"),
                             data: str_field(&r.data, "data"),
@@ -2087,6 +2110,7 @@ impl AppState {
         engine
             .with_projection(|p| {
                 let r = p.get("spedizione", id).ok().flatten()?;
+                let avvisi = super::shipping_communication::ContestoAvvisiSpedizione::new(p);
                 let numeri = numeri_ordini(p);
                 let prodotti = nome_map(p, "prodotto");
                 let corrieri = nome_map(p, "corriere");
@@ -2219,9 +2243,14 @@ impl AppState {
                             .map(|riga| (riga.riga_id.as_str(), riga.numero.as_str())),
                     );
 
+                let destinatari_comunicazione = avvisi.destinatari(&r);
                 let ultimo_avviso_fingerprint = str_field(&r.data, "ultimo_avviso_fingerprint");
-                let avvisato = !comunicazione_fingerprint.is_empty()
-                    && ultimo_avviso_fingerprint == comunicazione_fingerprint;
+                let avvisato = if destinatari_comunicazione.is_empty() {
+                    !comunicazione_fingerprint.is_empty()
+                        && ultimo_avviso_fingerprint == comunicazione_fingerprint
+                } else {
+                    destinatari_comunicazione.iter().all(|d| d.avvisato)
+                };
                 let ultimo_avviso_canale = {
                     let c = str_field(&r.data, "ultimo_avviso_canale");
                     if c.is_empty() {
@@ -2235,7 +2264,19 @@ impl AppState {
                     .get("ultimo_avviso_ms")
                     .and_then(serde_json::Value::as_u64);
 
+                let (ultimo_avviso_canale, ultimo_avviso_ms) =
+                    if destinatari_comunicazione.is_empty() {
+                        (ultimo_avviso_canale, ultimo_avviso_ms)
+                    } else {
+                        destinatari_comunicazione
+                            .iter()
+                            .filter(|d| d.avvisato)
+                            .max_by_key(|d| d.ultimo_avviso_ms.unwrap_or(0))
+                            .map(|d| (d.ultimo_avviso_canale.clone(), d.ultimo_avviso_ms))
+                            .unwrap_or((None, None))
+                    };
                 Some(SpedizioneDto {
+                    destinatari_comunicazione,
                     comunicazione_fingerprint,
                     lotto: str_field(&r.data, "lotto"),
                     data: str_field(&r.data, "data"),

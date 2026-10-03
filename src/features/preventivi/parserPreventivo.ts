@@ -313,6 +313,31 @@ function valoreCanonico(
   return compatibili.length === 1 ? compatibili[0] : null;
 }
 
+/** Espande abbreviazioni soltanto quando individuano un unico valore del catalogo. */
+export function allergeneCanonico(valore: string, candidati: readonly string[]): string | null {
+  const esatto = candidati.find((c) => normalizzaTestoPreventivo(c) === normalizzaTestoPreventivo(valore));
+  if (esatto) return esatto;
+  const chiave = (testo: string) => normalizzaTestoPreventivo(testo)
+    .replace(/^(?:dermatophagoides|derm|di|d)[.\s]+/, "")
+    .replace(/[.\s]+/g, " ").trim();
+  const cercato = chiave(valore);
+  if (!cercato) return null;
+  const esatti = candidati.filter((c) => chiave(c) === cercato);
+  if (esatti.length) return esatti.length === 1 ? esatti[0] : null;
+  if (cercato.length < 4) return null;
+  const prefissi = candidati.filter((c) => chiave(c).startsWith(cercato));
+  if (prefissi.length) return prefissi.length === 1 ? prefissi[0] : null;
+  // Un solo refuso su un nome sufficientemente lungo; nessuna scelta tra candidati ambigui.
+  if (cercato.length < 5) return null;
+  const vicini = candidati.filter((c) => distanzaDamerauLevenshtein(cercato, chiave(c)) <= 1);
+  return vicini.length === 1 ? vicini[0] : null;
+}
+
+export function corrispondeRicercaAllergene(valore: string, query: string, candidati: readonly string[]): boolean {
+  const canonico = allergeneCanonico(query, candidati);
+  return canonico ? valore === canonico : normalizzaTestoPreventivo(valore).includes(normalizzaTestoPreventivo(query));
+}
+
 function unisciDettagli(valori: string[]): string[] {
   const visti = new Set<string>();
   return valori
@@ -344,7 +369,7 @@ function estraiAllergeni(
       .split(/\s*(?:,|\+|\||\/|\be\b)\s*/i)
     .map((valore) => valore.trim().replace(/[.;]+$/g, ""))
       .filter(Boolean)
-      .map((valore) => valoreCanonico(valore, suggerimenti) ?? valore),
+      .map((valore) => allergeneCanonico(valore, suggerimenti) ?? valore),
   );
   return {
     allergeni,
@@ -398,7 +423,7 @@ function estraiDettagliLiberi(
       continue;
     }
     allergeni.push(
-      valoreCanonico(parte, dettagli.allergeni ?? []) ?? parte,
+      allergeneCanonico(parte, dettagli.allergeni ?? []) ?? parte,
     );
   }
   return {
@@ -458,7 +483,7 @@ function estraiDettagliInline(
   let residuo = conPosologia.residuo;
   const allergeni: string[] = [];
   while (allergeni.length < 10) {
-    const estratto = estraiValoreInline(
+    const estratto = estraiAllergeneInline(
       residuo,
       (dettagli.allergeni ?? []).filter(
         (allergene) =>
@@ -468,6 +493,7 @@ function estraiDettagliInline(
               normalizzaTestoPreventivo(allergene),
           ),
       ),
+      dettagli.allergeni ?? [],
     );
     if (!estratto.valore) break;
     allergeni.push(estratto.valore);
@@ -479,6 +505,25 @@ function estraiDettagliInline(
     posologia: conPosologia.valore,
     allergeni,
   };
+}
+
+function estraiAllergeneInline(segmento: string, candidati: readonly string[], catalogo: readonly string[]): { valore: string; residuo: string } {
+  const esatto = estraiValoreInline(segmento, candidati);
+  if (esatto.valore) return esatto;
+  const parole = [...segmento.matchAll(/[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ.]*/g)];
+  for (let i = 0; i < parole.length; i++) {
+    for (let lunghezza = Math.min(3, parole.length - i); lunghezza >= 1; lunghezza--) {
+      const inizio = parole[i].index!;
+      const ultima = parole[i + lunghezza - 1];
+      const fine = ultima.index! + ultima[0].length;
+      const testo = segmento.slice(inizio, fine);
+      // Non attraversare separatori, quantità o la congiunzione tra due allergeni.
+      if (!/^[A-Za-zÀ-ÿ.\s]+$/.test(testo) || /\be\b/i.test(testo)) continue;
+      const valore = allergeneCanonico(testo, catalogo);
+      if (valore && candidati.includes(valore)) return { valore, residuo: `${segmento.slice(0, inizio)} ${segmento.slice(fine)}`.replace(/\s+/g, " ").trim() };
+    }
+  }
+  return { valore: "", residuo: segmento.trim() };
 }
 
 function similaritaToken(segmento: string, nome: string): number {

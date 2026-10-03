@@ -777,12 +777,17 @@ pub fn record_get(
 }
 
 #[tauri::command]
-pub fn records_get_many(
+pub async fn records_get_many(
+    app: tauri::AppHandle,
     entity: String,
     ids: Vec<String>,
-    state: State<'_, AppState>,
 ) -> Result<Vec<RecordDto>, String> {
-    state.records_get_many(&entity, &ids)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.records_get_many(&entity, &ids)
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
@@ -847,78 +852,143 @@ pub fn salva_base_produzione(
 
 /// Crea una bozza durevole e idempotente. Non esegue alcun invio esterno.
 #[tauri::command]
-pub fn comunicazione_crea_bozza(
+pub async fn comunicazione_crea_bozza(
     input: ComunicazioneCreaInput,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ComunicazioneDto, String> {
-    emetti_se_ok(
-        &app,
-        state.comunicazione_crea_bozza(input),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app.state::<AppState>().comunicazione_crea_bozza(input);
+        emetti_se_ok(&app, result, &["comunicazione"])
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
+}
+
+#[tauri::command]
+pub async fn comunicazioni_crea_bozze(
+    inputs: Vec<ComunicazioneCreaInput>,
+    set_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<ComunicazioneDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        emetti_se_ok(
+            &app,
+            app.state::<AppState>()
+                .comunicazioni_prepara_set(inputs, set_id.as_deref()),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "preparazione del set interrotta".to_string())?
+}
+
+#[tauri::command]
+pub async fn comunicazioni_metti_in_coda(
+    ids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<ComunicazioneDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        emetti_se_ok(
+            &app,
+            app.state::<AppState>().comunicazioni_metti_in_coda(ids),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "accodamento del set interrotto".to_string())?
 }
 
 /// Salva un PDF/PNG nella cache privata del PC e restituisce soltanto il
 /// riferimento content-addressed inseribile nell'outbox.
 #[tauri::command]
-pub fn documento_cache_salva(
+pub async fn documento_cache_salva(
     input: DocumentoCacheSalvaInput,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<AllegatoComunicazioneInput, String> {
-    state.documento_cache_salva(input)
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app.state::<AppState>().documento_cache_salva(input);
+        result
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 /// Rilascia i documenti appena generati. Con la pulizia immediata restano sul
 /// disco soltanto quelli ancora necessari a bozze, revisioni, invii o retry.
 #[tauri::command]
-pub fn documenti_cache_rilascia(
+pub async fn documenti_cache_rilascia(
     allegati: Vec<AllegatoComunicazioneInput>,
     elimina_se_non_usati: Option<bool>,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<usize, String> {
-    state.documenti_cache_rilascia_con_policy(&allegati, elimina_se_non_usati.unwrap_or(false))
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app
+            .state::<AppState>()
+            .documenti_cache_rilascia_con_policy(&allegati, elimina_se_non_usati.unwrap_or(false));
+        result
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn comunicazioni_lista(state: State<'_, AppState>) -> Result<Vec<ComunicazioneDto>, String> {
-    state.comunicazioni_lista()
+pub async fn comunicazioni_lista(app: tauri::AppHandle) -> Result<Vec<ComunicazioneDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app.state::<AppState>().comunicazioni_lista();
+        result
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
-/// Affida la bozza alla coda. Il worker mittente non è ancora attivato in 11B-1.
+/// Affida la bozza alla coda e risveglia il worker locale dopo il commit.
 #[tauri::command]
-pub fn comunicazione_metti_in_coda(
+pub async fn comunicazione_metti_in_coda(
     id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ComunicazioneDto, String> {
-    emetti_se_ok(
-        &app,
-        state.comunicazione_metti_in_coda(&id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app.state::<AppState>().comunicazione_metti_in_coda(&id);
+        emetti_se_ok(&app, result, &["comunicazione"])
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn comunicazione_annulla(
+pub async fn comunicazione_annulla(
     id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ComunicazioneDto, String> {
-    emetti_se_ok(&app, state.comunicazione_annulla(&id), &["comunicazione"])
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(&app, state.comunicazione_annulla(&id), &["comunicazione"])
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn comunicazione_whatsapp_riprendi(
+pub async fn comunicazione_whatsapp_riprendi(
     id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ComunicazioneDto, String> {
-    emetti_se_ok(
-        &app,
-        state.comunicazione_whatsapp_riprendi(&id),
-        &["comunicazione"],
-    )
+    // Autorizza solo l'input osservato alla richiesta. Un nuovo input durante
+    // l'attesa del pool blocking deve ancora interrompere l'automazione.
+    #[cfg(target_os = "windows")]
+    let autorizzazione_input = crate::app::whatsapp_windows::marcatore_input_utente();
+    #[cfg(not(target_os = "windows"))]
+    let autorizzazione_input = None;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.comunicazione_whatsapp_riprendi(&id, autorizzazione_input),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[cfg(target_os = "windows")]
@@ -1032,68 +1102,88 @@ pub fn campagna_comunicazione_elimina(
 }
 
 #[tauri::command]
-pub fn campagna_comunicazione_sospendi(
+pub async fn campagna_comunicazione_sospendi(
     campagna_id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<Vec<ComunicazioneDto>, String> {
-    emetti_se_ok(
-        &app,
-        state.campagna_comunicazione_sospendi(&campagna_id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.campagna_comunicazione_sospendi(&campagna_id),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn campagna_comunicazione_riprendi(
+pub async fn campagna_comunicazione_riprendi(
     campagna_id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<Vec<ComunicazioneDto>, String> {
-    emetti_se_ok(
-        &app,
-        state.campagna_comunicazione_riprendi(&campagna_id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.campagna_comunicazione_riprendi(&campagna_id),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn campagna_comunicazione_annulla(
+pub async fn campagna_comunicazione_annulla(
     campagna_id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<Vec<ComunicazioneDto>, String> {
-    emetti_se_ok(
-        &app,
-        state.campagna_comunicazione_annulla(&campagna_id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.campagna_comunicazione_annulla(&campagna_id),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn campagna_comunicazione_riprova_fallite(
+pub async fn campagna_comunicazione_riprova_fallite(
     campagna_id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<Vec<ComunicazioneDto>, String> {
-    emetti_se_ok(
-        &app,
-        state.campagna_comunicazione_riprova_fallite(&campagna_id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.campagna_comunicazione_riprova_fallite(&campagna_id),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn comunicazione_email_invia(
+pub async fn comunicazione_email_invia(
     id: String,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<ComunicazioneDto, String> {
-    emetti_se_ok(
-        &app,
-        state.comunicazione_email_invia(&id),
-        &["comunicazione"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.comunicazione_email_invia(&id),
+            &["comunicazione"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
@@ -1115,10 +1205,15 @@ pub fn comunicazioni_reinvia(
 }
 
 #[tauri::command]
-pub fn modelli_comunicazione_lista(
-    state: State<'_, AppState>,
+pub async fn modelli_comunicazione_lista(
+    app: tauri::AppHandle,
 ) -> Result<Vec<ModelloComunicazioneDto>, String> {
-    state.modelli_comunicazione_lista()
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.modelli_comunicazione_lista()
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
@@ -1219,15 +1314,25 @@ pub fn ordine_salva_base(
 }
 
 #[tauri::command]
-pub fn preventivi_lista(state: State<'_, AppState>) -> Result<Vec<PreventivoDto>, String> {
-    state.preventivi_lista()
+pub async fn preventivi_lista(app: tauri::AppHandle) -> Result<Vec<PreventivoDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.preventivi_lista()
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
-pub fn configurazione_documenti_get(
-    state: State<'_, AppState>,
+pub async fn configurazione_documenti_get(
+    app: tauri::AppHandle,
 ) -> Result<ConfigurazioneDocumentiDto, String> {
-    state.configurazione_documenti_get()
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.configurazione_documenti_get()
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 #[tauri::command]
@@ -2039,17 +2144,21 @@ pub fn pagamenti_vista(
 }
 
 #[tauri::command]
-pub fn pagamenti_proroga_sette_giorni(
+pub async fn pagamenti_proroga_sette_giorni(
     campagna_id: String,
     pagamenti: Vec<ProrogaPagamentoInput>,
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    emetti_se_ok(
-        &app,
-        state.pagamenti_proroga_sette_giorni(&campagna_id, pagamenti),
-        &["pagamento"],
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        emetti_se_ok(
+            &app,
+            state.pagamenti_proroga_sette_giorni(&campagna_id, pagamenti),
+            &["pagamento"],
+        )
+    })
+    .await
+    .map_err(|_| "operazione comunicazioni interrotta".to_string())?
 }
 
 /// Crea un pagamento (atteso o saldato); conferma l'ordine se saldato ed era Nuovo.

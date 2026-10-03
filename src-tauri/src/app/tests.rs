@@ -4,6 +4,255 @@ use calamine::Reader;
 use serde_json::json;
 
 #[test]
+fn avvisi_spedizione_per_cliente_esiti_legacy_e_suggerimenti() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    fs::write(app.path().join("premium.json"), br#"{"enabled":true}"#).unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Tester");
+    let spedizione = state
+        .record_create(
+            "spedizione",
+            campi(&[("data", json!("2026-10-03")), ("lotto", json!("lotto"))]),
+        )
+        .unwrap();
+    let mut clienti = Vec::new();
+    let mut ordini = Vec::new();
+    for (nome, prezzo) in [("Mario", 10_000), ("Anna", 20_000)] {
+        let cliente = state
+            .record_create(
+                "cliente",
+                campi(&[("nome", json!(nome)), ("email", json!("demo@example.invalid"))]),
+            )
+            .unwrap();
+        let ordine = state
+            .record_create(
+                "ordine",
+                campi(&[
+                    ("cliente_id", json!(cliente.id)),
+                    ("data", json!("2026-10-01")),
+                ]),
+            )
+            .unwrap();
+        for n in 0..2 {
+            state
+                .record_create(
+                    "riga_ordine",
+                    campi(&[
+                        ("ordine_id", json!(ordine.id)),
+                        ("qta", json!(1)),
+                        ("prezzo", json!(prezzo / 2)),
+                        ("spedizione_id", json!(spedizione.id)),
+                        ("numero", json!(format!("{nome}-{n}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+        state
+            .pagamento_registra(
+                &ordine.id,
+                "saldo",
+                prezzo,
+                false,
+                "2026-11-01",
+                "",
+                "",
+                false,
+                None,
+            )
+            .unwrap();
+        clienti.push(cliente.id);
+        ordini.push(ordine.id);
+    }
+    let lista = state.spedizioni_lista().unwrap();
+    let collo = &lista[0];
+    assert_eq!(collo.destinatari_comunicazione.len(), 2);
+    assert!(!collo.avvisato);
+    for d in &collo.destinatari_comunicazione {
+        assert_eq!(d.ordini.len(), 1);
+    }
+    // Un vecchio invio al principale non dimostra l'avviso agli altri.
+    state
+        .record_update(
+            "spedizione",
+            &spedizione.id,
+            campi(&[(
+                "ultimo_avviso_fingerprint",
+                json!(collo.comunicazione_fingerprint),
+            )]),
+        )
+        .unwrap();
+    assert!(state.spedizioni_lista().unwrap()[0]
+        .destinatari_comunicazione
+        .iter()
+        .all(|d| !d.avvisato));
+    let controlla_mancanti = || {
+        state
+            .with_engine(|e| {
+                Ok(e.with_projection(|p| {
+                    let ordini = p
+                        .list("ordine")
+                        .unwrap()
+                        .into_iter()
+                        .map(|r| (r.id.clone(), r))
+                        .collect();
+                    suggestions::spedizioni_da_avvisare_per_lotto(p, &ordini, "2026-10-03")
+                        .values()
+                        .flatten()
+                        .map(|d| d.cliente_id.clone())
+                        .collect::<HashSet<_>>()
+                }))
+            })
+            .unwrap()
+    };
+    assert_eq!(controlla_mancanti().len(), 2);
+    for (indice, cid) in clienti.iter().enumerate() {
+        let lista = state.spedizioni_lista().unwrap();
+        let destinatario = lista[0]
+            .destinatari_comunicazione
+            .iter()
+            .find(|d| &d.cliente_id == cid)
+            .unwrap();
+        let input: communication::ComunicazioneCreaInput = serde_json::from_value(json!({
+            "idempotencyKey": format!("test-avviso-{cid}"), "destinatarioEntita": "cliente", "destinatarioId": cid,
+            "canale": "email", "recapito": "demo@example.invalid", "oggetto": "Avviso", "corpo": "Messaggio di prova",
+            "origineEntita": "spedizione", "origineId": spedizione.id, "origineFingerprint": destinatario.fingerprint,
+            "tipoModello": "preavviso_spedizione"
+        })).unwrap();
+        let mut esito = state.comunicazione_crea_bozza(input).unwrap();
+        esito.inviata_ms = 100 + indice as u64;
+        esito.stato = communication::StatoComunicazione::Fallito;
+        state.registra_esito_su_origine_condivisa(&esito).unwrap();
+        assert!(controlla_mancanti().contains(cid));
+        esito.stato = communication::StatoComunicazione::InvioAzionato;
+        state.registra_esito_su_origine_condivisa(&esito).unwrap();
+        assert!(!controlla_mancanti().contains(cid));
+        assert_eq!(state.spedizioni_lista().unwrap()[0].avvisato, indice == 1);
+    }
+    let vecchi = state.spedizioni_lista().unwrap();
+    // Cambiare i pagamenti di Mario invalida soltanto il suo avviso.
+    state
+        .pagamento_registra(
+            &ordini[0],
+            "rata",
+            1_000,
+            false,
+            "2026-10-10",
+            "",
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    let nuovi = state.spedizioni_lista().unwrap();
+    assert!(!nuovi[0].avvisato);
+    for d in &nuovi[0].destinatari_comunicazione {
+        let precedente = vecchi[0]
+            .destinatari_comunicazione
+            .iter()
+            .find(|v| v.cliente_id == d.cliente_id)
+            .unwrap();
+        assert_eq!(
+            d.fingerprint == precedente.fingerprint,
+            d.cliente_id != clienti[0]
+        );
+        assert_eq!(d.avvisato, d.cliente_id != clienti[0]);
+    }
+}
+
+#[test]
+fn avviso_storico_singolo_cliente_rimane_valido() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Tester");
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Mario"))]))
+        .unwrap();
+    let ordine = state
+        .record_create("ordine", campi(&[("cliente_id", json!(cliente.id))]))
+        .unwrap();
+    let spedizione = state
+        .record_create("spedizione", campi(&[("data", json!("2026-10-03"))]))
+        .unwrap();
+    state
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine.id)),
+                ("spedizione_id", json!(spedizione.id)),
+                ("numero", json!("A")),
+            ]),
+        )
+        .unwrap();
+    let lista = state.spedizioni_lista().unwrap();
+    state
+        .record_update(
+            "spedizione",
+            &spedizione.id,
+            campi(&[(
+                "ultimo_avviso_fingerprint",
+                json!(lista[0].comunicazione_fingerprint),
+            )]),
+        )
+        .unwrap();
+    let lista = state.spedizioni_lista().unwrap();
+    assert!(lista[0].avvisato);
+    assert!(lista[0].destinatari_comunicazione[0].avvisato);
+}
+
+#[test]
+fn avviso_cliente_spedizione_parziale_riusa_la_quota_al_netto_acconto() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data.path().to_str().unwrap(), "Tester");
+    let cliente = state
+        .record_create("cliente", campi(&[("nome", json!("Mario"))]))
+        .unwrap();
+    let ordine = state
+        .record_create(
+            "ordine",
+            campi(&[("cliente_id", json!(cliente.id)), ("acconto", json!(3000))]),
+        )
+        .unwrap();
+    let spedizione = state
+        .record_create("spedizione", campi(&[("data", json!("2026-10-03"))]))
+        .unwrap();
+    for sid in [spedizione.id.as_str(), ""] {
+        state
+            .record_create(
+                "riga_ordine",
+                campi(&[
+                    ("ordine_id", json!(ordine.id)),
+                    ("qta", json!(1)),
+                    ("prezzo", json!(5000)),
+                    ("spedizione_id", json!(sid)),
+                ]),
+            )
+            .unwrap();
+    }
+    state
+        .pagamento_registra(
+            &ordine.id,
+            "saldo",
+            7000,
+            false,
+            "2026-11-01",
+            "",
+            "",
+            false,
+            None,
+        )
+        .unwrap();
+    let lista = state.spedizioni_lista().unwrap();
+    let pagamenti = &lista[0].destinatari_comunicazione[0].ordini[0].pagamenti;
+    assert_eq!(pagamenti.len(), 1);
+    assert_eq!(pagamenti[0].importo, 3500);
+    assert_eq!(pagamenti[0].importo, lista[0].pagamenti[0].importo);
+}
+
+#[test]
 fn risveglio_outbox_non_perde_un_segnale_anticipato() {
     let wake = CommunicationWake::default();
     let token = wake.token();
@@ -7383,6 +7632,34 @@ fn unione_preventiva_mantiene_pagamenti_e_si_separa_per_ordine() {
         assert_eq!(unita[0].colli, colli_richiesti);
         assert!(unita[0].destinatari_uniti);
         assert_eq!(unita[0].cliente_id, cliente_b);
+        assert_eq!(
+            unita[0].destinatari_comunicazione.len(),
+            if stesso_cliente { 1 } else { 2 }
+        );
+        assert_eq!(
+            risultato[0].destinatari_comunicazione.len(),
+            unita[0].destinatari_comunicazione.len()
+        );
+        for destinatario in &unita[0].destinatari_comunicazione {
+            assert!(!destinatario.avvisato);
+            for ordine in &destinatario.ordini {
+                let cliente_atteso = if ordine.ordine_id == oa {
+                    &cliente_a.id
+                } else {
+                    &cliente_b
+                };
+                assert_eq!(&destinatario.cliente_id, cliente_atteso);
+                let totale = ordine.pagamenti.iter().map(|p| p.importo).sum::<i64>();
+                assert_eq!(
+                    totale,
+                    if ordine.ordine_id == oa {
+                        10_000
+                    } else {
+                        20_000
+                    }
+                );
+            }
+        }
         for (pid, quota) in [(&pa, 4_000), (&pb, 8_000)] {
             let pagamento = state.record_get("pagamento", pid).unwrap().unwrap();
             assert_eq!(pagamento.data["importo"], json!(quota));

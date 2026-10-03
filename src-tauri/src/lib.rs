@@ -310,7 +310,15 @@ pub fn run() {
                     // fallimento di recapito viene registrato come esito e non
                     // interrompe i successivi; soltanto un errore interno rimanda
                     // il lavoro al ciclo seguente.
-                    while let Ok(Some(comunicazione)) = state.comunicazione_processa_prossima() {
+                    while let Some(comunicazione) = match state.comunicazione_processa_prossima() {
+                        Ok(esito) => esito,
+                        Err(_) => {
+                            eprintln!(
+                                "outbox: elaborazione interrotta, stato locale non disponibile"
+                            );
+                            None
+                        }
+                    } {
                         // WhatsApp richiede un breve intervallo di quiete:
                         // serve sia a distinguere l'input automatico da
                         // quello dell'operatore, sia a lasciare a Desktop
@@ -504,6 +512,8 @@ pub fn run() {
             commands::documento_cache_salva,
             commands::documenti_cache_rilascia,
             commands::comunicazione_crea_bozza,
+            commands::comunicazioni_crea_bozze,
+            commands::comunicazioni_metti_in_coda,
             commands::comunicazioni_lista,
             commands::comunicazione_metti_in_coda,
             commands::comunicazione_annulla,

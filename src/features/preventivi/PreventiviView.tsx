@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 import {
   ActionIcon,
   Box,
@@ -346,8 +347,9 @@ export function PreventiviView({ identity }: { identity: Identity }) {
 
   const filtrati = useMemo(() => {
     const query = cerca.trim().toLocaleLowerCase("it");
+    const corrisponde = preparaRicercaTesto(query);
     return preventiviConBlob.filter((preventivo) => {
-      if (query && !preventivo._searchBlob.includes(query)) {
+      if (query && !corrisponde(preventivo._searchBlob)) {
         return false;
       }
       if (linee.length > 0 && !linee.some((linea) => preventivo.linee.includes(linea))) {

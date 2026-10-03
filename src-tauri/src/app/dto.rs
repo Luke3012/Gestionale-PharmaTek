@@ -352,12 +352,38 @@ pub struct SpedizioneDto {
     pub n_righe: usize,
     pub righe: Vec<SpedizioneRigaDto>,
     pub pagamenti: Vec<PagamentoSpedizioneDto>,
+    pub destinatari_comunicazione: Vec<DestinatarioComunicazioneSpedizioneDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DestinatarioComunicazioneSpedizioneDto {
+    pub cliente_id: String,
+    pub cliente_nome: String,
+    pub email: String,
+    pub telefono: String,
+    pub ordini: Vec<OrdineComunicazioneSpedizioneDto>,
+    pub fingerprint: String,
+    pub avvisato: bool,
+    pub ultimo_avviso_ms: Option<u64>,
+    pub ultimo_avviso_canale: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdineComunicazioneSpedizioneDto {
+    pub ordine_id: String,
+    pub ordine_numero: String,
+    pub medico_nome: String,
+    pub agente_nome: String,
+    pub pagamenti: Vec<PagamentoSpedizioneDto>,
 }
 
 /// Pagamento collegato a un ordine in una spedizione (FASE 4).
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PagamentoSpedizioneDto {
+    pub id: String,
     pub conto_id: String,
     pub tipo: String,
     pub importo: i64,

@@ -1,11 +1,11 @@
 {
-    "version":  "0.8.3",
-    "notes":  "🤖 Sono stati risolti alcuni problemini estetici e di performance.",
-    "pub_date":  "2026-09-27T15:36:59Z",
+    "version":  "0.8.4",
+    "notes":  "✨ Sono state apportate alcune migliorie tecniche!",
+    "pub_date":  "2026-10-03T17:47:41Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM3NhdWdmOXhnYmM3d3dwQk9OZWdXYm9WZ0U1Y1REYW94SndtZnZQelNLSWtKTEU0STRJQzQ5bGlkamZ6Z2VyaU5LakEybDJ5N3UxVjFvbjQyclZQUHc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNTIzNDA2CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjNfeDY0LXNldHVwLmV4ZQpUWVd0VXAxSlEyZjFORlNMUjJHcXVKYkpxRFcrTkZlR3F2bW5xeXlaMUtlb0R5UXNIYktqODB4MC9pQjRvelBOZy9hSTZwb2UyL2RuUUZYcXIvNnhCdz09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/593209380"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM3RnQlZMRjhxRERlWi9YdVZDZFMvcmxYdVFkSmNhc1hYWG45cVZvVWxYOTFqeEREMCtpaWV4UmdHdVhLMGlNcFNZSHpjS2hmamR6eWhwWFhCOWJJamdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDQ5NjUwCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjRfeDY0LXNldHVwLmV4ZQpzSjVUYTZDQmFwWE40eEc2b0E3Ykl4ZUd6YkphT0pTemJ6Wnd4VHo0ZG9Yb3B1SXFtR3dEbXVvWEk4MWVCY3pmcXFOZnRIN2tnVmd1TEJpZzRoeHRBUT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/608251902"
                                          }
                   }
 }

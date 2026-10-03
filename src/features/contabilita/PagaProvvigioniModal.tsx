@@ -1,3 +1,4 @@
+import { corrispondeRicercaTesto } from "../../lib/ricercaTesto";
 // Modale «Paga provvigioni» di un singolo agente (FASE 6): elenca gli ordini la cui
 // provvigione è pagabile (maturati, e — se attivato — anche quelli col solo acconto
 // incassato non ancora spediti), con selezione riga-per-riga e totale che si aggiorna
@@ -105,7 +106,7 @@ function Corpo({
     const q = queryDifferita.trim().toLowerCase();
     return pagabili.filter((o) => {
       if (finoA && o.data > finoA) return false;
-      if (q && !`${o.numero} ${o.clienteNome}`.toLowerCase().includes(q)) return false;
+      if (q && !corrispondeRicercaTesto(`${o.numero} ${o.clienteNome}`, q)) return false;
       return true;
     });
   }, [pagabili, finoA, queryDifferita]);

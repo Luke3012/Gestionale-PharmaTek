@@ -30,6 +30,10 @@ describe("ricerca ordini per nuovo preventivo", () => {
     expect(ordiniVisibiliPerPreventivo(ordini, 2026, "").map((o) => o.ordineId))
       .toEqual(["2026-10"]);
   });
+  it("trova l'anagrafica anche con nome e cognome invertiti", () => {
+    expect(ordiniVisibiliPerPreventivo(ordini, 2026, "Rossi Mario")[0]?.ordineId).toBe("2026-10");
+    expect(ordiniVisibiliPerPreventivo(ordini, 2026, "Orietta Menegon")[0]?.ordineId).toBe("2025-22");
+  });
 
   it("cerca cliente, medico e numero in tutti gli anni", () => {
     expect(ordiniVisibiliPerPreventivo(ordini, 2026, "menegon")[0]?.ordineId)

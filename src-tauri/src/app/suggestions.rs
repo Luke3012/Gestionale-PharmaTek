@@ -187,100 +187,48 @@ pub(crate) fn spedizioni_da_avvisare_per_lotto(
     ordini: &HashMap<String, crate::projection::Record>,
     oggi: &str,
 ) -> HashMap<String, Vec<SpedizioneDaAvvisare>> {
-    let ord_clienti: HashMap<String, String> = ordini
-        .iter()
-        .map(|(id, ordine)| (id.clone(), str_field(&ordine.data, "cliente_id")))
-        .collect();
-    let clienti_contattabili: HashSet<String> = p
-        .list("cliente")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|cliente| {
-            !str_field(&cliente.data, "email").is_empty()
-                || !str_field(&cliente.data, "telefono").is_empty()
-        })
-        .map(|cliente| cliente.id)
-        .collect();
-    let mut righe_per_spedizione: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
-    for riga in p.list("riga_ordine").unwrap_or_default() {
-        let spedizione_id = str_field(&riga.data, "spedizione_id");
-        if spedizione_id.is_empty() {
-            continue;
-        }
-        righe_per_spedizione
-            .entry(spedizione_id)
-            .or_default()
-            .push((
-                riga.id,
-                str_field(&riga.data, "numero"),
-                str_field(&riga.data, "ordine_id"),
-            ));
-    }
-
+    let avvisi = super::shipping_communication::ContestoAvvisiSpedizione::new(p);
     let mut per_lotto: HashMap<String, Vec<SpedizioneDaAvvisare>> = HashMap::new();
     for spedizione in p.list("spedizione").unwrap_or_default() {
         if !str_field(&spedizione.data, "dest_unito_in").is_empty() {
             continue;
         }
         let data = str_field(&spedizione.data, "data");
-        let eta = giorni_tra(&data, oggi);
-        if data.is_empty() || !(0..=14).contains(&eta) {
+        if data.is_empty() || !(0..=14).contains(&giorni_tra(&data, oggi)) {
             continue;
         }
-        let righe = righe_per_spedizione
-            .get(&spedizione.id)
-            .cloned()
-            .unwrap_or_default();
-        let primario = str_field(&spedizione.data, "dest_ordine_primario_id");
-        let cliente_id = righe
-            .iter()
-            .find(|(_, _, ordine_id)| *ordine_id == primario)
-            .and_then(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
-            .or_else(|| {
-                righe
+        for destinatario in avvisi.destinatari(&spedizione) {
+            if destinatario.avvisato
+                || !destinatario
+                    .ordini
                     .iter()
-                    .find_map(|(_, _, ordine_id)| ord_clienti.get(ordine_id))
-            })
-            .cloned()
-            .unwrap_or_default();
-        if cliente_id.is_empty() || !clienti_contattabili.contains(&cliente_id) {
-            continue;
+                    .any(|o| ordini.contains_key(&o.ordine_id))
+            {
+                continue;
+            }
+            let lotto = str_field(&spedizione.data, "lotto");
+            per_lotto
+                .entry(if lotto.is_empty() {
+                    spedizione.id.clone()
+                } else {
+                    lotto
+                })
+                .or_default()
+                .push(SpedizioneDaAvvisare {
+                    id: spedizione.id.clone(),
+                    data: data.clone(),
+                    cliente_id: destinatario.cliente_id,
+                    fingerprint: destinatario.fingerprint,
+                    aggiornato_ms: aggiornato_record_ms(&spedizione),
+                });
         }
-        let fingerprint = fingerprint_spedizione_comunicazione(
-            &spedizione.id,
-            &data,
-            &str_field(&spedizione.data, "corriere_id"),
-            &cliente_id,
-            righe
-                .iter()
-                .map(|(riga_id, numero, _)| (riga_id.as_str(), numero.as_str())),
-        );
-        if str_field(&spedizione.data, "ultimo_avviso_fingerprint") == fingerprint {
-            continue;
-        }
-        let lotto = str_field(&spedizione.data, "lotto");
-        let aggiornato_ms = aggiornato_record_ms(&spedizione);
-        per_lotto
-            .entry(if lotto.is_empty() {
-                spedizione.id.clone()
-            } else {
-                lotto
-            })
-            .or_default()
-            .push(SpedizioneDaAvvisare {
-                id: spedizione.id,
-                data,
-                cliente_id,
-                fingerprint,
-                aggiornato_ms,
-            });
     }
     per_lotto
 }
 
 pub(crate) fn spedizioni_per_suggerimento_avviso(
     p: &crate::projection::Projection,
-) -> HashMap<String, Vec<(String, String)>> {
+) -> HashMap<String, Vec<(String, String, String)>> {
     let oggi = oggi_iso();
     let tutti_ordini: HashMap<String, crate::projection::Record> = p
         .list("ordine")
@@ -318,7 +266,7 @@ pub(crate) fn spedizioni_per_suggerimento_avviso(
                 id,
                 spedizioni
                     .into_iter()
-                    .map(|s| (s.id, s.fingerprint))
+                    .map(|s| (s.id, s.cliente_id, s.fingerprint))
                     .collect(),
             );
         }
@@ -560,6 +508,11 @@ fn deriva_operativi(
                 .map(|spedizione| spedizione.cliente_id.as_str())
                 .collect::<HashSet<_>>()
                 .len();
+            let colli = spedizioni
+                .iter()
+                .map(|s| &s.id)
+                .collect::<HashSet<_>>()
+                .len();
             let prima = spedizioni.first().map(|s| s.id.clone()).unwrap_or_default();
             let data = spedizioni
                 .iter()
@@ -588,12 +541,8 @@ fn deriva_operativi(
                 },
                 dettaglio: format!(
                     "{} {} senza avviso · spedizione del {}",
-                    spedizioni.len(),
-                    if spedizioni.len() == 1 {
-                        "collo"
-                    } else {
-                        "colli"
-                    },
+                    colli,
+                    if colli == 1 { "collo" } else { "colli" },
                     data_it(&data)
                 ),
                 azione_label: "Apri spedizione".into(),
@@ -1032,7 +981,7 @@ impl AppState {
             engine
                 .emit_built_checked(move |p| {
                     let mut mutations = Vec::with_capacity(suggerimenti.len() * 7);
-                    let mut spedizioni_mappa: Option<HashMap<String, Vec<(String, String)>>> = None;
+                    let mut spedizioni_mappa: Option<HashMap<String, Vec<(String, String, String)>>> = None;
                     for (suggerimento_id, tipo) in &suggerimenti {
                         let record_id = format!(
                             "stato-suggerimento-v1|{}",
@@ -1065,21 +1014,12 @@ impl AppState {
                             let mappa = spedizioni_mappa
                                 .get_or_insert_with(|| spedizioni_per_suggerimento_avviso(p));
                             if let Some(colli) = mappa.get(suggerimento_id) {
-                                for (sped_id, fp) in colli {
-                                    for (field, val) in [
-                                        ("ultimo_avviso_ms", json!(ts)),
-                                        ("ultimo_avviso_canale", json!("manuale")),
-                                        ("ultimo_avviso_fingerprint", json!(fp)),
-                                    ] {
-                                        mutations.push(Mutation::new(
-                                            "spedizione",
-                                            sped_id.clone(),
-                                            EventBody::FieldSet {
-                                                field: field.into(),
-                                                value: val,
-                                            },
-                                        ));
-                                    }
+                                for (sped_id, cliente_id, fp) in colli {
+                                    mutations.push(Mutation::new("spedizione", sped_id.clone(),
+                                        EventBody::FieldSet {
+                                            field: super::shipping_communication::campo_avviso_cliente(cliente_id),
+                                            value: json!({ "ms": ts, "canale": "manuale", "fingerprint": fp }),
+                                        }));
                                 }
                             }
                         }

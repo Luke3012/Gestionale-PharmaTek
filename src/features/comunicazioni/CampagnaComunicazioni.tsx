@@ -31,6 +31,7 @@ import {
 import {
   api,
   type CanaleComunicazione,
+  type ComunicazioneCreaInput,
   type ModelloComunicazione,
   type RecordDto,
 } from "../../lib/tauri";
@@ -54,6 +55,7 @@ import {
   EVENTO_APRI_CAMPAGNA_COMUNICAZIONI,
   type CampagnaComunicazioneTarget,
   variabiliNomeDestinatario,
+  variabiliAnagraficaDestinatario,
 } from "./apriComunicazione";
 import { formattaStimaInvio, stimaInvioSecondi } from "./stimaInvio";
 import { RecapitoRapidoPopover } from "./RecapitoRapidoPopover";
@@ -64,7 +66,6 @@ import {
   leggiPayloadComunicazione,
 } from "./ElementiComunicazione";
 import { formattaDataIsoLocale, formattaDataLocale } from "../../lib/date";
-import { accodaBozzeComunicazione } from "./operazioniComunicazioni";
 
 type SceltaCanale = CanaleComunicazione | "entrambi";
 const EVENTI_DESTINATARI_CAMPAGNA = [
@@ -224,7 +225,7 @@ export function aggiornaTargetDaRecord(
     telefono: dati.telefono,
     variabili: {
       ...target.variabili,
-      ...variabiliNomeDestinatario(dati.nome),
+      ...variabiliAnagraficaDestinatario(record, dati.nome, target.destinatarioEntita === "cliente"),
     },
     snapshot: destinatarioNelloSnapshot
       ? snapshot.map((item) =>
@@ -661,7 +662,7 @@ export function CampagnaComunicazioniHost({
           `I dati di ${cambiato.destinatario} sono cambiati durante la revisione. Chiudi e riapri la campagna per aggiornare destinatari e importi.`,
         );
       }
-      const bozze = [];
+      const inputs: ComunicazioneCreaInput[] = [];
       for (const voce of pronti) {
         const variabili = variabiliTarget(voce.target, dataAffidamento);
         const allegatiGenerati = voce.target.documentoPreventivo
@@ -685,7 +686,7 @@ export function CampagnaComunicazioniHost({
             corpo,
             variabili,
           ).testo.trim();
-          const bozza = await api.comunicazioneCreaBozza({
+          inputs.push({
             idempotencyKey: `${campagnaRef.current}:${chiaveTargetCampagna(voce.target)}:${canale}`,
             destinatarioEntita: voce.target.destinatarioEntita,
             destinatarioId: voce.target.destinatarioId,
@@ -722,9 +723,9 @@ export function CampagnaComunicazioniHost({
               [],
             campagnaId: campagnaRef.current,
           });
-          bozze.push(bozza);
         }
       }
+      const bozze = await api.comunicazioniCreaBozze(inputs, campagnaRef.current);
       if (prorogaSetteGiorni && proroghe.length) {
         await api.pagamentiProrogaSetteGiorni(
           campagnaRef.current,
@@ -736,7 +737,7 @@ export function CampagnaComunicazioniHost({
           })),
         );
       }
-      await accodaBozzeComunicazione(bozze, api.comunicazioneMettiInCoda);
+      await api.comunicazioniMettiInCoda(bozze.map((bozza) => bozza.id));
       toast.success(
         `${numeroInvii} invii avviati in sequenza.${
           prorogaSetteGiorni && proroghe.length
@@ -760,9 +761,7 @@ export function CampagnaComunicazioniHost({
         (esito): esito is PromiseRejectedResult => esito.status === "rejected",
       );
       if (puliziaFallita) {
-        setErrore(
-          `Pulizia dei documenti temporanei non riuscita: ${puliziaFallita.reason}`,
-        );
+        setErrore((corrente) => [corrente, `Pulizia dei documenti temporanei non riuscita: ${puliziaFallita.reason}`].filter(Boolean).join("\n"));
       }
       setPreparando(false);
     }

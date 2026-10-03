@@ -143,6 +143,9 @@ fn catalogo_variabili(tipo: TipoModelloComunicazione) -> BTreeMap<&'static str, 
         ("nome_agente", "Nome agente"),
         ("riferimento_ordine", "Riferimento ordine"),
     ]);
+    if tipo != TipoModelloComunicazione::InvioProduzione {
+        catalogo.insert("indirizzo_consegna", "Indirizzo di consegna");
+    }
     match tipo {
         TipoModelloComunicazione::Preventivo | TipoModelloComunicazione::SollecitoPreventivo => {
             catalogo.extend([
@@ -180,6 +183,32 @@ fn catalogo_variabili(tipo: TipoModelloComunicazione) -> BTreeMap<&'static str, 
         }
     }
     catalogo
+}
+
+#[test]
+fn indirizzo_consegna_disponibile_nei_modelli_cliente() {
+    use TipoModelloComunicazione::*;
+    for tipo in [
+        Preventivo,
+        SollecitoPreventivo,
+        SollecitoPagamento,
+        PreavvisoSpedizione,
+    ] {
+        assert_eq!(
+            catalogo_variabili(tipo).get("indirizzo_consegna"),
+            Some(&"Indirizzo di consegna")
+        );
+        assert!(valida_input(ModelloComunicazioneSalvaInput {
+            id: String::new(),
+            tipo,
+            titolo: "Personalizzato".into(),
+            oggetto: "Consegna".into(),
+            corpo: "Indirizzo: {{indirizzo_consegna}}".into(),
+            attivo: true,
+        })
+        .is_ok());
+    }
+    assert!(!catalogo_variabili(InvioProduzione).contains_key("indirizzo_consegna"));
 }
 
 fn estrai_variabili(testo: &str) -> AppResult<BTreeSet<String>> {

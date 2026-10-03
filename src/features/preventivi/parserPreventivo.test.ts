@@ -4,6 +4,8 @@ import {
   interpretaImportoItaliano,
   interpretaPreventivo,
   normalizzaTestoPreventivo,
+  allergeneCanonico,
+  corrispondeRicercaAllergene,
 } from "./parserPreventivo";
 
 const prodotti = [
@@ -45,6 +47,43 @@ const prodottiReali = [
 ];
 
 describe("parser preventivo offline", () => {
+  const allergeniCatalogo = ["d.pteronyssinus", "d.farinae", "parietaria", "cipresso"];
+  it("usa le stesse regole anche per altri nomi del catalogo", () => {
+    expect(allergeneCanonico("parie", allergeniCatalogo)).toBe("parietaria");
+    expect(allergeneCanonico("cipres", allergeniCatalogo)).toBe("cipresso");
+    expect(allergeneCanonico("parietaira", allergeniCatalogo)).toBe("parietaria");
+    expect(allergeneCanonico("h.infl", ["h.influenzae", "s.pneumoniae"])).toBe("h.influenzae");
+    const risultato = interpretaPreventivo("sublinguale 2 fiale parie e cipressoo", { prodotti: prodottiReali, dettagliProduzione: { allergeni: allergeniCatalogo } });
+    expect(risultato.righe[0].allergeni).toEqual(expect.arrayContaining(["parietaria", "cipresso"]));
+  });
+  it.each(["d.pter", "D. PTER", "pter", "derm pter", "dermatophagoides pter", "d.pteronyssnius"])("riconosce l'abbreviazione o refuso %s anche nella selezione manuale", (query) => {
+    expect(allergeneCanonico(query, allergeniCatalogo)).toBe("d.pteronyssinus");
+    expect(corrispondeRicercaAllergene("d.pteronyssinus", query, allergeniCatalogo)).toBe(true);
+    expect(corrispondeRicercaAllergene("d.farinae", query, allergeniCatalogo)).toBe(false);
+  });
+  it.each([
+    "sublinguale 2 fiale d.pter e di.farinae",
+    "sublinguale 2 fiale d.pter, di.farinae",
+    "sublinguale 2 fiale D. PTER d. farinae",
+    "sublinguale 2 fiale allergeni: d.pter + di.farinae",
+    "sublinguale 2 fiale d.pteronyssnius e d.farin ae",
+  ])("mantiene prodotto, quantità e allergeni nella frase %s", (testo) => {
+    const risultato = interpretaPreventivo(testo, { prodotti: prodottiReali, dettagliProduzione: { allergeni: allergeniCatalogo } });
+    expect(risultato.righe).toHaveLength(1);
+    expect(risultato.righe[0]).toMatchObject({ prodottoId: "sublinguale-2", qta: 1 });
+    expect(risultato.righe[0].allergeni).toEqual(expect.arrayContaining(["d.pteronyssinus", "d.farinae"]));
+    expect(risultato.righe[0].allergeni).toHaveLength(2);
+  });
+  it("non sceglie tra abbreviazioni e refusi ambigui e non inventa valori fuori catalogo", () => {
+    const equivalenti = ["d.pteronyssinus", "Dermatophagoides pteronyssinus"];
+    expect(allergeneCanonico("d.pteronyssinus", equivalenti)).toBe("d.pteronyssinus");
+    expect(allergeneCanonico("d.pter", equivalenti)).toBeNull();
+    expect(allergeneCanonico("pari", ["parietaria", "parietaria judaica"])).toBeNull();
+    expect(allergeneCanonico("farina", ["farinae", "farina"])).toBe("farina");
+    expect(allergeneCanonico("cipressoo", ["cipresso", "cipressio"])).toBeNull();
+    expect(allergeneCanonico("d.p", allergeniCatalogo)).toBeNull();
+    expect(allergeneCanonico("preparato nuovo", allergeniCatalogo)).toBeNull();
+  });
   it("normalizza accenti, apostrofi e spazi senza dipendere dalla rete", () => {
     expect(normalizzaTestoPreventivo("  Èlite  d’Acari! ")).toBe("elite d'acari");
   });

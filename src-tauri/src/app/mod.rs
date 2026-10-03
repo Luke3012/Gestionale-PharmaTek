@@ -52,6 +52,7 @@ mod runtime_activity;
 mod seed_catalog;
 mod seeds;
 mod shipping;
+mod shipping_communication;
 pub(crate) mod suggestions;
 #[cfg(target_os = "windows")]
 pub(crate) mod whatsapp_windows;
@@ -3185,6 +3186,12 @@ pub(crate) fn riallinea_contrassegno_spedizioni_ordine(
     Ok(())
 }
 
+fn importo_netto_spedito(n_spedite: i64, valore_spedito: i64, n_totali: i64, acconto: i64) -> i64 {
+    let quota_acconto =
+        ((acconto.max(0) as f64 / n_totali.max(1) as f64) * n_spedite as f64).round() as i64;
+    (valore_spedito - quota_acconto).max(0)
+}
+
 fn importi_spedizione_parziali(
     p: &crate::projection::Projection,
     spedizione_ids: &std::collections::HashSet<String>,
@@ -3234,9 +3241,10 @@ fn importi_spedizione_parziali(
                 .unwrap_or(0)
                 .max(1);
             let acconto = acconti.get(&ordine_id).copied().unwrap_or(0).max(0);
-            let quota_acconto =
-                ((acconto as f64 / n_totali as f64) * n_spedite as f64).round() as i64;
-            (ordine_id, (valore_spedito - quota_acconto).max(0))
+            (
+                ordine_id,
+                importo_netto_spedito(n_spedite, valore_spedito, n_totali, acconto),
+            )
         })
         .collect()
 }
@@ -3288,6 +3296,7 @@ fn pagamenti_spedizione_calcolati(
         }
         restante -= importo;
         out.push(PagamentoSpedizioneDto {
+            id: r.id.clone(),
             conto_id: conto_id.clone(),
             tipo: str_field(&r.data, "tipo"),
             importo,
@@ -3323,6 +3332,7 @@ fn pagamenti_spedizione_calcolati_da_records(
         }
         restante -= importo;
         out.push(PagamentoSpedizioneDto {
+            id: r.id.clone(),
             conto_id: conto_id.clone(),
             tipo: str_field(&r.data, "tipo"),
             importo,

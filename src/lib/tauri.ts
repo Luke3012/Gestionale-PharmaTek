@@ -448,6 +448,10 @@ export const api = {
   /** Crea una bozza idempotente; nessun effetto esterno parte da questo comando. */
   comunicazioneCreaBozza: (input: ComunicazioneCreaInput) =>
     invoke<Comunicazione>("comunicazione_crea_bozza", { input }),
+  comunicazioniCreaBozze: (inputs: ComunicazioneCreaInput[], setId?: string) =>
+    invoke<Comunicazione[]>("comunicazioni_crea_bozze", { inputs, setId }),
+  comunicazioniMettiInCoda: (ids: string[]) =>
+    invoke<Comunicazione[]>("comunicazioni_metti_in_coda", { ids }),
   comunicazioniLista: () => invoke<Comunicazione[]>("comunicazioni_lista"),
   comunicazioneMettiInCoda: (id: string) =>
     invoke<Comunicazione>("comunicazione_metti_in_coda", { id }),

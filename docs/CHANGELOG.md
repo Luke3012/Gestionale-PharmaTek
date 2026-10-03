@@ -2,6 +2,19 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.4 — 2026-10-03
+
+✨ Sono state apportate alcune migliorie tecniche!
+
+**🐞 Correzioni**
+
+- Adesso i messaggi si inviano più rapidamente!
+- Risolto un piccolo problema di rateizzazione nei preventivi.
+
+**🔧 Altro**
+
+- Puoi cercare le persone in più modi possibili, invertendo anche il nome e il cognome.
+
 ## 0.8.3 — 2026-09-27
 
 🤖 Sono stati risolti alcuni problemini estetici e di performance.

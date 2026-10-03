@@ -77,7 +77,6 @@ import {
   selezionaProssimoPagamentoDaSaldare,
 } from "../giornaliero/ordineScadenzario";
 import { importoCoperto } from "../contabilita/coperturaScadenzario";
-import { riallineaVociAperteLocali } from "../contabilita/riallineaSaldo";
 import { risolviContoPreferito } from "../contabilita/contoPreferito";
 import {
   aggiungiGiorniRate,
@@ -98,6 +97,9 @@ import {
   applicaPatchPagamentoVirtuale,
   campiContoPagamentoVirtuale,
   fatturazioneDaPreventivo,
+  giorniTraScadenze,
+  ratePreventivoDaSalvare,
+  riallineaScadenzarioPreventivo,
   rigaVuotaPreventivo as rigaVuota,
   righeDaPreventivo,
   snapshotPreventivoEditor as snapshot,
@@ -337,7 +339,7 @@ export function PreventivoEditorModal({
                 contoAccreditoNome: "",
                 note: "",
                 scadDaSpedizione: true,
-                scadRelGiorni: indice * 30,
+                scadRelGiorni: giorniTraScadenze(inizio, rata.scadenza),
               }),
             ),
           });
@@ -654,32 +656,6 @@ export function PreventivoEditorModal({
         ...pianoRateVirtuale.righe.map((pagamento) => ({ ...pagamento })),
       );
     }
-    const haAccontoSaldato = prossimi.some(
-      (pagamento) => pagamento.tipo === "acconto" && pagamento.saldato,
-    );
-    if (!haAccontoSaldato) {
-      const indiceAcconto = prossimi.findIndex(
-        (pagamento) => pagamento.tipo === "acconto" && !pagamento.saldato,
-      );
-      if (indiceAcconto >= 0) {
-        if (acconto > 0) {
-          prossimi[indiceAcconto] = {
-            ...prossimi[indiceAcconto],
-            importo: acconto,
-          };
-        } else {
-          prossimi.splice(indiceAcconto, 1);
-        }
-      }
-    }
-    if (
-      totale !== totalePersistito ||
-      acconto !== (preventivo?.acconto ?? acconto) ||
-      pianoRateVirtuale !== null
-    ) {
-      prossimi = riallineaVociAperteLocali(prossimi, totale);
-    }
-
     const creaAnteprima = (
       tipo: "acconto" | "saldo",
       importo: number,
@@ -721,15 +697,16 @@ export function PreventivoEditorModal({
       };
     };
 
-    let coperto = importoCoperto(prossimi);
-    const haAccontoAperto = prossimi.some(
-      (pagamento) => pagamento.tipo === "acconto" && !pagamento.saldato,
+    prossimi = riallineaScadenzarioPreventivo(
+      prossimi,
+      totale,
+      acconto,
+      totale !== totalePersistito ||
+        acconto !== (preventivo?.acconto ?? acconto) ||
+        pianoRateVirtuale !== null,
+      (importo) => creaAnteprima("acconto", importo),
     );
-    if (!haAccontoSaldato && !haAccontoAperto && acconto > 0 && coperto < totale) {
-      const importo = Math.min(acconto, totale - coperto);
-      prossimi.push(creaAnteprima("acconto", importo));
-      coperto += importo;
-    }
+    const coperto = importoCoperto(prossimi);
     if (
       coperto < totale &&
       !prossimi.some((pagamento) => pagamentoApertoSaldoRata(pagamento))
@@ -1032,7 +1009,9 @@ export function PreventivoEditorModal({
       scadenza: daSpedizione ? "" : rata.scadenza,
       ...campiContoPagamentoVirtuale(contoId, conto),
       scadDaSpedizione: daSpedizione,
-      scadRelGiorni: indice * 30,
+      scadRelGiorni: daSpedizione
+        ? giorniTraScadenze(rate[0].scadenza, rata.scadenza)
+        : 0,
     }));
     setPianoRateVirtuale((corrente) => ({
       modalita:
@@ -1104,13 +1083,11 @@ export function PreventivoEditorModal({
         await api.pagamentiRiallineaAperti(ordineIdSalvato);
     }
 
-    if (piano && piano.righe.length > 0) {
-      const righePianoFinali = piano.righe.map(
-        (virtuale) =>
-          pagamentiPreview.find(
-            (pagamento) => pagamento.id === virtuale.id,
-          ) ?? virtuale,
-      );
+    const righePianoFinali = piano?.righe.flatMap((virtuale) => {
+      const pagamento = pagamentiPreview.find((p) => p.id === virtuale.id);
+      return pagamento ? [pagamento] : [];
+    }) ?? [];
+    if (piano && righePianoFinali.length > 0) {
       if (piano.modalita === "aggiungi") {
         const apertiPrimaDelSalvataggio = pagamenti.filter(
           pagamentoApertoSaldoRata,
@@ -1135,10 +1112,7 @@ export function PreventivoEditorModal({
       const idsPrima = new Set(
         pagamentiAggiornati.map((pagamento) => pagamento.id),
       );
-      const rate = righePianoFinali.map((pagamento) => ({
-        importo: pagamento.importo,
-        scadenza: pagamento.scadenza,
-      }));
+      const rate = ratePreventivoDaSalvare(righePianoFinali, dataLocaleOggi());
       const tutteDaSpedizione = righePianoFinali.every(
         (pagamento) => pagamento.scadDaSpedizione,
       );

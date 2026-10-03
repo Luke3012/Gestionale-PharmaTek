@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 // Schermata unica Spedizioni (FASE 4A), sotto Evasione. Una sola pagina con due viste
 // (SegmentedControl): "Da spedire" e "Effettuate", entrambe a righe grandi espandibili
 // sul modello tabellare universale (mantine-datatable / Tabella) con ricerca per nome.
@@ -64,7 +65,6 @@ import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { useDeepLink } from "../../shell/navigazione";
 import { centsToEurStr } from "../../lib/money";
-import { formattaDataLocale } from "../../lib/date";
 import {
   Tabella,
   type DataTableColumn,
@@ -105,12 +105,8 @@ import {
   ordineHaDatiVaccino,
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
-import {
-  apriCampagnaComunicazioni,
-  datiPagamentoComunicazione,
-  importoResiduoComunicazione,
-  variabiliNomeDestinatario,
-} from "../comunicazioni/apriComunicazione";
+import { apriAvvisiSpedizione, numeroComunicazioniSpedizione } from "./comunicazioniSpedizione";
+export { numeroComunicazioniSpedizione } from "./comunicazioniSpedizione";
 
 type Vista = "da_spedire" | "effettuate";
 const TAB_STORAGE = "pt.spedizioni.tab";
@@ -181,16 +177,6 @@ function distintePerCorriere(sped: Spedizione[]): Distinta[] {
   return [...map.entries()]
     .map(([nome, v]) => ({ nome, ...v }))
     .sort((a, b) => a.nome.localeCompare(b.nome, "it"));
-}
-
-/** Un avviso di spedizione genera una comunicazione per cliente, anche quando la
- * selezione contiene più colli, corrieri o lotti destinati alla stessa persona. */
-export function numeroComunicazioniSpedizione(spedizioni: Spedizione[]): number {
-  return new Set(
-    spedizioni
-      .map((spedizione) => spedizione.clienteId)
-      .filter(Boolean),
-  ).size;
 }
 
 export function isModalitaRicerca(
@@ -917,9 +903,10 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
   // ---- Da spedire: ricerca + sort utente (default = ordine backend) ----
   const daSpedireFiltrati = useMemo(() => {
     const q = cercaFiltro.trim().toLowerCase();
+    const corrisponde = preparaRicercaTesto(q);
     let arr = [...daSpedireConBlob];
     if (q) {
-      arr = arr.filter((o) => o._searchBlob.includes(q));
+      arr = arr.filter((o) => corrisponde(o._searchBlob));
     }
     if (!sort.columnAccessor) return arr;
     const rankStatoSpedizione = (stato: string) => {
@@ -995,6 +982,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
   // ---- Effettuate: raggruppa per lotto (sessione di creazione) + ricerca/filtri ----
   const gruppi = useMemo<GruppoSped[]>(() => {
     const q = cercaFiltro.trim().toLowerCase();
+    const corrisponde = preparaRicercaTesto(q);
     const corrieri = new Set(corriereFiltro);
     const map = new Map<string, GruppoSped>();
 
@@ -1004,7 +992,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       if (corrieri.size > 0 && !corrieri.has(s.corriereNome)) continue;
       if (dal && s.data < dal) continue;
       if (al && s.data > al) continue;
-      if (q && !s._searchBlob.includes(q)) continue;
+      if (q && !corrisponde(s._searchBlob)) continue;
 
       let g = map.get(s.lotto);
       if (!g) {
@@ -1097,93 +1085,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     spedizioniDaAvvisare: Spedizione[],
   ) => {
     try {
-      const conti = await api.recordsList("conto");
-      const perCliente = new Map<string, Spedizione[]>();
-      for (const spedizione of spedizioniDaAvvisare) {
-        if (!spedizione.clienteId) continue;
-        const gruppo = perCliente.get(spedizione.clienteId) ?? [];
-        gruppo.push(spedizione);
-        perCliente.set(spedizione.clienteId, gruppo);
-      }
-      const targets = [...perCliente.entries()].map(([clienteId, spedizioniCliente]) => {
-        const prima = spedizioniCliente[0];
-        const pagamenti = spedizioniCliente
-          .flatMap((spedizione) => spedizione.pagamenti)
-          .filter((pagamento) => !pagamento.saldato);
-        const ordini = [
-          ...new Set(
-            spedizioniCliente.flatMap((spedizione) =>
-              spedizione.righe.map((riga) => riga.ordineNumero).filter(Boolean)
-            )
-          ),
-        ];
-        const date = [
-          ...new Set(
-            spedizioniCliente
-              .map((spedizione) => spedizione.data)
-              .filter(Boolean)
-              .map((data) =>
-                formattaDataLocale(new Date(`${data}T12:00:00`))
-              )
-          ),
-        ];
-        const corrieri = [
-          ...new Set(
-            spedizioniCliente
-              .map((spedizione) => spedizione.corriereNome)
-              .filter(Boolean)
-          ),
-        ];
-        const tracking = spedizioniCliente
-          .map((spedizione) => spedizione.numero)
-          .filter(Boolean)
-          .join(", ");
-        return {
-          destinatarioEntita: "cliente" as const,
-          destinatarioId: clienteId,
-          destinatarioNome: prima.clienteNome,
-          email: prima.email,
-          telefono: prima.telefono,
-          tipo: "preavviso_spedizione" as const,
-          origineEntita: "spedizione",
-          origineId: prima.id,
-          origineFingerprint: prima.comunicazioneFingerprint ?? "",
-          originiCorrelate: spedizioniCliente.slice(1).map((spedizione) => ({
-            id: spedizione.id,
-            fingerprint: spedizione.comunicazioneFingerprint ?? "",
-          })),
-          variabili: {
-            ...variabiliNomeDestinatario(prima.clienteNome),
-            nome_medico: prima.medicoNome,
-            nome_agente: prima.agenteNome,
-            riferimento_ordine: ordini.join(", "),
-            data_spedizione: date.join(", "),
-            data_spedizione_iso: prima.data,
-            corriere: corrieri.join(", "),
-            tracking: tracking || "sarà comunicato dal corriere",
-            importo_residuo: importoResiduoComunicazione(
-              pagamenti.reduce(
-                (totale, pagamento) => totale + pagamento.importo,
-                0
-              ),
-            ),
-            ...datiPagamentoComunicazione(
-              pagamenti,
-              conti,
-              "Nessun pagamento richiesto alla consegna.",
-              {
-                tuttiPagamenti: spedizioniCliente.flatMap(
-                  (spedizione) => spedizione.pagamenti
-                ),
-                includiRate: true,
-              }
-            ),
-          },
-        };
-      });
-      if (!(await apriCampagnaComunicazioni(targets))) {
-        toast.warning("Nessun cliente utilizzabile nella selezione.");
-      }
+      await apriAvvisiSpedizione(spedizioniDaAvvisare);
     } catch (error) {
       toast.error(`Preparazione degli avvisi non riuscita: ${error}`);
     }

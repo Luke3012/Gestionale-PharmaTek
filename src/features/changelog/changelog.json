@@ -1,6 +1,25 @@
 {
   "versioni": [
     {
+      "versione": "0.8.4",
+      "data": "2026-10-03",
+      "sintesi": "✨ Sono state apportate alcune migliorie tecniche!",
+      "voci": [
+        {
+          "categoria": "correzioni",
+          "testo": "Adesso i messaggi si inviano più rapidamente!"
+        },
+        {
+          "categoria": "correzioni",
+          "testo": "Risolto un piccolo problema di rateizzazione nei preventivi."
+        },
+        {
+          "categoria": "altro",
+          "testo": "Puoi cercare le persone in più modi possibili, invertendo anche il nome e il cognome."
+        }
+      ]
+    },
+    {
       "versione": "0.8.3",
       "data": "2026-09-27",
       "sintesi": "🤖 Sono stati risolti alcuni problemini estetici e di performance.",

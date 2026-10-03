@@ -1,6 +1,46 @@
 import type { Pagamento, Preventivo, RecordDto } from "../../lib/tauri";
 import { nuovaRiga, type RigaForm } from "../giornaliero/righeOrdine";
 import type { DatiFatturazione } from "../giornaliero/DatiFatturazionePanel";
+import { pagamentoApertoSaldoRata } from "../giornaliero/ordineScadenzario";
+import { riallineaVociAperteLocali } from "../contabilita/riallineaSaldo";
+import { aggiungiGiorniRate, offsetSpedizione } from "../contabilita/rateizzazione";
+
+export function riallineaScadenzarioPreventivo(
+  pagamenti: Pagamento[],
+  totale: number,
+  acconto: number,
+  deveRiallineare: boolean,
+  creaAcconto: (importo: number) => Pagamento,
+): Pagamento[] {
+  let prossimi = pagamenti.map((pagamento) => ({ ...pagamento }));
+  if (!prossimi.some((p) => p.tipo === "acconto" && p.saldato)) {
+    const indice = prossimi.findIndex((p) => p.tipo === "acconto" && !p.saldato);
+    if (indice >= 0) {
+      if (acconto > 0) prossimi[indice].importo = acconto;
+      else prossimi.splice(indice, 1);
+    } else if (acconto > 0) {
+      const fissi = prossimi.filter((p) => !pagamentoApertoSaldoRata(p))
+        .reduce((somma, p) => somma + Math.max(0, p.importo), 0);
+      const importo = Math.min(acconto, Math.max(0, totale - fissi));
+      if (importo > 0) {
+        prossimi.push(creaAcconto(importo));
+        deveRiallineare = true;
+      }
+    }
+  }
+  // L'acconto deve essere presente prima di ripartire il residuo sulle rate.
+  return deveRiallineare ? riallineaVociAperteLocali(prossimi, totale) : prossimi;
+}
+
+export function ratePreventivoDaSalvare(pagamenti: Pagamento[], oggi: string) {
+  return pagamenti.map((p) => ({
+    importo: p.importo,
+    // Il backend richiede un'ancora anche per le scadenze relative alla spedizione.
+    scadenza: p.scadDaSpedizione
+      ? aggiungiGiorniRate(oggi, offsetSpedizione(p.contoTipo) + (p.scadRelGiorni ?? 0))
+      : p.scadenza,
+  }));
+}
 
 export type RigaDraftPreventivo = RigaForm;
 

@@ -55,7 +55,7 @@ export function riepilogaProgressoComunicazioni(
   const sospese = comunicazioni.filter((item) => item.stato === "sospeso").length;
   const terminale = totale > 0 && completate === totale;
   const progress = totale
-    ? Math.round(((completate + inInvio * 0.5) / totale) * 100)
+    ? Math.round((completate / totale) * 100)
     : 0;
 
   let messaggio: string;
@@ -70,6 +70,18 @@ export function riepilogaProgressoComunicazioni(
     messaggio = `${completate} di ${totale} completate · invio in pausa`;
   } else {
     messaggio = `${completate} di ${totale} completate${inInvio ? " · invio in corso…" : " · in coda…"}`;
+  }
+
+  if (!terminale) {
+    const esiti = [
+      inviate ? `${inviate} ${inviate === 1 ? "inviata" : "inviate"}` : "",
+      fallite ? `${fallite} ${fallite === 1 ? "fallita" : "fallite"}` : "",
+      annullate ? `${annullate} ${annullate === 1 ? "annullata" : "annullate"}` : "",
+    ].filter(Boolean).join(" · ");
+    if (esiti) messaggio += ` · ${esiti}`;
+    const attese = new Set(comunicazioni.filter((c) => c.stato === "in_coda").map((c) => c.motivoAttesa));
+    if (attese.has("errore_tecnico")) messaggio += " · nuovo tentativo automatico in attesa";
+    if (attese.has("pc_occupato")) messaggio += " · WhatsApp riprende appena il PC è libero";
   }
 
   return {

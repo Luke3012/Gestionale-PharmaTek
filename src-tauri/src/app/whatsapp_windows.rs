@@ -407,7 +407,7 @@ pub(super) fn resetta_ultimo_esito() {
         .expect("whatsapp diagnostics poisoned") = None;
 }
 
-pub(super) fn marcatore_input_utente() -> Option<u32> {
+pub(crate) fn marcatore_input_utente() -> Option<u32> {
     let mut info = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         ..Default::default()
@@ -2075,10 +2075,9 @@ fn compositore_contiene_testo(
     corpo: &str,
 ) -> bool {
     let atteso = normalizza_testo(corpo);
-
-    testi_compositore(automation, compositore)
-        .iter()
-        .any(|testo| normalizza_testo(testo) == atteso)
+    verifica_testo_compositore(automation, compositore, |testo| {
+        normalizza_testo(testo) == atteso
+    })
 }
 
 fn compositore_contiene_frammento(
@@ -2088,38 +2087,49 @@ fn compositore_contiene_frammento(
 ) -> bool {
     let atteso = normalizza_testo(frammento);
     !atteso.is_empty()
-        && testi_compositore(automation, compositore)
-            .iter()
-            .any(|testo| normalizza_testo(testo).contains(&atteso))
+        && verifica_testo_compositore(automation, compositore, |testo| {
+            normalizza_testo(testo).contains(&atteso)
+        })
 }
 
-fn testi_compositore(
+// Ogni fonte resta un fallback della precedente: FindAll sui figli può essere
+// costoso con WebView2 e non serve se un pattern ha già verificato il testo.
+fn verifica_fonti_testo_compositore(
+    leggi_text_pattern: impl FnOnce() -> Option<String>,
+    leggi_value_pattern: impl FnOnce() -> Option<String>,
+    leggi_figli: impl FnOnce() -> Vec<String>,
+    verifica: impl Fn(&str) -> bool,
+) -> bool {
+    leggi_text_pattern().is_some_and(|testo| verifica(&testo))
+        || leggi_value_pattern().is_some_and(|testo| verifica(&testo))
+        || leggi_figli().iter().any(|testo| verifica(testo))
+}
+
+fn verifica_testo_compositore(
     automation: &IUIAutomation,
     compositore: &IUIAutomationElement,
-) -> Vec<String> {
-    let mut testi = Vec::new();
-
-    // WebView2 può lasciare ValuePattern vuoto anche quando il contenuto è
-    // visibile. TextPattern riflette invece il testo effettivo del contenteditable.
-    if let Some(testo) =
-        unsafe { compositore.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
+    verifica: impl Fn(&str) -> bool,
+) -> bool {
+    verifica_fonti_testo_compositore(
+        || {
+            // WebView2 può lasciare ValuePattern vuoto anche con testo visibile.
+            unsafe {
+                compositore.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            }
             .ok()
             .and_then(|pattern| unsafe { pattern.DocumentRange() }.ok())
             .and_then(|intervallo| unsafe { intervallo.GetText(-1) }.ok())
             .map(|testo| testo.to_string())
-    {
-        testi.push(testo);
-    }
-
-    if let Some(testo) = valore_compositore(compositore) {
-        testi.push(testo);
-    }
-
-    // Alcune build espongono il contenuto soltanto come nodo Text figlio.
-    if let Ok(elementi) = elementi_per_controllo(automation, compositore, UIA_TextControlTypeId.0) {
-        testi.extend(elementi.iter().map(nome));
-    }
-    testi
+        },
+        || valore_compositore(compositore),
+        || {
+            // Alcune build espongono il contenuto soltanto come nodo Text figlio.
+            elementi_per_controllo(automation, compositore, UIA_TextControlTypeId.0)
+                .map(|elementi| elementi.iter().map(nome).collect())
+                .unwrap_or_default()
+        },
+        verifica,
+    )
 }
 
 pub(super) fn marcatore_apertura(id: &str) -> String {
@@ -4313,6 +4323,73 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "misura sole letture UIA della finestra WhatsApp aperta; non digita e non invia"]
+    fn misura_sola_lettura_compositore_whatsapp() {
+        let _com = ComApartment::init().unwrap();
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.unwrap();
+        let finestre = super::finestre_whatsapp(&automation).unwrap();
+        let finestra = finestre.first().expect("finestra WhatsApp non disponibile");
+        for _ in 0..3 {
+            let fase = std::time::Instant::now();
+            let compositore = super::compositore_messaggio(&automation, finestra)
+                .unwrap()
+                .or_else(|| {
+                    // La misura non invia input: può leggere anche un campo fuori
+                    // schermo, senza ripristinare o cambiare la finestra dell'utente.
+                    super::elementi_per_controllo(
+                        &automation,
+                        finestra,
+                        super::UIA_EditControlTypeId.0,
+                    )
+                    .ok()?
+                    .into_iter()
+                    .find(|elemento| {
+                        super::nome_indica_compositore_messaggio(&super::nome(elemento))
+                    })
+                })
+                .expect("compositore WhatsApp non disponibile");
+            eprintln!(
+                "misura-uia ricerca campo: {} ms",
+                fase.elapsed().as_millis()
+            );
+            let fase = std::time::Instant::now();
+            let value = super::valore_compositore(&compositore);
+            eprintln!(
+                "misura-uia ValuePattern: {} ms, disponibile={}",
+                fase.elapsed().as_millis(),
+                value.is_some()
+            );
+            let fase = std::time::Instant::now();
+            let text = unsafe {
+                compositore.GetCurrentPatternAs::<super::IUIAutomationTextPattern>(
+                    super::UIA_TextPatternId,
+                )
+            }
+            .ok()
+            .and_then(|pattern| unsafe { pattern.DocumentRange() }.ok())
+            .and_then(|range| unsafe { range.GetText(-1) }.ok());
+            eprintln!(
+                "misura-uia TextPattern: {} ms, disponibile={}",
+                fase.elapsed().as_millis(),
+                text.is_some()
+            );
+            let fase = std::time::Instant::now();
+            let figli = super::elementi_per_controllo(
+                &automation,
+                &compositore,
+                super::UIA_TextControlTypeId.0,
+            )
+            .unwrap();
+            eprintln!(
+                "misura-uia ricerca figli: {} ms, nodi={}",
+                fase.elapsed().as_millis(),
+                figli.len()
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "stampa i controlli WhatsApp aperti senza digitare o inviare"]
     fn diagnostica_controlli_aperti() {
         let _com = ComApartment::init().unwrap();
@@ -4397,6 +4474,93 @@ mod tests {
             "Digita un messaggio per Nonna Carmela"
         ));
         assert!(!super::destinazione_allegato_invariata("", ""));
+    }
+
+    #[test]
+    fn verifica_fonti_testo_non_scansiona_figli_se_il_pattern_corrisponde() {
+        assert!(super::verifica_fonti_testo_compositore(
+            || Some("·pt12345678".into()),
+            || panic!("ValuePattern non necessario"),
+            || panic!("scansione dei figli non necessaria"),
+            |testo| testo == "·pt12345678",
+        ));
+        assert!(super::verifica_fonti_testo_compositore(
+            || Some(String::new()),
+            || Some("Messaggio verificato".into()),
+            || panic!("scansione dei figli non necessaria"),
+            |testo| testo == "Messaggio verificato",
+        ));
+    }
+
+    #[test]
+    fn verifica_fonti_testo_conserva_fallback_e_confronto_esatto() {
+        let atteso = normalizza_testo("Prima riga\nSeconda riga");
+        assert!(super::verifica_fonti_testo_compositore(
+            || None,
+            || Some(String::new()),
+            || vec![
+                "Bozza precedente".into(),
+                "Prima riga\r\nSeconda   riga".into()
+            ],
+            |testo| normalizza_testo(testo) == atteso,
+        ));
+        assert!(!super::verifica_fonti_testo_compositore(
+            || Some("Messaggio diverso".into()),
+            || None,
+            || vec!["Prima riga\nSeconda riga con altro testo".into()],
+            |testo| normalizza_testo(testo) == atteso,
+        ));
+    }
+
+    #[test]
+    fn verifica_fonti_testo_conserva_la_ricerca_del_marcatore_nei_figli() {
+        assert!(super::verifica_fonti_testo_compositore(
+            || Some("Bozza precedente".into()),
+            || None,
+            || vec!["·pt12345678 ·pt12345678".into()],
+            |testo| normalizza_testo(testo).contains("·pt12345678"),
+        ));
+        assert!(!super::verifica_fonti_testo_compositore(
+            || None,
+            || None,
+            Vec::new,
+            |testo| testo == "·pt12345678",
+        ));
+    }
+
+    #[test]
+    fn verifica_fonti_testo_equivale_alla_precedente_raccolta_completa() {
+        let fonti = [
+            None,
+            Some(""),
+            Some("Bozza diversa"),
+            Some("·pt12345678"),
+            Some("·pt12345678 ·pt12345678"),
+        ];
+        for text in fonti {
+            for value in fonti {
+                for figlio in fonti {
+                    for esatto in [true, false] {
+                        let verifica = |testo: &str| {
+                            let testo = normalizza_testo(testo);
+                            if esatto {
+                                testo == "·pt12345678"
+                            } else {
+                                testo.contains("·pt12345678")
+                            }
+                        };
+                        let precedente = [text, value, figlio].into_iter().flatten().any(verifica);
+                        let progressiva = super::verifica_fonti_testo_compositore(
+                            || text.map(str::to_owned),
+                            || value.map(str::to_owned),
+                            || figlio.map(str::to_owned).into_iter().collect(),
+                            verifica,
+                        );
+                        assert_eq!(progressiva, precedente);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

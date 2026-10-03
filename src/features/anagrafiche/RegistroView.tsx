@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 // Vista generica di un registro anagrafico: tabella + form (modale) di CRUD.
 import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -405,6 +406,7 @@ export function RegistroView({
 
   const filtrati = useMemo(() => {
     const q = cercaDifferita.trim().toLowerCase();
+    const corrisponde = preparaRicercaTesto(q);
     const compattaClienti =
       registro.entity === "cliente" &&
       !mostraTuttiClienti &&
@@ -412,7 +414,7 @@ export function RegistroView({
       clientiCreatiAnnoIds.size > 0;
     return recordsConBlob.filter((r) => {
       if (compattaClienti && !clientiCreatiAnnoIds.has(r.id) && !clientiConOrdiniAnnoIds.has(r.id)) return false;
-      if (q && !r._searchBlob.includes(q)) return false;
+      if (q && !corrisponde(r._searchBlob)) return false;
 
       if (registro.entity === "cliente") {
         if (filtroMediciSet.size > 0) {

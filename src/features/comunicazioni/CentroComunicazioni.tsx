@@ -1179,6 +1179,15 @@ export function CentroComunicazioniContenuto({
                           <Text size="xs" c="dimmed" truncate>
                             {comunicazione.recapito}
                           </Text>
+                          {comunicazione.stato === "in_coda" && comunicazione.motivoAttesa && (
+                            <Text size="xs" c="dimmed">
+                              {comunicazione.motivoAttesa === "pc_occupato"
+                                ? "WhatsApp riprende appena il PC è libero."
+                                : comunicazione.motivoAttesa === "invio_in_corso"
+                                  ? "In attesa del termine dell’altro invio su questo PC."
+                                : `Errore tecnico prima dell’invio · nuovo tentativo automatico${comunicazione.prossimoRetryMs ? ` alle ${dataOra(comunicazione.prossimoRetryMs)}` : " in attesa"}.`}
+                            </Text>
+                          )}
                         </Stack>
                         <Box className="pt-comunicazione-card-corpo">
                           <CorpoComunicazioneCompatto

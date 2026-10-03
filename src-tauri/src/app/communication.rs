@@ -237,6 +237,9 @@ pub struct ComunicazioneDto {
     pub reinvio_di: String,
     pub allegati: Vec<AllegatoComunicazioneInput>,
     pub tentativi: u64,
+    pub motivo_attesa: String,
+    pub prossimo_retry_ms: u64,
+    pub retry_tecnici: u64,
     pub ultimo_errore: String,
     pub errore_codice: String,
     pub errore_fase: String,
@@ -836,6 +839,17 @@ fn dto(record: crate::projection::Record) -> AppResult<ComunicazioneDto> {
             .get("tentativi")
             .and_then(Value::as_u64)
             .unwrap_or(0),
+        motivo_attesa: str_field(&record.data, "motivo_attesa"),
+        prossimo_retry_ms: record
+            .data
+            .get("prossimo_retry_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        retry_tecnici: record
+            .data
+            .get("retry_tecnici")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         ultimo_errore: str_field(&record.data, "ultimo_errore"),
         errore_codice: str_field(&record.data, "errore_codice"),
         errore_fase: str_field(&record.data, "errore_fase"),
@@ -1271,7 +1285,7 @@ impl AppState {
 
     /// Aggiorna soltanto gli indicatori applicativi dell'entità sorgente. Corpo,
     /// recapito, ricevuta, errori e cronologia restano nel registro locale.
-    fn registra_esito_su_origine_condivisa(
+    pub(super) fn registra_esito_su_origine_condivisa(
         &self,
         comunicazione: &ComunicazioneDto,
     ) -> AppResult<()> {
@@ -1292,6 +1306,7 @@ impl AppState {
             origini.dedup_by(|a, b| a.id == b.id);
             let inviata_ms = comunicazione.inviata_ms;
             let canale = comunicazione.canale.as_str().to_string();
+            let cliente_id = comunicazione.destinatario_id.clone();
             return self.with_engine(|engine| {
                 engine
                     .emit_built_checked(move |projection| {
@@ -1304,6 +1319,17 @@ impl AppState {
                             else {
                                 continue;
                             };
+                            if origine.fingerprint.starts_with("spedizione-cliente-v2:") {
+                                let field = super::shipping_communication::campo_avviso_cliente(&cliente_id);
+                                let ultimo = spedizione.data.get(&field).and_then(|v| v.get("ms"))
+                                    .and_then(Value::as_u64).unwrap_or(0);
+                                if inviata_ms >= ultimo {
+                                    mutations.push(Mutation::new("spedizione", origine.id.clone(), EventBody::FieldSet {
+                                        field, value: json!({ "ms": inviata_ms, "canale": canale, "fingerprint": origine.fingerprint }),
+                                    }));
+                                }
+                                continue;
+                            }
                             let ultimo_corrente = spedizione
                                 .data
                                 .get("ultimo_avviso_ms")
@@ -1527,6 +1553,16 @@ impl AppState {
     }
 
     pub(crate) fn comunicazione_intervallo_riprova(&self) -> Duration {
+        let dispositivo = self.config().device_id;
+        if self.comunicazioni_lista().is_ok_and(|cs| {
+            cs.iter().any(|c| {
+                c.stato == StatoComunicazione::InCoda
+                    && c.proprietario_dispositivo_id == dispositivo
+                    && c.prossimo_retry_ms > 0
+            })
+        }) {
+            return Duration::from_secs(1);
+        }
         #[cfg(target_os = "windows")]
         {
             let dispositivo = self.config().device_id;
@@ -1586,21 +1622,28 @@ impl AppState {
         &self,
         input: ComunicazioneCreaInput,
     ) -> AppResult<ComunicazioneDto> {
-        crate::premium::ensure_access(self)?;
-        let identity = self
-            .whoami()
-            .ok_or("seleziona un utente prima di creare una comunicazione")?;
-        let preparata = prepara(
-            input,
-            ProprietarioComunicazione {
-                utente_id: identity.user_id,
-                utente_nome: identity.nome,
-                dispositivo_id: identity.device_id,
-                dispositivo_nome: identity.device_nome,
-            },
-        )?;
-        let id = preparata.id.clone();
-        let id_closure = id.clone();
+        self.comunicazioni_crea_bozze_impl(vec![input], false, None)?
+            .pop()
+            .ok_or("nessuna bozza".into())
+    }
+
+    #[cfg(test)]
+    fn comunicazioni_crea_bozze(
+        &self,
+        inputs: Vec<ComunicazioneCreaInput>,
+    ) -> AppResult<Vec<ComunicazioneDto>> {
+        self.comunicazioni_crea_bozze_impl(inputs, true, None)
+    }
+
+    pub fn comunicazioni_prepara_set(
+        &self,
+        inputs: Vec<ComunicazioneCreaInput>,
+        set_id: Option<&str>,
+    ) -> AppResult<Vec<ComunicazioneDto>> {
+        self.comunicazioni_crea_bozze_impl(inputs, true, set_id)
+    }
+
+    fn valida_comunicazione_preparata(&self, preparata: &ComunicazionePreparata) -> AppResult<()> {
         if preparata.destinatario_entita != DESTINATARIO_DIAGNOSTICA_WHATSAPP {
             self.with_engine(|engine| {
                 engine.with_projection(|projection| {
@@ -1671,7 +1714,7 @@ impl AppState {
             })?;
         }
         if !preparata.reinvio_di.is_empty() {
-            if preparata.reinvio_di == id {
+            if preparata.reinvio_di == preparata.id {
                 return Err("una comunicazione non può reinviare se stessa".into());
             }
             if !self
@@ -1683,57 +1726,213 @@ impl AppState {
             }
         }
 
-        self.with_communication_engine(|engine| {
-            engine
-                .emit_built_checked(move |projection| {
-                    if let Some(esistente) = projection
-                        .get(ENTITA_COMUNICAZIONE, &id_closure)
-                        .map_err(|error| error.to_string())?
-                    {
-                        if esistente.deleted {
-                            return Err(
-                                "la stessa richiesta era stata eliminata: usa un nuovo reinvio"
-                                    .into(),
-                            );
+        Ok(())
+    }
+
+    fn comunicazioni_crea_bozze_impl(
+        &self,
+        inputs: Vec<ComunicazioneCreaInput>,
+        aggiornabili: bool,
+        set_id: Option<&str>,
+    ) -> AppResult<Vec<ComunicazioneDto>> {
+        crate::premium::ensure_access(self)?;
+        if inputs.is_empty() {
+            return Err("nessuna comunicazione da preparare".into());
+        }
+        let set_id = set_id.map(str::trim).filter(|id| !id.is_empty());
+        if set_id.is_some_and(|id| id.len() > 512 || id.chars().any(char::is_control)) {
+            return Err("identificatore del set non valido".into());
+        }
+        let identity = self
+            .whoami()
+            .ok_or("seleziona un utente prima di creare una comunicazione")?;
+        let proprietario = ProprietarioComunicazione {
+            utente_id: identity.user_id,
+            utente_nome: identity.nome,
+            dispositivo_id: identity.device_id,
+            dispositivo_nome: identity.device_nome,
+        };
+        let mut preparate = inputs
+            .into_iter()
+            .map(|input| prepara(input, proprietario.clone()))
+            .collect::<AppResult<Vec<_>>>()?;
+        if let Some(set_id) = set_id {
+            for preparata in &mut preparate {
+                preparata
+                    .fields
+                    .insert("preparazione_id".into(), json!(set_id));
+            }
+        }
+        let dispositivo = proprietario.dispositivo_id.clone();
+        let mut ids = std::collections::HashSet::new();
+        for preparata in &preparate {
+            if !ids.insert(preparata.id.clone()) {
+                return Err("richiesta duplicata nel set".into());
+            }
+            self.valida_comunicazione_preparata(preparata)?;
+        }
+        // Stesso ordine della pulizia cache: I/O documenti prima dell'outbox.
+        // Le validazioni sul motore condiviso sono già concluse.
+        let _io = self
+            .document_cache_io
+            .lock()
+            .map_err(|_| "cache documenti non disponibile".to_string())?;
+        if aggiornabili {
+            // I retry identici di invii già avviati non richiedono di rigenerare
+            // documenti che la pulizia della cache può avere rimosso.
+            let gia_avviate = self.with_communication_engine(|engine| {
+                engine.with_projection(|projection| {
+                    let mut fingerprints = std::collections::HashMap::new();
+                    for preparata in &preparate {
+                        if let Some(record) = projection
+                            .get(ENTITA_COMUNICAZIONE, &preparata.id)
+                            .map_err(es)?
+                        {
+                            if record.deleted {
+                                continue;
+                            }
+                            let c = dto(record.clone())?;
+                            if !matches!(
+                                c.stato,
+                                StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare
+                            ) {
+                                let fingerprint = record
+                                    .data
+                                    .get("payload")
+                                    .and_then(Value::as_object)
+                                    .map(|p| str_field(p, "fingerprint"))
+                                    .unwrap_or_default();
+                                fingerprints.insert(c.id, fingerprint);
+                            }
                         }
-                        let fingerprint = esistente
-                            .data
-                            .get("payload")
-                            .and_then(Value::as_object)
-                            .map(|payload| str_field(payload, "fingerprint"))
-                            .unwrap_or_default();
-                        if fingerprint != preparata.payload_fingerprint {
-                            return Err(
-                                "la chiave di idempotenza è già associata a un messaggio diverso"
-                                    .into(),
-                            );
-                        }
-                        return Ok(Vec::new());
                     }
-
-                    let mut mutations = vec![Mutation::new(
-                        ENTITA_COMUNICAZIONE,
-                        id_closure.clone(),
-                        EventBody::Created,
-                    )];
-                    mutations.extend(preparata.fields.into_iter().map(|(field, value)| {
-                        Mutation::new(
-                            ENTITA_COMUNICAZIONE,
-                            id_closure.clone(),
-                            EventBody::FieldSet { field, value },
-                        )
-                    }));
-                    Ok(mutations)
+                    Ok(fingerprints)
                 })
-                .map_err(es)?;
-
-            engine
-                .with_projection(|projection| {
-                    projection.get(ENTITA_COMUNICAZIONE, &id).ok().flatten()
-                })
-                .ok_or_else(|| "comunicazione non trovata dopo la creazione".to_string())
-                .and_then(dto)
+            })?;
+            for preparata in &preparate {
+                if gia_avviate.get(&preparata.id) == Some(&preparata.payload_fingerprint) {
+                    continue;
+                }
+                let allegati: Vec<AllegatoComunicazioneInput> =
+                    serde_json::from_value(preparata.fields["payload"]["allegati"].clone())
+                        .map_err(es)?;
+                for allegato in allegati {
+                    self.documento_cache_leggi(&allegato)?;
+                }
+            }
+        }
+        let ids = preparate.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        self.with_communication_engine(|engine| {
+            engine.emit_built_checked(move |projection| {
+                let mut mutations = Vec::new();
+                if let Some(set_id) = set_id {
+                    let desiderate = preparate.iter().map(|p| p.id.as_str()).collect::<std::collections::HashSet<_>>();
+                    for record in projection.list(ENTITA_COMUNICAZIONE).map_err(es)? {
+                        if str_field(&record.data, "preparazione_id") != set_id || desiderate.contains(record.id.as_str()) { continue; }
+                        let c = dto(record)?;
+                        if c.proprietario_dispositivo_id != dispositivo { return Err("il set appartiene a un altro PC".into()); }
+                        if !matches!(c.stato, StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare) || c.tentativi != 0 { return Err("il set è già avviato e non può essere modificato".into()); }
+                        mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, c.id, EventBody::Deleted));
+                    }
+                }
+                for preparata in preparate {
+                    let id = preparata.id.clone();
+                    if let Some(esistente) = projection.get(ENTITA_COMUNICAZIONE, &id).map_err(es)? {
+                        let corrente = dto(esistente.clone())?;
+                        if esistente.deleted {
+                            let esclusa_da_questo_set = aggiornabili && set_id.is_some_and(|id| str_field(&esistente.data, "preparazione_id") == id)
+                                && matches!(corrente.stato, StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare) && corrente.tentativi == 0;
+                            if !esclusa_da_questo_set { return Err("la stessa richiesta era stata eliminata: usa un nuovo reinvio".into()); }
+                            mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, id.clone(), EventBody::Restored));
+                        }
+                        let proprietario = preparata.fields["proprietario"]["dispositivoId"].as_str().unwrap_or_default();
+                        if corrente.proprietario_dispositivo_id != proprietario { return Err("questa comunicazione appartiene a un altro PC".into()); }
+                        let fingerprint = esistente.data.get("payload").and_then(Value::as_object).map(|p| str_field(p, "fingerprint")).unwrap_or_default();
+                        if fingerprint == preparata.payload_fingerprint { continue; }
+                        if !aggiornabili || !matches!(corrente.stato, StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare) || corrente.tentativi != 0 {
+                            return Err("la chiave di idempotenza è già associata a un messaggio diverso".into());
+                        }
+                        mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, id.clone(), EventBody::FieldSet { field: "payload".into(), value: preparata.fields["payload"].clone() }));
+                        mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, id, EventBody::FieldSet { field: "stato_aggiornato_ms".into(), value: json!(now_ms()) }));
+                    } else {
+                        mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, id.clone(), EventBody::Created));
+                        mutations.extend(preparata.fields.into_iter().map(|(field, value)| Mutation::new(ENTITA_COMUNICAZIONE, id.clone(), EventBody::FieldSet { field, value })));
+                    }
+                }
+                Ok(mutations)
+            }).map_err(es)?;
+            engine.with_projection(|projection| ids.iter().map(|id| projection.get(ENTITA_COMUNICAZIONE, id).map_err(es)?.ok_or_else(|| "bozza non trovata".to_string()).and_then(dto)).collect())
         })
+    }
+
+    pub fn comunicazioni_metti_in_coda(
+        &self,
+        ids: Vec<String>,
+    ) -> AppResult<Vec<ComunicazioneDto>> {
+        crate::premium::ensure_access(self)?;
+        if ids.is_empty() {
+            return Err("nessuna comunicazione da accodare".into());
+        }
+        let mut viste = std::collections::HashSet::new();
+        if ids.iter().any(|id| !viste.insert(id.clone())) {
+            return Err("richiesta duplicata nel set".into());
+        }
+        let dispositivo = self.config().device_id;
+        let _io = self
+            .document_cache_io
+            .lock()
+            .map_err(|_| "cache documenti non disponibile".to_string())?;
+        let tutte = self.comunicazioni_lista()?;
+        let revisioni = tutte
+            .iter()
+            .map(|c| (c.id.clone(), c.revision.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for id in &ids {
+            let c = tutte
+                .iter()
+                .find(|c| &c.id == id)
+                .ok_or("comunicazione non trovata")?;
+            // La validazione serve alla transizione bozza -> coda. Gli invii
+            // già avviati restano invariati anche quando la cache viene ripulita.
+            if matches!(
+                c.stato,
+                StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare
+            ) {
+                for allegato in &c.allegati {
+                    self.documento_cache_leggi(allegato)?;
+                }
+            }
+        }
+        let ids_commit = ids.clone();
+        let aggiornate = self.with_communication_engine(|engine| {
+            engine.emit_built_checked(move |projection| {
+                let mut mutations = Vec::new();
+                for id in &ids_commit {
+                    let record = projection.get(ENTITA_COMUNICAZIONE, id).map_err(es)?.filter(|r| !r.deleted).ok_or("comunicazione non trovata")?;
+                    let c = dto(record)?;
+                    if matches!(c.stato, StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare) && revisioni.get(id) != Some(&c.revision) {
+                        return Err("una bozza è cambiata durante l'accodamento: riprova la preparazione".into());
+                    }
+                    if c.proprietario_dispositivo_id != dispositivo { return Err("questa comunicazione appartiene a un altro PC".into()); }
+                    if matches!(c.stato, StatoComunicazione::Bozza | StatoComunicazione::DaRevisionare) {
+                        for (field, value) in [("stato", json!("in_coda")), ("stato_aggiornato_ms", json!(now_ms())), ("motivo_attesa", json!("")), ("prossimo_retry_ms", json!(0)), ("retry_tecnici", json!(0))] {
+                            mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, id.clone(), EventBody::FieldSet { field: field.into(), value }));
+                        }
+                    } else if !matches!(c.stato, StatoComunicazione::InCoda | StatoComunicazione::InInvio | StatoComunicazione::InvioAzionato | StatoComunicazione::ConsegnaVerificata) {
+                        return Err("il set contiene un invio non accodabile: gestiscilo dal Centro comunicazioni".into());
+                    }
+                }
+                Ok(mutations)
+            }).map_err(es)?;
+            engine.with_projection(|projection| ids.iter().map(|id| projection.get(ENTITA_COMUNICAZIONE, id).map_err(es)?.ok_or_else(|| "comunicazione non trovata".to_string()).and_then(dto)).collect::<AppResult<Vec<_>>>())
+        })?;
+        drop(_io);
+        for c in &aggiornate {
+            self.rilascia_comunicazione_trattenuta_all_avvio(&c.id);
+            self.emetti_stato_comunicazione_locale(c);
+        }
+        self.communication_wake.signal();
+        Ok(aggiornate)
     }
 
     pub fn comunicazioni_lista(&self) -> AppResult<Vec<ComunicazioneDto>> {
@@ -1890,6 +2089,9 @@ impl AppState {
                         ));
                     }
                     let mut mutations = vec![
+                        Mutation::new(ENTITA_COMUNICAZIONE, id_owned.clone(), EventBody::FieldSet { field: "motivo_attesa".into(), value: json!("") }),
+                        Mutation::new(ENTITA_COMUNICAZIONE, id_owned.clone(), EventBody::FieldSet { field: "prossimo_retry_ms".into(), value: json!(0) }),
+                        Mutation::new(ENTITA_COMUNICAZIONE, id_owned.clone(), EventBody::FieldSet { field: "retry_tecnici".into(), value: json!(0) }),
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
@@ -2433,6 +2635,10 @@ impl AppState {
                             {
                                 match recapiti_aggiornati.get(&record.id) {
                                     Some(Ok(nuovo_recapito)) => {
+                                        for (field, value) in [("motivo_attesa", json!("")), ("prossimo_retry_ms", json!(0)), ("retry_tecnici", json!(0))] {
+                                            mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, record.id.clone(), EventBody::FieldSet { field: field.into(), value }));
+                                        }
+
                                         let recapito_attuale = payload
                                             .map(|p| str_field(p, "recapito"))
                                             .unwrap_or_default();
@@ -2568,6 +2774,13 @@ impl AppState {
                         let Some(nuovo) = nuovo else {
                             continue;
                         };
+                        if nuovo == StatoComunicazione::InCoda || str_field(&record.data, "motivo_attesa") == "errore_tecnico" {
+                            mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, record.id.clone(), EventBody::FieldSet { field: "ultimo_errore".into(), value: json!("") }));
+                        }
+
+                        for (field, value) in [("motivo_attesa", json!("")), ("prossimo_retry_ms", json!(0)), ("retry_tecnici", json!(0))] {
+                            mutations.push(Mutation::new(ENTITA_COMUNICAZIONE, record.id.clone(), EventBody::FieldSet { field: field.into(), value }));
+                        }
                         mutations.push(Mutation::new(
                             ENTITA_COMUNICAZIONE,
                             record.id.clone(),
@@ -2736,6 +2949,22 @@ impl AppState {
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
                             EventBody::FieldSet {
+                                field: "motivo_attesa".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "prossimo_retry_ms".into(),
+                                value: json!(0),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
                                 field: "stato".into(),
                                 value: json!(StatoComunicazione::InInvio.as_str()),
                             },
@@ -2849,12 +3078,31 @@ impl AppState {
                         .and_then(Value::as_object)
                         .map(|payload| str_field(payload, "canale"))
                         .unwrap_or_default();
-                    let (errore_codice, errore_fase) = if canale == "whatsapp" {
-                        classifica_errore_whatsapp(&messaggio)
-                    } else {
-                        (String::new(), String::new())
-                    };
+                    let (errore_codice, errore_fase) =
+                        if messaggio.starts_with("Errore tecnico prima dell'invio") {
+                            ("errore_tecnico".into(), "pre_invio".into())
+                        } else if canale == "whatsapp" {
+                            classifica_errore_whatsapp(&messaggio)
+                        } else {
+                            (String::new(), String::new())
+                        };
                     Ok(vec![
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "motivo_attesa".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "prossimo_retry_ms".into(),
+                                value: json!(0),
+                            },
+                        ),
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
@@ -2992,6 +3240,22 @@ impl AppState {
                         (String::new(), String::new())
                     };
                     Ok(vec![
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "motivo_attesa".into(),
+                                value: json!(""),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "prossimo_retry_ms".into(),
+                                value: json!(0),
+                            },
+                        ),
                         Mutation::new(
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
@@ -3161,6 +3425,26 @@ impl AppState {
                             ENTITA_COMUNICAZIONE,
                             id_owned.clone(),
                             EventBody::FieldSet {
+                                field: "motivo_attesa".into(),
+                                value: json!(if stato_differito == StatoComunicazione::InCoda {
+                                    "pc_occupato"
+                                } else {
+                                    ""
+                                }),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
+                                field: "prossimo_retry_ms".into(),
+                                value: json!(0),
+                            },
+                        ),
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id_owned.clone(),
+                            EventBody::FieldSet {
                                 field: "stato".into(),
                                 value: json!(stato_differito.as_str()),
                             },
@@ -3214,6 +3498,121 @@ impl AppState {
         Ok(aggiornata)
     }
 
+    fn comunicazione_attende(
+        &self,
+        id: &str,
+        motivo: &str,
+        prossimo_retry_ms: u64,
+        retry_tecnici: u64,
+        errore: Option<&str>,
+    ) -> AppResult<ComunicazioneDto> {
+        let dispositivo = self.config().device_id;
+        let aggiornata = self.with_communication_engine(|engine| {
+            engine
+                .emit_built_checked(|projection| {
+                    let record = projection
+                        .get(ENTITA_COMUNICAZIONE, id)
+                        .map_err(es)?
+                        .filter(|r| !r.deleted)
+                        .ok_or("comunicazione non trovata")?;
+                    let corrente = dto(record)?;
+                    if corrente.proprietario_dispositivo_id != dispositivo {
+                        return Err("comunicazione di un altro PC".into());
+                    }
+                    if corrente.stato != StatoComunicazione::InCoda {
+                        return Ok(Vec::new());
+                    }
+                    if corrente.motivo_attesa == motivo
+                        && corrente.prossimo_retry_ms == prossimo_retry_ms
+                        && corrente.retry_tecnici == retry_tecnici
+                        && corrente.ultimo_errore == errore.unwrap_or("")
+                    {
+                        return Ok(Vec::new());
+                    }
+                    Ok([
+                        ("ultimo_errore", json!(errore.unwrap_or(""))),
+                        ("motivo_attesa", json!(motivo)),
+                        ("prossimo_retry_ms", json!(prossimo_retry_ms)),
+                        ("retry_tecnici", json!(retry_tecnici)),
+                        ("stato_aggiornato_ms", json!(now_ms())),
+                    ]
+                    .into_iter()
+                    .map(|(field, value)| {
+                        Mutation::new(
+                            ENTITA_COMUNICAZIONE,
+                            id.to_string(),
+                            EventBody::FieldSet {
+                                field: field.into(),
+                                value,
+                            },
+                        )
+                    })
+                    .collect())
+                })
+                .map_err(es)?;
+            engine.with_projection(|p| {
+                p.get(ENTITA_COMUNICAZIONE, id)
+                    .map_err(es)?
+                    .ok_or_else(|| "comunicazione non trovata".to_string())
+                    .and_then(dto)
+            })
+        })?;
+        self.emetti_stato_comunicazione_locale(&aggiornata);
+        Ok(aggiornata)
+    }
+
+    fn comunicazione_errore_worker(&self, id: &str, errore: &str) -> AppResult<ComunicazioneDto> {
+        let c = self
+            .comunicazioni_lista()?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or("comunicazione non trovata")?;
+        // Una ripresa manuale può aver acquisito il mittente fra selezione e invio.
+        // La contesa non è un tentativo fallito e non autorizza a chiudere l'invio attivo.
+        if errore == "questo PC sta già inviando un'altra comunicazione; attendi il suo esito" {
+            return if c.stato == StatoComunicazione::InCoda {
+                self.comunicazione_attende(
+                    id,
+                    "invio_in_corso",
+                    now_ms() + 1_000,
+                    c.retry_tecnici,
+                    None,
+                )
+            } else {
+                Ok(c)
+            };
+        }
+        // Non stampare l'errore originale: può contenere indirizzi, testo o percorsi.
+        eprintln!(
+            "outbox: errore tecnico id={} stato={} retry={}",
+            id,
+            c.stato.as_str(),
+            c.retry_tecnici
+        );
+        let result = if c.stato == StatoComunicazione::InCoda {
+            let tentativo = c.retry_tecnici.saturating_add(1);
+            if tentativo >= 3 {
+                self.comunicazione_attende(id, "errore_tecnico", 0, tentativo, Some(errore))?;
+                self.comunicazione_fallisce_prima_invio(id, &format!("Errore tecnico prima dell'invio dopo tre tentativi: {errore}. Riprova dal Centro comunicazioni."))
+            } else {
+                let ritardo = if tentativo == 1 { 2_000 } else { 5_000 };
+                self.comunicazione_attende(
+                    id,
+                    "errore_tecnico",
+                    now_ms() + ritardo,
+                    tentativo,
+                    Some(errore),
+                )
+            }
+        } else if c.stato == StatoComunicazione::InInvio {
+            self.comunicazione_conclude_invio(id, StatoComunicazione::Fallito, None, Some(&ErroreAdattatore { classe: ClasseErroreAdattatore::EsitoAmbiguo, messaggio: "Errore interno durante l'invio: verifica il destinatario prima di creare un reinvio.".into() }))
+        } else {
+            Ok(c)
+        };
+        self.gestisci_eventuale_errore_invio(&result);
+        result
+    }
+
     fn comunicazione_processa_con_adattatore(
         &self,
         id: &str,
@@ -3232,7 +3631,13 @@ impl AppState {
         }
         if let Err(errore) = adapter.verifica_configurazione() {
             if errore.classe == ClasseErroreAdattatore::AttivitaUtente {
-                return Ok(comunicazione);
+                return self.comunicazione_attende(
+                    id,
+                    "pc_occupato",
+                    0,
+                    comunicazione.retry_tecnici,
+                    None,
+                );
             }
             return self.comunicazione_fallisce_prima_invio(id, &errore.messaggio);
         }
@@ -3438,11 +3843,11 @@ impl AppState {
     /// Ripresa esplicita dalla notifica. Il click che ha richiesto la ripresa è
     /// autorizzato una sola volta; qualsiasi input successivo dell'operatore
     /// interrompe comunque l'automazione prima del click su Invia.
-    pub fn comunicazione_whatsapp_riprendi(&self, id: &str) -> AppResult<ComunicazioneDto> {
-        #[cfg(target_os = "windows")]
-        let autorizzazione_input = crate::app::whatsapp_windows::marcatore_input_utente();
-        #[cfg(not(target_os = "windows"))]
-        let autorizzazione_input = None;
+    pub fn comunicazione_whatsapp_riprendi(
+        &self,
+        id: &str,
+        autorizzazione_input: Option<u32>,
+    ) -> AppResult<ComunicazioneDto> {
         self.comunicazione_whatsapp_invia_con_autorizzazione(id, autorizzazione_input, true)
     }
 
@@ -3877,8 +4282,19 @@ impl AppState {
         // Se WhatsApp è pronto, rispettiamo l'ordine cronologico (FIFO).
         // Se il PC è in uso, WhatsApp viene temporaneamente scavalcato dalle e-mail pronte,
         // così le e-mail partono subito in background senza attendere la quiete dell'operatore.
+        if !whatsapp_pronto {
+            for c in &in_coda {
+                if c.canale == CanaleComunicazione::Whatsapp
+                    && c.prossimo_retry_ms <= now_ms()
+                    && c.motivo_attesa != "pc_occupato"
+                {
+                    self.comunicazione_attende(&c.id, "pc_occupato", 0, c.retry_tecnici, None)?;
+                }
+            }
+        }
         let prossima = in_coda
             .iter()
+            .filter(|c| c.prossimo_retry_ms <= now_ms())
             .filter(|c| c.canale != CanaleComunicazione::Whatsapp || whatsapp_pronto)
             .min_by_key(|c| c.creata_ms)
             .cloned();
@@ -3889,11 +4305,15 @@ impl AppState {
             .is_some_and(|comunicazione| comunicazione.canale == CanaleComunicazione::Whatsapp);
 
         let mut risultato = prossima
-            .map(|comunicazione| match comunicazione.canale {
-                CanaleComunicazione::Email => self.comunicazione_email_invia(&comunicazione.id),
-                CanaleComunicazione::Whatsapp => {
-                    self.comunicazione_whatsapp_invia(&comunicazione.id)
-                }
+            .map(|comunicazione| {
+                let result = match comunicazione.canale {
+                    CanaleComunicazione::Email => self.comunicazione_email_invia(&comunicazione.id),
+                    CanaleComunicazione::Whatsapp => {
+                        self.comunicazione_whatsapp_invia(&comunicazione.id)
+                    }
+                };
+                result
+                    .or_else(|errore| self.comunicazione_errore_worker(&comunicazione.id, &errore))
             })
             .transpose();
 
@@ -3903,18 +4323,26 @@ impl AppState {
             .as_ref()
             .ok()
             .and_then(|c| c.as_ref())
-            .is_some_and(|item| item.stato == StatoComunicazione::InCoda)
+            .is_some_and(|item| {
+                item.stato == StatoComunicazione::InCoda
+                    && item.canale == CanaleComunicazione::Whatsapp
+            })
         {
             if let Some(email) = in_coda
                 .iter()
-                .filter(|c| c.canale == CanaleComunicazione::Email)
+                .filter(|c| {
+                    c.canale == CanaleComunicazione::Email && c.prossimo_retry_ms <= now_ms()
+                })
                 .min_by_key(|c| c.creata_ms)
             {
                 #[cfg(all(target_os = "windows", not(test)))]
                 {
                     era_whatsapp = false;
                 }
-                risultato = self.comunicazione_email_invia(&email.id).map(Some);
+                risultato = self
+                    .comunicazione_email_invia(&email.id)
+                    .or_else(|errore| self.comunicazione_errore_worker(&email.id, &errore))
+                    .map(Some);
             }
         }
 
@@ -3949,10 +4377,9 @@ impl AppState {
         }
 
         risultato.map(|comunicazione| {
-            if comunicazione
-                .as_ref()
-                .is_some_and(|item| item.stato == StatoComunicazione::InCoda)
-            {
+            if comunicazione.as_ref().is_some_and(|item| {
+                item.stato == StatoComunicazione::InCoda && item.motivo_attesa != "errore_tecnico"
+            }) {
                 None
             } else {
                 comunicazione
@@ -7052,5 +7479,497 @@ mod tests {
         let reinviata = state.comunicazione_reinvia(&inviata.id).unwrap();
         assert_eq!(reinviata.recapito, "demo@example.invalid");
         assert_eq!(reinviata.reinvio_di, inviata.id);
+    }
+    fn input_set_test(state: &AppState, key: &str) -> ComunicazioneCreaInput {
+        let cliente = state
+            .record_create(
+                "cliente",
+                Map::from_iter([("nome".into(), json!("Cliente set"))]),
+            )
+            .unwrap();
+        let mut input = input_email(key);
+        input.destinatario_id = cliente.id;
+        input.campagna_id = "campagna:set-atomico".into();
+        input
+    }
+
+    #[test]
+    fn set_creazione_atomica_e_correzione_senza_duplicati() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:email");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:whatsapp".into();
+        secondo.canale = CanaleComunicazione::Whatsapp;
+        secondo.recapito = "non valido".into();
+        assert!(state
+            .comunicazioni_crea_bozze(vec![primo.clone(), secondo.clone()])
+            .is_err());
+        assert!(state.comunicazioni_lista().unwrap().is_empty());
+        secondo.recapito = "+393381112233".into();
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo.clone(), secondo.clone()])
+            .unwrap();
+        assert_eq!(bozze.len(), 2);
+        assert!(bozze.iter().all(|c| c.stato == StatoComunicazione::Bozza));
+        let mut corretto = primo.clone();
+        corretto.corpo = "Testo corretto".into();
+        let corrette = state
+            .comunicazioni_crea_bozze(vec![corretto.clone(), secondo.clone()])
+            .unwrap();
+        assert_eq!(corrette[0].id, bozze[0].id);
+        assert_eq!(corrette[0].corpo, "Testo corretto");
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+        state
+            .comunicazioni_metti_in_coda(corrette.iter().map(|c| c.id.clone()).collect())
+            .unwrap();
+        corretto.corpo = "Non modificabile dopo avvio".into();
+        assert!(state
+            .comunicazioni_crea_bozze(vec![corretto, secondo])
+            .is_err());
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn set_accodamento_atomico_idempotente_e_gate_avvio() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:queue:1");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:queue:2".into();
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo, secondo])
+            .unwrap();
+        let token = state.comunicazione_wake_token();
+        assert!(state
+            .comunicazioni_metti_in_coda(vec![bozze[0].id.clone(), "inesistente".into()])
+            .is_err());
+        assert_eq!(state.comunicazione_wake_token(), token);
+        assert!(state
+            .comunicazioni_lista()
+            .unwrap()
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::Bozza));
+        assert!(state.comunicazione_processa_prossima().unwrap().is_none());
+        let ids = bozze.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+        let accodate = state.comunicazioni_metti_in_coda(ids.clone()).unwrap();
+        assert!(accodate
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::InCoda));
+        assert_eq!(state.comunicazione_wake_token(), token + 1);
+        state.comunicazioni_metti_in_coda(ids).unwrap();
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn set_retry_tecnici_limitati_non_consumati_da_pc_occupato() {
+        let (_app, _data, state) = stato_test(true);
+        let input = input_set_test(&state, "set:retry:1");
+        let bozza = state
+            .comunicazioni_crea_bozze(vec![input])
+            .unwrap()
+            .remove(0);
+        state
+            .comunicazioni_metti_in_coda(vec![bozza.id.clone()])
+            .unwrap();
+        let prima = state
+            .comunicazione_errore_worker(&bozza.id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        assert_eq!(prima.retry_tecnici, 1);
+        assert_eq!(prima.motivo_attesa, "errore_tecnico");
+        assert!((1_500..=2_000).contains(&prima.prossimo_retry_ms.saturating_sub(now_ms())));
+        let pc = state
+            .comunicazione_attende(&bozza.id, "pc_occupato", 0, prima.retry_tecnici, None)
+            .unwrap();
+        assert_eq!(pc.retry_tecnici, 1);
+        let seconda = state
+            .comunicazione_errore_worker(&bozza.id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        assert_eq!(seconda.retry_tecnici, 2);
+        assert!((4_500..=5_000).contains(&seconda.prossimo_retry_ms.saturating_sub(now_ms())));
+        let fallita = state
+            .comunicazione_errore_worker(&bozza.id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        assert_eq!(fallita.stato, StatoComunicazione::Fallito);
+        assert!(!fallita.esito_ambiguo);
+        assert!(fallita.ultimo_errore.contains("tre tentativi"));
+        assert_eq!(fallita.prossimo_retry_ms, 0);
+        let ripresa = state
+            .campagna_comunicazione_riprova_fallite("campagna:set-atomico")
+            .unwrap();
+        assert_eq!(ripresa[0].retry_tecnici, 0);
+        assert_eq!(ripresa[0].motivo_attesa, "");
+    }
+
+    #[test]
+    fn set_retry_differito_lascia_proseguire_altri_invii() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:retry-other:1");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:retry-other:2".into();
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo, secondo])
+            .unwrap();
+        state
+            .comunicazioni_metti_in_coda(bozze.iter().map(|c| c.id.clone()).collect())
+            .unwrap();
+        state
+            .comunicazione_errore_worker(&bozze[0].id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        // Senza configurazione SMTP il secondo fallisce prima di produrre effetti esterni.
+        let prossimo = state.comunicazione_processa_prossima().unwrap().unwrap();
+        assert_eq!(prossimo.id, bozze[1].id);
+        assert_eq!(prossimo.stato, StatoComunicazione::Fallito);
+        let prima = state
+            .comunicazioni_lista()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == bozze[0].id)
+            .unwrap();
+        assert_eq!(prima.stato, StatoComunicazione::InCoda);
+        assert_eq!(prima.retry_tecnici, 1);
+    }
+
+    #[test]
+    fn set_errore_dopo_avvio_diventa_ambiguo_senza_retry() {
+        let (_app, _data, state) = stato_test(true);
+        let input = input_set_test(&state, "set:ambiguo");
+        let bozza = state
+            .comunicazioni_crea_bozze(vec![input])
+            .unwrap()
+            .remove(0);
+        state
+            .comunicazioni_metti_in_coda(vec![bozza.id.clone()])
+            .unwrap();
+        state.comunicazione_inizia_invio(&bozza.id).unwrap();
+        let fallita = state
+            .comunicazione_errore_worker(&bozza.id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        assert_eq!(fallita.stato, StatoComunicazione::Fallito);
+        assert!(fallita.esito_ambiguo);
+        assert_eq!(fallita.prossimo_retry_ms, 0);
+        assert!(state.comunicazione_metti_in_coda(&bozza.id).is_err());
+    }
+
+    #[test]
+    #[ignore = "esperimento isolato di contesa outbox; nessun adattatore esterno"]
+    fn misura_contesa_riepilogo_campagna() {
+        for numero in [1, 50, 500, 2000] {
+            let (_app, _data, state) = stato_test(true);
+            let base = input_set_test(&state, "misura:campagna");
+            let inputs = (0..numero)
+                .map(|i| {
+                    let mut input = base.clone();
+                    input.idempotency_key = format!("misura:campagna:{i}");
+                    input.campagna_id = "misura:campagna".into();
+                    input.corpo = "Test isolato, nessun invio. ".repeat(40);
+                    input
+                })
+                .collect();
+            let bozze = state.comunicazioni_crea_bozze(inputs).unwrap();
+            let id = bozze[0].id.clone();
+            state.comunicazione_metti_in_coda(&id).unwrap();
+            state.comunicazione_inizia_invio(&id).unwrap();
+            let state = std::sync::Arc::new(state);
+            let prima = std::time::Instant::now();
+            for _ in 0..200 {
+                assert!(!state.comunicazione_interrotta(&id));
+            }
+            eprintln!(
+                "misura-contesa record={numero} controlli_senza_riepilogo_200_ms={}",
+                prima.elapsed().as_millis()
+            );
+            for lettori in [1, 4] {
+                let barrier = std::sync::Arc::new(std::sync::Barrier::new(lettori + 1));
+                let mut threads = Vec::new();
+                for _ in 0..lettori {
+                    let state = state.clone();
+                    let barrier = barrier.clone();
+                    threads.push(std::thread::spawn(move || {
+                        barrier.wait();
+                        let prima = std::time::Instant::now();
+                        for _ in 0..20 {
+                            assert_eq!(state.comunicazioni_lista().unwrap().len(), numero);
+                        }
+                        prima.elapsed().as_millis()
+                    }));
+                }
+                barrier.wait();
+                let mut tempi = Vec::new();
+                let prima = std::time::Instant::now();
+                for _ in 0..200 {
+                    let controllo = std::time::Instant::now();
+                    assert!(!state.comunicazione_interrotta(&id));
+                    tempi.push(controllo.elapsed().as_micros());
+                    // Simula controlli distribuiti durante la preparazione UIA;
+                    // la pausa non entra nel tempo di acquisizione misurato.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let durata = prima.elapsed().as_millis();
+                let sola_attesa_ms = tempi.iter().sum::<u128>() / 1000;
+                tempi.sort_unstable();
+                let lettura_max = threads
+                    .into_iter()
+                    .map(|t| t.join().unwrap())
+                    .max()
+                    .unwrap();
+                eprintln!("misura-contesa record={numero} lettori={lettori} controlli_200_wall_ms={durata} controlli_200_misurati_ms={sola_attesa_ms} p95_us={} max_us={} letture_20_ms={lettura_max}", tempi[189], tempi[199]);
+            }
+        }
+    }
+
+    #[test]
+    fn set_preparazione_worker_sync_concorrenti_senza_deadlock() {
+        let (_app, _data, state) = stato_test(true);
+        let input = input_set_test(&state, "set:concorrenza");
+        let state = std::sync::Arc::new(state);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer = state.clone();
+        let tx_writer = tx.clone();
+        let thread_prepara = std::thread::spawn(move || {
+            for i in 0..20 {
+                let mut input = input.clone();
+                input.idempotency_key = format!("set:concorrenza:{i}");
+                let bozze = writer.comunicazioni_crea_bozze(vec![input]).unwrap();
+                writer
+                    .comunicazioni_metti_in_coda(vec![bozze[0].id.clone()])
+                    .unwrap();
+            }
+            tx_writer.send(()).unwrap();
+        });
+        let reader = state.clone();
+        let thread_worker = std::thread::spawn(move || {
+            for _ in 0..40 {
+                reader.force_sync().unwrap();
+                reader.comunicazioni_lista().unwrap();
+                reader.comunicazione_processa_prossima().unwrap();
+            }
+            tx.send(()).unwrap();
+        });
+        for _ in 0..2 {
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("preparazione/worker/sync bloccati");
+        }
+        thread_prepara.join().unwrap();
+        thread_worker.join().unwrap();
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 20);
+    }
+    #[test]
+    fn set_contesa_mittente_non_fallisce_un_invio_attivo() {
+        let (_app, _data, state) = stato_test(true);
+        let input = input_set_test(&state, "set:mittente-occupato");
+        let bozza = state
+            .comunicazioni_crea_bozze(vec![input])
+            .unwrap()
+            .remove(0);
+        state
+            .comunicazioni_metti_in_coda(vec![bozza.id.clone()])
+            .unwrap();
+        let occupato = "questo PC sta già inviando un'altra comunicazione; attendi il suo esito";
+        let attesa = state
+            .comunicazione_errore_worker(&bozza.id, occupato)
+            .unwrap();
+        assert_eq!(attesa.retry_tecnici, 0);
+        assert_eq!(attesa.stato, StatoComunicazione::InCoda);
+        state.comunicazione_inizia_invio(&bozza.id).unwrap();
+        let attiva = state
+            .comunicazione_errore_worker(&bozza.id, occupato)
+            .unwrap();
+        assert_eq!(attiva.stato, StatoComunicazione::InInvio);
+        assert!(!attiva.esito_ambiguo);
+    }
+
+    #[test]
+    fn set_allegato_mancante_non_accoda_nessun_elemento() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:allegato:1");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:allegato:2".into();
+        let allegato = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Documento.pdf".into(),
+                mime: "application/pdf".into(),
+                dati: b"%PDF-1.4\n%%EOF".to_vec(),
+            })
+            .unwrap();
+        secondo.allegati = vec![allegato.clone()];
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo.clone(), secondo.clone()])
+            .unwrap();
+        let nome = nome_file_cache_da_riferimento(&allegato.riferimento).unwrap();
+        fs::remove_file(state.cartella_cache_documenti().join(nome)).unwrap();
+        let token = state.comunicazione_wake_token();
+        assert!(state
+            .comunicazioni_metti_in_coda(bozze.iter().map(|c| c.id.clone()).collect())
+            .is_err());
+        assert_eq!(state.comunicazione_wake_token(), token);
+        assert!(state
+            .comunicazioni_lista()
+            .unwrap()
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::Bozza));
+        assert!(state
+            .comunicazioni_crea_bozze(vec![primo, secondo])
+            .is_err());
+    }
+
+    #[test]
+    fn set_retry_idempotente_dopo_invio_non_richiede_allegato_rilasciato() {
+        let (_app, _data, state) = stato_test(true);
+        let mut input = input_set_test(&state, "set:retry-cache-rilasciata");
+        let allegato = state
+            .documento_cache_salva(DocumentoCacheSalvaInput {
+                nome: "Documento.pdf".into(),
+                mime: "application/pdf".into(),
+                dati: b"%PDF-1.4\n%%EOF".to_vec(),
+            })
+            .unwrap();
+        input.allegati = vec![allegato.clone()];
+        let bozze = state.comunicazioni_crea_bozze(vec![input.clone()]).unwrap();
+        let ids = vec![bozze[0].id.clone()];
+        state.comunicazioni_metti_in_coda(ids.clone()).unwrap();
+        let mut adapter = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: false,
+                riferimento_esterno: "test-cache".into(),
+                copia_posta_inviata: false,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+        state
+            .comunicazione_processa_con_adattatore(&ids[0], &mut adapter)
+            .unwrap();
+        assert_eq!(adapter.invocazioni, 1);
+        // Simula la pulizia della cache dopo la conclusione dell'invio.
+        let nome = nome_file_cache_da_riferimento(&allegato.riferimento).unwrap();
+        fs::remove_file(state.cartella_cache_documenti().join(nome)).unwrap();
+        assert!(state.documento_cache_leggi(&allegato).is_err());
+        let ripetute = state.comunicazioni_metti_in_coda(ids).unwrap();
+        assert_eq!(ripetute[0].stato, StatoComunicazione::InvioAzionato);
+        let preparate = state.comunicazioni_crea_bozze(vec![input]).unwrap();
+        assert_eq!(preparate[0].stato, StatoComunicazione::InvioAzionato);
+        assert_eq!(preparate[0].tentativi, 1);
+    }
+
+    #[test]
+    fn set_mail_conclusa_whatsapp_differito_poi_ripreso() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:misto:email");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:misto:whatsapp".into();
+        secondo.canale = CanaleComunicazione::Whatsapp;
+        secondo.recapito = "+393381112233".into();
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo, secondo])
+            .unwrap();
+        state
+            .comunicazioni_metti_in_coda(bozze.iter().map(|c| c.id.clone()).collect())
+            .unwrap();
+        let mut adapter = MockCommunicationAdapter {
+            esito: Ok(RicevutaAdattatore {
+                invio_azionato: true,
+                consegna_verificata: false,
+                riferimento_esterno: "test-mail".into(),
+                copia_posta_inviata: false,
+                avviso: String::new(),
+            }),
+            invocazioni: 0,
+        };
+        let mail = state
+            .comunicazione_processa_con_adattatore(&bozze[0].id, &mut adapter)
+            .unwrap();
+        assert_eq!(mail.stato, StatoComunicazione::InvioAzionato);
+        adapter.esito = Err(ErroreAdattatore {
+            classe: ClasseErroreAdattatore::AttivitaUtente,
+            messaggio: "PC occupato".into(),
+        });
+        let attesa = state
+            .comunicazione_processa_con_adattatore(&bozze[1].id, &mut adapter)
+            .unwrap();
+        assert_eq!(attesa.stato, StatoComunicazione::InCoda);
+        assert_eq!(attesa.motivo_attesa, "pc_occupato");
+        assert_eq!(attesa.retry_tecnici, 0);
+        adapter.esito = Ok(RicevutaAdattatore {
+            invio_azionato: true,
+            consegna_verificata: false,
+            riferimento_esterno: "test-whatsapp".into(),
+            copia_posta_inviata: false,
+            avviso: String::new(),
+        });
+        let whatsapp = state
+            .comunicazione_processa_con_adattatore(&bozze[1].id, &mut adapter)
+            .unwrap();
+        assert_eq!(whatsapp.stato, StatoComunicazione::InvioAzionato);
+        assert!(whatsapp.motivo_attesa.is_empty());
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+        assert_eq!(adapter.invocazioni, 3);
+    }
+    #[test]
+    fn set_correzione_selezione_non_lascia_bozze_escluse() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:selezione:1");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:selezione:2".into();
+        let bozze = state
+            .comunicazioni_prepara_set(vec![primo.clone(), secondo.clone()], Some("set:selezione"))
+            .unwrap();
+        let solo_mail = state
+            .comunicazioni_prepara_set(vec![primo.clone()], Some("set:selezione"))
+            .unwrap();
+        assert_eq!(solo_mail.len(), 1);
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 1);
+        let entrambe = state
+            .comunicazioni_prepara_set(vec![primo.clone(), secondo.clone()], Some("set:selezione"))
+            .unwrap();
+        assert_eq!(entrambe[1].id, bozze[1].id);
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+        state
+            .comunicazioni_metti_in_coda(entrambe.iter().map(|c| c.id.clone()).collect())
+            .unwrap();
+        assert!(state
+            .comunicazioni_prepara_set(vec![primo], Some("set:selezione"))
+            .is_err());
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn set_pausa_annullo_riavvio_preservano_la_coda() {
+        let (_app, _data, state) = stato_test(true);
+        let primo = input_set_test(&state, "set:ciclo:1");
+        let mut secondo = primo.clone();
+        secondo.idempotency_key = "set:ciclo:2".into();
+        let bozze = state
+            .comunicazioni_crea_bozze(vec![primo, secondo])
+            .unwrap();
+        state
+            .comunicazioni_metti_in_coda(bozze.iter().map(|c| c.id.clone()).collect())
+            .unwrap();
+        state
+            .comunicazione_errore_worker(&bozze[0].id, "sincronizzazione locale non disponibile")
+            .unwrap();
+        let sospese = state
+            .campagna_comunicazione_sospendi("campagna:set-atomico")
+            .unwrap();
+        assert!(sospese
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::Sospeso && c.prossimo_retry_ms == 0));
+        let riprese = state
+            .campagna_comunicazione_riprendi("campagna:set-atomico")
+            .unwrap();
+        assert!(riprese
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::InCoda && c.retry_tecnici == 0));
+        let annullate = state
+            .campagna_comunicazione_annulla("campagna:set-atomico")
+            .unwrap();
+        assert!(annullate
+            .iter()
+            .all(|c| c.stato == StatoComunicazione::Annullato));
+        state
+            .campagna_comunicazione_riprendi("campagna:set-atomico")
+            .unwrap();
+        assert_eq!(state.comunicazioni_trattieni_coda_all_avvio().unwrap(), 2);
+        assert!(state.comunicazione_processa_prossima().unwrap().is_none());
+        assert_eq!(state.comunicazioni_lista().unwrap().len(), 2);
     }
 }

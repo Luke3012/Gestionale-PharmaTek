@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 // Pagina Produzione (FASE 5A/5B): ordini Immunoterapia verso Laboratorio, sul modello Spedizioni
 // (una pagina, due viste via SegmentedControl) ma a **righe-tendina** (Paper + Collapse):
 //  · «Da produrre»   → la coda: ordini Nuovo/Confermato, con in cima l'acconto incassato;
@@ -660,6 +661,7 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
   }
 
   const ricercaProduzione = cercaDifferita.trim().toLowerCase();
+  const corrispondeRicercaProduzione = useMemo(() => preparaRicercaTesto(ricercaProduzione), [ricercaProduzione]);
   const testoRicercaOrdine = useCallback(
     (o: OrdineDto, rows: RecordDto[] = righePerOrdine.get(o.id) ?? []) =>
       [
@@ -694,8 +696,8 @@ export function ProduzioneView({ identity }: { identity: Identity }) {
     [pazientiByOrdine, prodMap, righePerOrdine]
   );
   const ordineCorrispondeRicerca = useCallback(
-    (o: OrdineDto, rows?: RecordDto[]) => !ricercaProduzione || testoRicercaOrdine(o, rows).includes(ricercaProduzione),
-    [ricercaProduzione, testoRicercaOrdine]
+    (o: OrdineDto, rows?: RecordDto[]) => !ricercaProduzione || corrispondeRicercaProduzione(testoRicercaOrdine(o, rows)),
+    [ricercaProduzione, corrispondeRicercaProduzione, testoRicercaOrdine]
   );
 
   // Le code operative includono l'anno scelto e gli arretrati, ma mai anni futuri.

@@ -1,3 +1,4 @@
+import { corrispondeRicercaTesto, filtroOpzioniRicerca } from "../../lib/ricercaTesto";
 import {
   Alert,
   Autocomplete,
@@ -50,6 +51,8 @@ import { ultimoMedicoClienteValido } from "../anagrafiche/medicoCliente";
 import { SelettoreCategoriaNuovoOrdine } from "../giornaliero/categoriaOrdine";
 import {
   interpretaPreventivo,
+  allergeneCanonico,
+  corrispondeRicercaAllergene,
   type RigaInterpretataPreventivo,
 } from "./parserPreventivo";
 import type { BozzaPreventivoDaZero } from "./bozzaPreventivo";
@@ -448,7 +451,7 @@ export function NuovoPreventivoModal({
           if (ordine.ordineId === ordineId) return true;
           return anno === 0 || Number(ordine.ordineData.slice(0, 4)) === anno;
         }
-        if (!ordine) return normalizzaRicerca(option.label).includes(query);
+        if (!ordine) return corrispondeRicercaTesto(option.label, query);
         return corrispondeRicercaOrdine(ordine, query);
       });
       const max = typeof limit === "number" && limit > 0 ? limit : 20;
@@ -867,6 +870,7 @@ export function NuovoPreventivoModal({
           <Select
             mt="md"
             label="Destinatario del preventivo"
+            filter={filtroOpzioniRicerca}
             description="Cerca e seleziona un cliente oppure un medico."
             placeholder="Cerca cliente o medico…"
             searchable
@@ -894,6 +898,7 @@ export function NuovoPreventivoModal({
               clearable
               limit={20}
               label="Medico di riferimento"
+              filter={filtroOpzioniRicerca}
               description="Proposto dall’ultimo ordine del cliente; puoi cambiarlo."
               placeholder="Cerca il medico…"
               data={opzioniMedici}
@@ -1031,11 +1036,14 @@ export function NuovoPreventivoModal({
                     riga.allergeni.length ? undefined : "Aggiungi fino a 10 valori"
                   }
                   data={suggerimentiAllergeni}
+                  filter={({ options, search }) => options.filter((option) =>
+                    "label" in option && corrispondeRicercaAllergene(option.label, search, suggerimentiAllergeni),
+                  )}
                   value={riga.allergeni}
                   maxTags={10}
                   clearable
                   onChange={(value) =>
-                    patchRiga(index, { allergeni: value })
+                    patchRiga(index, { allergeni: [...new Set(value.map((v) => allergeneCanonico(v, suggerimentiAllergeni) ?? v))] })
                   }
                 />
               </Paper>

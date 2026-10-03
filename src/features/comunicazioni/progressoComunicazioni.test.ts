@@ -9,14 +9,33 @@ const comunicazione = (stato: StatoComunicazione): Comunicazione =>
   ({ id: crypto.randomUUID(), stato } as Comunicazione);
 
 describe("progresso notifiche comunicazioni", () => {
-  it("considera a metà la comunicazione attualmente in invio", () => {
+  it("avanza soltanto per le comunicazioni concluse", () => {
     const riepilogo = riepilogaProgressoComunicazioni([
       comunicazione("consegna_verificata"),
       comunicazione("in_invio"),
       comunicazione("in_coda"),
     ]);
-    expect(riepilogo.progress).toBe(50);
+    expect(riepilogo.progress).toBe(33);
     expect(riepilogo.terminale).toBe(false);
+  });
+
+  it("mostra la mail conclusa al 50% mentre WhatsApp aspetta il PC", () => {
+    const riepilogo = riepilogaProgressoComunicazioni([
+      { ...comunicazione("invio_azionato"), canale: "email" },
+      { ...comunicazione("in_coda"), canale: "whatsapp", motivoAttesa: "pc_occupato" },
+    ]);
+    expect(riepilogo).toMatchObject({ progress: 50, completate: 1, inviate: 1, terminale: false });
+    expect(riepilogo.messaggio).toContain("PC è libero");
+  });
+
+  it("distingue il retry tecnico dai successi e dai fallimenti", () => {
+    const riepilogo = riepilogaProgressoComunicazioni([
+      comunicazione("fallito"),
+      { ...comunicazione("in_coda"), motivoAttesa: "errore_tecnico", prossimoRetryMs: Date.now() + 2000 },
+    ]);
+    expect(riepilogo.progress).toBe(50);
+    expect(riepilogo.messaggio).toContain("1 fallita");
+    expect(riepilogo.messaggio).toContain("tentativo automatico");
   });
 
   it("riassume gli esiti terminali", () => {

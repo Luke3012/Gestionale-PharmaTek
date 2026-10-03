@@ -1,4 +1,5 @@
 import {
+  api,
   inTauri,
   type AllegatoComunicazioneInput,
   type CanaleComunicazione,
@@ -52,6 +53,45 @@ export interface ComunicazioneTarget {
 /** Alias del nome destinatario usati da tutti i modelli di comunicazione. */
 export function variabiliNomeDestinatario(nome: string) {
   return { nome_cliente: nome, ragione_sociale: nome };
+}
+
+/** Solo l'indirizzo di consegna dell'anagrafica, senza intestazione o fatturazione. */
+export function indirizzoConsegnaDaRecord(record: RecordDto): string {
+  const campo = (nome: string) =>
+    typeof record.data[nome] === "string" ? String(record.data[nome]).trim() : "";
+  const localita = [
+    [campo("cap"), campo("citta")].filter(Boolean).join(" "),
+    campo("prov") ? `(${campo("prov")})` : "",
+  ].filter(Boolean).join(" ");
+  return [campo("indirizzo"), localita].filter(Boolean).join(", ");
+}
+
+export function variabiliAnagraficaDestinatario(
+  record: RecordDto,
+  nome: string,
+  cliente = true,
+) {
+  return {
+    ...variabiliNomeDestinatario(nome),
+    ...(cliente ? { indirizzo_consegna: indirizzoConsegnaDaRecord(record) } : {}),
+  };
+}
+
+async function completaIndirizzoCliente<T extends ComunicazioneTarget>(
+  target: T,
+  record?: RecordDto | null,
+): Promise<T> {
+  if (target.destinatarioEntita !== "cliente") return target;
+  const cliente = record === undefined
+    ? await api.recordGet("cliente", target.destinatarioId)
+    : record;
+  return {
+    ...target,
+    variabili: {
+      ...target.variabili,
+      indirizzo_consegna: cliente && !cliente.deleted ? indirizzoConsegnaDaRecord(cliente) : "",
+    },
+  };
 }
 
 /** Nome e recapiti derivati da un'anagrafica aggiornata in tempo reale. */
@@ -152,6 +192,8 @@ export type RiferimentoPagamento = {
 };
 
 export interface OpzioniDatiPagamento {
+  /** Negli avvisi mostra anche importo e scadenza di un singolo pagamento. */
+  dettagliaPagamentoSingolo?: boolean;
   tuttiPagamenti?: RiferimentoPagamento[];
   includiRate?: boolean;
 }
@@ -448,7 +490,7 @@ export function datiPagamentoComunicazione(
   const totaleRatePreviste = tutteLeRate.length;
   const haRate =
     (opzioni.includiRate ?? true) &&
-    (totaleRatePreviste > 1 || aperti.length > 1) &&
+    (totaleRatePreviste > 1 || aperti.length > 1 || opzioni.dettagliaPagamentoSingolo) &&
     aperti.some((p) => p.importo != null || p.tipo === "rata");
 
   let istruzioni: string;
@@ -486,7 +528,9 @@ export function datiPagamentoComunicazione(
       return `- ${nome}${importoStr}${scadenzaStr}${extraMetodo}`;
     });
 
-    const intestazione = "Rate previste:";
+    const intestazione = opzioni.dettagliaPagamentoSingolo && aperti.every(p => p.tipo !== "rata")
+      ? aperti.length === 1 ? "Pagamento previsto:" : "Pagamenti previsti:"
+      : "Rate previste:";
     if (contoCondiviso) {
       const coordinate = infos[0]?.bloccoCoordinate || fallback;
       istruzioni = `${intestazione}\n${righeRate.join("\n")}\n\n${coordinate}`;
@@ -613,7 +657,7 @@ export async function apriComunicazione(
 ): Promise<boolean> {
   if (!target.destinatarioId || !target.destinatarioNome) return false;
   const richiestaId = creaIdCasuale();
-  const richiesta = { ...target, richiestaId };
+  const richiesta = { ...(await completaIndirizzoCliente(target)), richiestaId };
   const manuale = !target.origineId && !target.tipo;
   if (opzioni.forzaFinestra) {
     return apriFinestraComunicazione(richiesta);
@@ -672,8 +716,15 @@ export async function apriCampagnaComunicazioni(
     (target) => target.destinatarioId && target.destinatarioNome,
   );
   if (!validi.length) return false;
+  const idsClienti = [...new Set(
+    validi.filter(t => t.destinatarioEntita === "cliente").map(t => t.destinatarioId),
+  )];
+  const records = idsClienti.length ? await api.recordsGetMany("cliente", idsClienti) : [];
+  const clienti = new Map(records.map(record => [record.id, record]));
   const richiesta: AperturaCampagnaComunicazioni = {
-    targets: validi,
+    targets: await Promise.all(validi.map(target =>
+      completaIndirizzoCliente(target, clienti.get(target.destinatarioId) ?? null),
+    )),
     richiestaId: creaIdCasuale(),
   };
   if (opzioni.forzaFinestra) {

@@ -59,7 +59,6 @@ import {
 import { toast } from "../../ui/toast/store";
 import { dialog } from "../../ui/dialog/store";
 import { centsToEurStr } from "../../lib/money";
-import { formattaDataLocale } from "../../lib/date";
 import { FurgoncinoLoader } from "./FurgoncinoLoader";
 import {
   NoteSpedizionePopover,
@@ -76,12 +75,7 @@ import {
   canRunPremiumAction,
 } from "../../premium/PremiumAction";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
-import {
-  apriComunicazione,
-  datiPagamentoComunicazione,
-  importoResiduoComunicazione,
-  variabiliNomeDestinatario,
-} from "../comunicazioni/apriComunicazione";
+import { apriAvvisiSpedizione } from "./comunicazioniSpedizione";
 import {
   rigaHaDatiVaccino,
   spedizioneHaDatiVaccino,
@@ -804,47 +798,7 @@ const ColloRiga = memo(function ColloRiga({
   const haDatiVaccino = spedizioneHaDatiVaccino(s);
   const comunica = async () => {
     try {
-      const ordini = [
-        ...new Set(s.righe.map((riga) => riga.ordineNumero).filter(Boolean)),
-      ];
-      const data = s.data
-        ? formattaDataLocale(new Date(`${s.data}T12:00:00`))
-        : "";
-      const conti = await api.recordsList("conto");
-      const pagamenti = s.pagamenti.filter((pagamento) => !pagamento.saldato);
-      await apriComunicazione({
-        destinatarioEntita: "cliente",
-        destinatarioId: s.clienteId,
-        destinatarioNome: s.clienteNome,
-        email: s.email,
-        telefono: s.telefono,
-        tipo: "preavviso_spedizione",
-        origineEntita: "spedizione",
-        origineId: s.id,
-        origineFingerprint: s.comunicazioneFingerprint ?? "",
-        variabili: {
-          ...variabiliNomeDestinatario(s.clienteNome),
-          nome_medico: s.medicoNome,
-          nome_agente: s.agenteNome,
-          riferimento_ordine: ordini.join(", "),
-          data_spedizione: data,
-          data_spedizione_iso: s.data,
-          corriere: nomeCorriere(s),
-          tracking: s.numero || "sarà comunicato dal corriere",
-          importo_residuo: importoResiduoComunicazione(
-            pagamenti.reduce(
-              (totale, pagamento) => totale + pagamento.importo,
-              0,
-            ),
-          ),
-          ...datiPagamentoComunicazione(
-            pagamenti,
-            conti,
-            "Nessun pagamento richiesto alla consegna.",
-            { tuttiPagamenti: s.pagamenti, includiRate: true },
-          ),
-        },
-      });
+      await apriAvvisiSpedizione([s], true);
     } catch (error) {
       toast.error(`Apertura dell'avviso non riuscita: ${error}`);
     }

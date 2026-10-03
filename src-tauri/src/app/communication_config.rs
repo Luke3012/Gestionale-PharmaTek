@@ -834,6 +834,9 @@ mod tests {
     #[test]
     fn email_operativa_con_pdf_usa_mime_multipart_senza_perdere_il_corpo() {
         let comunicazione = ComunicazioneDto {
+            motivo_attesa: String::new(),
+            prossimo_retry_ms: 0,
+            retry_tecnici: 0,
             id: "com-test".into(),
             revision: "1".into(),
             stato: StatoComunicazione::InCoda,

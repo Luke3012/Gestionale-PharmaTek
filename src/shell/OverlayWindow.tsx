@@ -53,6 +53,7 @@ import {
   contaMessaggiLogici,
   riepilogaProgressoComunicazioni,
 } from "../features/comunicazioni/progressoComunicazioni";
+import { creaAggiornamentiCampagne, filtraSnapshotIniziale } from "../features/comunicazioni/aggiornamentiCampagne";
 import { aggiornaStatoNotificheComunicazioniLocale } from "../features/notifiche/statoComunicazioniLocale";
 import { vaiAllaPrincipale } from "./navigazione";
 import { deepLinkSuggerimento } from "../features/suggerimenti/collegamento";
@@ -426,72 +427,61 @@ export function OverlayWindow() {
   useEffect(() => {
     if (!inTauri) return;
     let attivo = true;
-    const versioniCampagna = new Map<string, number>();
+    const eventiRicevuti = new Set<string>();
+    let caricamentoIniziale = balloonAttivo;
 
-    const aggiornaComunicazione = async (payload: Comunicazione) => {
-      if (payload.canale === "whatsapp") {
-        whatsappInInvioRef.current = payload.stato === "in_invio";
-      }
-      if (
-        payload.destinatarioEntita === "diagnostica_whatsapp" ||
-        payload.campagnaId?.startsWith("collaudo-whatsapp:")
-      ) return;
-      if (payload.campagnaId) {
-        if (payload.stato === "in_coda") {
-          // Una ripresa esplicita dal Centro comunicazioni riattiva anche la
-          // relativa notifica operativa.
-          campagneAnnullateSilenzioseRef.current.delete(payload.campagnaId);
-        } else if (
-          campagneAnnullateSilenzioseRef.current.has(payload.campagnaId)
-        ) {
-          setToasts((correnti) =>
-            correnti.filter((toast) => toast.campagnaId !== payload.campagnaId),
-          );
-          return;
-        }
-      }
-      if (!balloonAttivo) return;
-
-      let prossimo: Toast | null;
-      if (payload.campagnaId) {
-        const versione = (versioniCampagna.get(payload.campagnaId) ?? 0) + 1;
-        versioniCampagna.set(payload.campagnaId, versione);
-        const tutte = await api.comunicazioniLista().catch(() => []);
-        if (
-          !attivo ||
-          versioniCampagna.get(payload.campagnaId) !== versione
-        ) {
-          return;
-        }
-        const elementiCampagna = tutte.filter(
-          (item) => item.campagnaId === payload.campagnaId,
-        );
-        prossimo = toastDaStatoCampagna(elementiCampagna);
-      } else {
-        prossimo = toastDaStatoComunicazione(payload);
-      }
-
+    const applicaToast = (id: string, campagnaId: string | undefined, prossimo: Toast | null) => {
+      if (!attivo) return;
       setToasts((correnti) => {
         const senzaPrecedente = correnti.filter(
           (toast) =>
-            toast.id !== `comunicazione-operativa:${payload.id}` &&
-            !(
-              payload.campagnaId &&
-              toast.campagnaId === payload.campagnaId &&
+            toast.id !== `comunicazione-operativa:${id}` &&
+            !(campagnaId && toast.campagnaId === campagnaId &&
               (toast.id.startsWith("comunicazione-operativa:") ||
-                toast.id.startsWith("comunicazione-campagna:"))
-            ),
+                toast.id.startsWith("comunicazione-campagna:"))),
         );
         if (!prossimo) return senzaPrecedente;
         return ordinaToast([prossimo, ...senzaPrecedente]).slice(0, MAX_TOAST);
       });
-
       if (prossimo) {
         void portaOverlayDavanti(true);
       } else {
         window.setTimeout(() => {
-          if (toastsRef.current.length > 0) void portaOverlayDavanti(true);
+          if (attivo && toastsRef.current.length > 0) void portaOverlayDavanti(true);
         }, 50);
+      }
+    };
+
+    const aggiornamentiCampagne = creaAggiornamentiCampagne(
+      () => api.comunicazioniLista(),
+      (campagnaId, tutte) => {
+        if (!attivo || campagneAnnullateSilenzioseRef.current.has(campagnaId)) return;
+        applicaToast("", campagnaId, toastDaStatoCampagna(
+          tutte.filter((item) => item.campagnaId === campagnaId),
+        ));
+      },
+    );
+
+    const aggiornaComunicazione = (payload: Comunicazione) => {
+      if (payload.canale === "whatsapp") {
+        whatsappInInvioRef.current = payload.stato === "in_invio";
+      }
+      if (payload.destinatarioEntita === "diagnostica_whatsapp" ||
+          payload.campagnaId?.startsWith("collaudo-whatsapp:")) return;
+      if (caricamentoIniziale) eventiRicevuti.add(payload.id);
+      if (payload.campagnaId) {
+        if (payload.stato === "in_coda") {
+          campagneAnnullateSilenzioseRef.current.delete(payload.campagnaId);
+        } else if (campagneAnnullateSilenzioseRef.current.has(payload.campagnaId)) {
+          setToasts((correnti) => correnti.filter((toast) => toast.campagnaId !== payload.campagnaId));
+          return;
+        }
+      }
+      if (!balloonAttivo) return;
+      if (payload.campagnaId) {
+        aggiornamentiCampagne.richiedi(payload.campagnaId);
+      } else {
+        applicaToast(payload.id, undefined, toastDaStatoComunicazione(payload));
       }
     };
 
@@ -506,47 +496,51 @@ export function OverlayWindow() {
     );
 
     if (balloonAttivo) {
-      void api
-        .comunicazioniLista()
-        .then(async (comunicazioni) => {
-          if (!attivo) return;
-          const waInInvio = comunicazioni.some(
-            (item) => item.canale === "whatsapp" && item.stato === "in_invio",
-          );
-          whatsappInInvioRef.current = waInInvio;
-          const campagneAttive = new Set(
-            comunicazioni
-              .filter(
-                (item) =>
-                  item.campagnaId &&
-                  ["in_coda", "in_invio", "sospeso"].includes(item.stato),
-              )
-              .map((item) => item.campagnaId),
-          );
-          const operative = compattaComunicazioniOperative(
-            comunicazioni.filter(
+      void aggiornamentiCampagne.caricaIniziale((comunicazioni, campagnePendenti) => {
+        if (!attivo) return;
+        const eventiIniziali = new Set(eventiRicevuti);
+        const waInInvio = comunicazioni.some(
+          (item) => item.canale === "whatsapp" && item.stato === "in_invio",
+        );
+        if (!eventiIniziali.size) whatsappInInvioRef.current = waInInvio;
+        const campagneAttive = new Set(
+          comunicazioni
+            .filter(
               (item) =>
-                item.destinatarioEntita !== "diagnostica_whatsapp" &&
-                !item.campagnaId?.startsWith("collaudo-whatsapp:") &&
-                ((!item.campagnaId &&
-                  ["in_coda", "in_invio", "sospeso"].includes(item.stato)) ||
-                  (item.campagnaId && campagneAttive.has(item.campagnaId))),
-            ),
+                item.campagnaId &&
+                ["in_coda", "in_invio", "sospeso"].includes(item.stato),
+            )
+            .map((item) => item.campagnaId),
+        );
+        const operative = compattaComunicazioniOperative(
+          filtraSnapshotIniziale(
+            comunicazioni, eventiIniziali, campagnePendenti, campagneAnnullateSilenzioseRef.current,
+          ).filter(
+            (item) =>
+              item.destinatarioEntita !== "diagnostica_whatsapp" &&
+              !item.campagnaId?.startsWith("collaudo-whatsapp:") &&
+              ((!item.campagnaId &&
+                ["in_coda", "in_invio", "sospeso"].includes(item.stato)) ||
+                (item.campagnaId && campagneAttive.has(item.campagnaId))),
+          ),
+        );
+        setToasts((correnti) => {
+          const nonOperative = correnti.filter(
+            (toast) =>
+              !(toast.id.startsWith("comunicazione-operativa:") || toast.id.startsWith("comunicazione-campagna:")) ||
+              eventiIniziali.has(toast.comunicazioneId ?? "") ||
+              campagnePendenti.has(toast.campagnaId ?? ""),
           );
-          setToasts((correnti) => {
-            const nonOperative = correnti.filter(
-              (toast) => !toast.id.startsWith("comunicazione-operativa:"),
-            );
-            return ordinaToast([...operative, ...nonOperative]).slice(0, MAX_TOAST);
-          });
-          if (operative.length > 0) {
-            void portaOverlayDavanti(true);
-          }
-        })
-        .catch(() => {});
+          return ordinaToast([...operative, ...nonOperative]).slice(0, MAX_TOAST);
+        });
+        if (operative.length > 0) {
+          void portaOverlayDavanti(true);
+        }
+      }).finally(() => { caricamentoIniziale = false; });
     }
     return () => {
       attivo = false;
+      aggiornamentiCampagne.chiudi();
       disiscriviTauri();
     };
   }, [balloonAttivo, portaOverlayDavanti]);

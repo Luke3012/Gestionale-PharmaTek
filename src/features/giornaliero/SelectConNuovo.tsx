@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Group, Select, Tooltip } from "@mantine/core";
 import { IconPencil, IconUserPlus } from "@tabler/icons-react";
+import { corrispondeRicercaTesto, filtroOpzioniRicerca } from "../../lib/ricercaTesto";
 
 /** Select anagrafica con modifica e creazione rapida del testo non trovato. */
 export function SelectConNuovo({
@@ -31,7 +32,7 @@ export function SelectConNuovo({
   const nonTrovato = useMemo(() => {
     if (!term || value) return false;
     const testo = term.toLowerCase();
-    return !data.some((opzione) => opzione.label.toLowerCase().includes(testo));
+    return !data.some((opzione) => corrispondeRicercaTesto(opzione.label, testo));
   }, [term, value, data]);
 
   const [shake, setShake] = useState(false);
@@ -63,6 +64,7 @@ export function SelectConNuovo({
         value={value || null}
         onChange={(next) => onChange(next ?? "")}
         searchable
+        filter={filtroOpzioniRicerca}
         clearable
         onSearchChange={setSearch}
         onKeyDown={(event) => {
@@ -70,7 +72,7 @@ export function SelectConNuovo({
             const testo = term.toLowerCase();
             const opzione =
               data.find((voce) => voce.label.toLowerCase().startsWith(testo)) ??
-              data.find((voce) => voce.label.toLowerCase().includes(testo));
+              data.find((voce) => corrispondeRicercaTesto(voce.label, testo));
             if (opzione) onChange(opzione.value);
           } else if (event.key === "Backspace" && value) {
             event.preventDefault();

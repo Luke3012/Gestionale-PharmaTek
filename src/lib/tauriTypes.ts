@@ -142,6 +142,9 @@ export interface Comunicazione {
   reinvioDi: string;
   allegati: AllegatoComunicazioneInput[];
   tentativi: number;
+  motivoAttesa?: string;
+  prossimoRetryMs?: number;
+  retryTecnici?: number;
   ultimoErrore: string;
   erroreCodice?: string;
   erroreFase?: string;
@@ -895,9 +898,32 @@ export interface Spedizione extends DatiDestinatarioSpedizione {
   nRighe: number;
   righe: SpedizioneRiga[];
   pagamenti: PagamentoSpedizione[];
+  /** Anagrafiche distinte degli ordini nel collo, con esiti indipendenti. */
+  destinatariComunicazione?: DestinatarioComunicazioneSpedizione[];
+}
+
+export interface DestinatarioComunicazioneSpedizione {
+  clienteId: string;
+  clienteNome: string;
+  email: string;
+  telefono: string;
+  ordini: OrdineComunicazioneSpedizione[];
+  fingerprint: string;
+  avvisato: boolean;
+  ultimoAvvisoMs?: number;
+  ultimoAvvisoCanale?: string;
+}
+
+export interface OrdineComunicazioneSpedizione {
+  ordineId: string;
+  ordineNumero: string;
+  medicoNome: string;
+  agenteNome: string;
+  pagamenti: PagamentoSpedizione[];
 }
 
 export interface PagamentoSpedizione {
+  id?: string;
   contoId: string;
   tipo: string;
   importo: number;

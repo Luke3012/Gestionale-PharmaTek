@@ -1,3 +1,4 @@
+import { preparaRicercaTesto } from "../../lib/ricercaTesto";
 // Giornaliero: lista ordini con filtri, badge stato, numero (provvisorio) e azioni.
 // Tabella universale (mantine-datatable): resize colonne, sort cliccando l'header,
 // header/filtri sempre visibili (solo il corpo scrolla).
@@ -398,6 +399,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
 
   const filtrati = useMemo(() => {
     const q = cerca.trim().toLowerCase();
+    const corrisponde = preparaRicercaTesto(q);
     return ordiniConBlob.filter((o) => {
       // L'intervallo locale restringe sempre l'anno globale, senza poterlo scavalcare.
       if (!dataNellAnnoEIntervallo(o.data, anno, filtroDal, filtroAl)) return false;
@@ -425,7 +427,7 @@ export function GiornalieroView({ identity }: { identity: Identity }) {
       if (filtroAgente && o.agenteNome !== filtroAgente) return false;
       if (filtroRegione && (o.clienteRegione || "Altre zone") !== filtroRegione) return false;
       if (!q) return true;
-      return o._searchBlob.includes(q);
+      return corrisponde(o._searchBlob);
     });
   }, [ordiniConBlob, cerca, filtroStati, filtroLinee, filtroSpedito, spedizioniSet, lottiPerOrdine, filtroCritici, filtroMarcatori, filtroMedici, filtroAgente, filtroRegione, filtroDal, filtroAl, anno]);
 

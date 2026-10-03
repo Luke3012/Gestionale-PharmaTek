@@ -1,11 +1,8 @@
 import type { Preventivo } from "../../lib/tauri";
+import { corrispondeRicercaTesto, normalizzaRicercaTesto } from "../../lib/ricercaTesto";
 
 export function normalizzaRicerca(valore: string): string {
-  return valore
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase("it")
-    .trim();
+  return normalizzaRicercaTesto(valore);
 }
 
 /** Verifica se un ordine soddisfa una query di ricerca (numero, data, cliente o medico). */
@@ -14,14 +11,15 @@ export function corrispondeRicercaOrdine(
   queryNormalizzata: string,
 ): boolean {
   if (!queryNormalizzata) return true;
-  return normalizzaRicerca(
+  return corrispondeRicercaTesto(
     [
       ordine.ordineNumero,
       ordine.ordineData,
       ordine.clienteNome,
       ordine.medicoNome,
     ].join(" "),
-  ).includes(queryNormalizzata);
+    queryNormalizzata,
+  );
 }
 
 /** La lista iniziale segue l'anno di lavoro; una ricerca esplicita usa l'intero dominio. */
