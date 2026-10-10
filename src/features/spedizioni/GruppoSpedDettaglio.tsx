@@ -77,16 +77,12 @@ import {
 import { usePremiumAccess } from "../../premium/PremiumAccess";
 import { apriAvvisiSpedizione } from "./comunicazioniSpedizione";
 import {
+  colliSpedizioneEffettuata,
   rigaHaDatiVaccino,
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
 
-// Cache del riepilogo per lotto (evita di rifare calcolo+animazione riaprendo lo stesso
-// gruppo). Va svuotata quando i dati cambiano (annullo/note/aggiunte) → `clearRiepilogoCache`.
-const cache = new Map<string, SpedizioneRiepilogo>();
-export function clearRiepilogoCache() {
-  cache.clear();
-}
+import { riepilogoMemorizzato, memorizzaRiepilogo } from "./cacheRiepilogo";
 
 const eur = (c: number) => `€ ${centsToEurStr(c)}`;
 const mezzoLabel = (m: string) =>
@@ -123,6 +119,7 @@ function indirizzoDestinatario(s: Spedizione): string {
 export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
   spedizioni,
   lotto,
+  firmaRiepilogo,
   unito = false,
   onAnnullaCollo,
   onSepara,
@@ -132,26 +129,28 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
 }: {
   spedizioni: Spedizione[];
   lotto: string;
+  firmaRiepilogo?: string | null;
   /** Gruppo frutto di un'unione di lotti: mostra «Separa». */
   unito?: boolean;
   onAnnullaCollo: (s: Spedizione) => void;
   onSepara?: (lotto: string) => void;
-  onModificato: (spedizione?: Spedizione) => void;
+  onModificato: (spedizione?: Spedizione) => void | Promise<void>;
   onAvvisaGruppo: (spedizioni: Spedizione[]) => void;
   matchIds?: Set<string>;
 }) {
-  // Chiave cache = lotto + firma dei colli/righe: se il gruppo cambia (annullo/aggiunta) la
-  // chiave cambia → si ricalcola il riepilogo invece di mostrare quello vecchio. FASE 7.
-  const chiave = `${lotto}|${spedizioni.map((s) => `${s.id}:${s.nRighe}`).join(",")}`;
+  // La firma del backend copre l'intero lotto, anche sotto un filtro di ricerca.
+  const chiave = firmaRiepilogo ?? spedizioni.map((s) => `${s.id}:${s.nRighe}`).join(",");
+  const spedizioniSenzaFirma = firmaRiepilogo == null ? spedizioni : null;
   const [riep, setRiep] = useState<SpedizioneRiepilogo | null>(
-    cache.get(chiave) ?? null,
+    riepilogoMemorizzato(lotto, chiave),
   );
-  const [loading, setLoading] = useState(!cache.has(chiave));
+  const [loading, setLoading] = useState(!riepilogoMemorizzato(lotto, chiave));
   const [agenteAperto, setAgenteAperto] = useState<string | null>(null);
   const [aggiungiAperto, setAggiungiAperto] = useState(false);
   const [destinatariAperto, setDestinatariAperto] = useState(false);
+  const [destinatariSalvando, setDestinatariSalvando] = useState(false);
+  const destinatariSalvandoRef = useRef(false);
   const [targetPrimario, setTargetPrimario] = useState<Record<string, string>>({});
-  const vivo = useRef(true);
   const mostraCorriereSuColli = useMemo(() => {
     const corrieri = new Set(spedizioni.map(chiaveCorriere).filter(Boolean));
     return corrieri.size > 1;
@@ -211,7 +210,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
             nome: arr[0].clienteNome || "(destinatario)",
             indirizzo: formattaIndirizzoSintetico(arr[0]),
             corriere: nomeCorriere(arr[0]),
-            colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
+            colli: arr.reduce((n, s) => n + colliSpedizioneEffettuata(s), 0),
             haDatiVaccino: arr.some(spedizioneHaDatiVaccino),
             contrassegno: arr.reduce((n, s) => n + s.contrassegno, 0),
             clientiDistinti: [{ id: arr[0].id, nome: arr[0].clienteNome || "(destinatario)" }],
@@ -241,7 +240,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
               nome: (arr.find((s) => s.destinatariUniti) || arr[0]).clienteNome || "(destinatario)",
               indirizzo: formattaIndirizzoSintetico(arr[0]),
               corriere: nomeCorriere(arr[0]),
-              colli: arr.reduce((n, s) => n + Math.max(1, s.colli || 0), 0),
+              colli: arr.reduce((n, s) => n + colliSpedizioneEffettuata(s), 0),
               haDatiVaccino: arr.some(spedizioneHaDatiVaccino),
               contrassegno: arr.reduce((n, s) => n + s.contrassegno, 0),
               clientiDistinti,
@@ -268,44 +267,66 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
         : "Unisci destinatari";
 
   useEffect(() => {
-    vivo.current = true;
-    if (cache.has(chiave)) return;
+    let attivo = true;
+    const memorizzato = riepilogoMemorizzato(lotto, chiave);
+    if (memorizzato) {
+      setRiep(memorizzato);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const primoCaricamento = !riep;
     const inizio = Date.now();
     api
       .spedizioneRiepilogo(lotto)
       .then(async (r) => {
-        const attesa = Math.max(0, 800 - (Date.now() - inizio));
-        await new Promise((res) => setTimeout(res, attesa));
-        if (!vivo.current) return;
-        cache.set(chiave, r);
+        // Mantieni l'animazione iniziale; gli aggiornamenti non devono attendere.
+        if (primoCaricamento) {
+          const attesa = Math.max(0, 800 - (Date.now() - inizio));
+          await new Promise((res) => setTimeout(res, attesa));
+        }
+        if (!attivo) return;
+        memorizzaRiepilogo(lotto, chiave, r);
         setRiep(r);
         setLoading(false);
       })
-      .catch(() => vivo.current && setLoading(false));
+      .catch(() => attivo && setLoading(false));
     return () => {
-      vivo.current = false;
+      attivo = false;
     };
-  }, [chiave, lotto]);
+  }, [chiave, lotto, spedizioniSenzaFirma]);
 
   async function unisciDestinatari(ids: string[]) {
+    if (destinatariSalvandoRef.current || loading) return;
+    destinatariSalvandoRef.current = true;
+    setDestinatariSalvando(true);
     try {
       await api.spedizioneDestinatariUnisci(ids);
       toast.success("Destinatari uniti.");
-      setDestinatariAperto(false);
-      onModificato();
+      await onModificato();
+      setTargetPrimario({});
     } catch (err) {
       toast.error(`Unione destinatari non riuscita: ${err}`);
+    } finally {
+      destinatariSalvandoRef.current = false;
+      setDestinatariSalvando(false);
     }
   }
 
   async function separaDestinatario(id: string) {
+    if (destinatariSalvandoRef.current || loading) return;
+    destinatariSalvandoRef.current = true;
+    setDestinatariSalvando(true);
     try {
       await api.spedizioneDestinatariSepara(id);
       toast.success("Destinatari separati.");
-      setDestinatariAperto(false);
-      onModificato();
+      await onModificato();
+      setTargetPrimario({});
     } catch (err) {
       toast.error(`Separazione destinatari non riuscita: ${err}`);
+    } finally {
+      destinatariSalvandoRef.current = false;
+      setDestinatariSalvando(false);
     }
   }
 
@@ -644,7 +665,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                                   }))
                                 }
                                 allowDeselect={false}
-                                disabled={g.spedizioni.some((s) => s.destinatariUniti)}
+                                disabled={destinatariSalvando || loading || g.spedizioni.some((s) => s.destinatariUniti)}
                                 comboboxProps={{ withinPortal: true, zIndex: 1450 }}
                               />
                             </Group>
@@ -659,6 +680,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                           size="compact-sm"
                           color="accent"
                           leftSection={<IconArrowMerge size={14} />}
+                          disabled={destinatariSalvando || loading}
                           onClick={() => {
                             const primario = g.spedizioni.find((s) => s.destinatariUniti)?.id || targetPrimario[g.key] || g.spedizioni[0].id;
                             const ids = [
@@ -715,6 +737,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                       variant="light"
                       color="gray"
                       leftSection={<IconArrowsSplit2 size={14} />}
+                      disabled={destinatariSalvando || loading}
                       onClick={() => separaDestinatario(s.id)}
                     >
                       Separa
@@ -796,6 +819,7 @@ const ColloRiga = memo(function ColloRiga({
   const [aperto, setAperto] = useState(false);
   const premium = usePremiumAccess();
   const haDatiVaccino = spedizioneHaDatiVaccino(s);
+  const nColli = colliSpedizioneEffettuata(s);
   const comunica = async () => {
     try {
       await apriAvvisiSpedizione([s], true);
@@ -822,7 +846,7 @@ const ColloRiga = memo(function ColloRiga({
             </Text>
             {haDatiVaccino && (
               <Text size="xs" c="dimmed" style={{ whiteSpace: "nowrap" }}>
-                {s.colli} {s.colli === 1 ? "collo" : "colli"}
+                {nColli} {nColli === 1 ? "collo" : "colli"}
               </Text>
             )}
             {mostraCorriere && (

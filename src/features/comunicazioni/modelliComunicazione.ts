@@ -1,5 +1,25 @@
 const SEGNAPOSTO = /\{\{\s*([a-z0-9_]+)\s*\}\}/g;
 
+export interface SelezioneTestoModello {
+  inizio: number;
+  fine: number;
+}
+
+/** Senza una selezione precedente, il dato viene inserito alla fine. */
+export function inserisciDatoModello(
+  testo: string,
+  chiave: string,
+  selezione: SelezioneTestoModello | null,
+): { testo: string; cursore: number } {
+  const inizio = Math.max(0, Math.min(selezione?.inizio ?? testo.length, testo.length));
+  const fine = Math.max(inizio, Math.min(selezione?.fine ?? inizio, testo.length));
+  const dato = `{{${chiave}}}`;
+  return {
+    testo: testo.slice(0, inizio) + dato + testo.slice(fine),
+    cursore: inizio + dato.length,
+  };
+}
+
 /** Rende nuovamente il modello solo se l'operatore non ha modificato il testo. */
 export function aggiornaTestoModelloNonModificato(
   corrente: string,

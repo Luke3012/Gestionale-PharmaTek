@@ -349,6 +349,58 @@ describe("renderer documenti FASE 12", () => {
     );
   });
 
+  it("allinea spedizione e note alle righe cartacee conservando gli avvisi", () => {
+    const doc = creaDocumentoSchedaCliente("QA", {
+      ...scheda, infoSpedizione: "Via prima\nChiamare prima\nTerza riga",
+      note: "Nota prima\nNota seconda\nNota terza\nNota quarta",
+    });
+    const spedizione = doc.nodes.filter(n => n.kind === "text" && n.x === 198 && n.y >= 300 && n.y < 360);
+    const note = doc.nodes.filter(n => n.kind === "text" && n.x === 52);
+    expect(spedizione.map(n => n.kind === "text" && n.y)).toEqual([300, 330]);
+    expect(note.map(n => n.kind === "text" && n.y)).toEqual([817, 847, 877]);
+    expect(doc.overflow).toHaveLength(2);
+    expect(documentoSvg(doc)).not.toContain("Nota quarta");
+    expect(documentoSvg(doc)).toContain("…");
+  });
+
+  it.each([1, 2, 3, 14])("ancora le condizioni all'ultima pagina con %i prodotti e note prima del blocco", (count) => {
+    const doc = creaDocumentoPreventivo({
+      ...preventivo, righe: Array.from({length: count}, (_, i) => ({...preventivo.righe[0], id: `r${i}`})),
+      note: "Note finali da conservare. ".repeat(12),
+      condizioniPagamento: "Accordo concordato. ".repeat(10),
+    });
+    const pages = pagineDocumento(doc);
+    const all = pages.flat();
+    expect(all.filter(n => n.kind === "text" && n.text === "CONDIZIONI DI PAGAMENTO")).toHaveLength(1);
+    const last = pages[pages.length - 1];
+    const heading = last.find(n => n.kind === "text" && n.text === "CONDIZIONI DI PAGAMENTO");
+    if (!heading || heading.kind !== "text") throw new Error("condizioni assenti");
+    const box = last.find(n => n.kind === "rect" && n.x === 48 && n.y === heading.y - 23);
+    if (!box || box.kind !== "rect") throw new Error("blocco assente");
+    expect(box.y + box.height).toBe(1058);
+    const notePage = pages.findIndex(p => p.some(n => n.kind === "text" && n.text === "NOTE"));
+    expect(notePage).toBeLessThanOrEqual(pages.length - 1);
+    if (notePage === pages.length - 1) {
+      const noteBox = last.find(n => n.kind === "rect" && n.width === 698 && n.y < box.y && n.radius === 8);
+      expect(noteBox).toBeDefined();
+      for (const node of last.filter(n => n.kind === "text" && n.text.startsWith("Note finali"))) {
+        if (node.kind === "text") expect(node.y).toBeLessThan(box.y);
+      }
+    }
+    expect(doc.overflow).toEqual([]);
+  });
+
+  it("omette prezzi identici ai totali, compresi gli importi zero, anche in documenti misti", () => {
+    const rows = [1, 2, 3].map((qta, i) => ({...preventivo.righe[0], id: `r${i}`, qta, prezzo: i === 2 ? 0 : 40000}));
+    const mixed = pagineDocumento(creaDocumentoPreventivo({...preventivo, righe: rows})).flat();
+    expect(mixed.filter(n => n.kind === "text" && n.x === 584 && n.text !== "PREZZO")).toHaveLength(1);
+    expect(mixed.filter(n => n.kind === "text" && n.x === 688 && n.text !== "TOTALE")).toHaveLength(3);
+    const equal = pagineDocumento(creaDocumentoPreventivo({...preventivo, righe: rows.map(r => ({...r, qta: 1}))})).flat();
+    expect(equal.some(n => n.kind === "text" && n.text === "PREZZO")).toBe(false);
+    expect(equal.some(n => n.kind === "line" && n.x1 === 528)).toBe(false);
+    expect(equal.filter(n => n.kind === "line" && n.x1 === 640)).toHaveLength(3);
+  });
+
   it("usa una pagina A4 stabile nell'SVG", () => {
     const svg = documentoSvg(creaDocumentoPreventivo(preventivo));
     expect(svg).toContain(`viewBox="0 0 ${A4_WIDTH} ${A4_HEIGHT}"`);

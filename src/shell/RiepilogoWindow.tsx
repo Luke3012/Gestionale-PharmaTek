@@ -64,6 +64,7 @@ import { RiepilogoEditorCliente } from "./RiepilogoEditorCliente";
 import { formattaEuro as euro } from "../lib/money";
 import { BadgeStato } from "../ui/BadgeStato";
 import { osservaRidimensionamento } from "../ui/osservaRidimensionamento";
+import { ordiniPerRiepilogo } from "./riepilogoOrdini";
 
 type AzioneClienteDettaglio = "whatsapp" | "email";
 type ClienteDettaglio = {
@@ -227,13 +228,10 @@ export function RiepilogoContenuto({
     );
   }, [id, tipo, onSoggettoEliminato]);
 
-  // In attesa = ordini ancora "vivi" (non chiusi, non rifiutati): il lavoro aperto.
-  const inAttesa = useMemo(
-    () =>
-      (ordini ?? [])
-        .filter((o) => o.stato !== "Chiuso" && o.stato !== "Rifiutato")
-        .sort((a, b) => b.data.localeCompare(a.data)),
-    [ordini]
+  const annoCorrente = new Date().getFullYear();
+  const { inAttesa, chiusi } = useMemo(
+    () => ordiniPerRiepilogo(ordini ?? [], tipo === "cliente" ? annoCorrente : undefined),
+    [ordini, tipo, annoCorrente],
   );
 
   const stats = useMemo(() => {
@@ -462,16 +460,16 @@ export function RiepilogoContenuto({
         </Box>
       </Box>
 
-      {tipo === "cliente" && dettagliCliente.length > 0 && (
-        <Box px="lg" pb="md">
-          <ClienteInfoStrip
-            dettagli={dettagliCliente}
-            onAzione={(dettaglio) => void apriRecapito(dettaglio)}
-          />
-        </Box>
-      )}
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} px="lg">
+        {tipo === "cliente" && dettagliCliente.length > 0 && (
+          <Box pb="md">
+            <ClienteInfoStrip
+              dettagli={dettagliCliente}
+              onAzione={(dettaglio) => void apriRecapito(dettaglio)}
+            />
+          </Box>
+        )}
 
-      <ScrollArea style={{ flex: 1 }} px="lg">
         {/* Promemoria collegati a questa entità (FASE 6C): in cima, come prima cosa. */}
         <Box py="md">
           <BachecaPromemoria
@@ -502,72 +500,79 @@ export function RiepilogoContenuto({
 
         <Divider mb="sm" />
 
-        {/* Lista ordini in attesa */}
-        <Text size="xs" c="dimmed" fw={600} tt="uppercase" mb={6}>
-          Ordini in attesa
-        </Text>
-        {inAttesa.length === 0 ? (
-          <Text c="dimmed" size="sm" py="xl" ta="center">
-            Nessun ordine in attesa.
-          </Text>
-        ) : (
-          <Stack gap={6} pb="md">
-            {inAttesa.map((o) => {
-              const s = statoDef(o.stato);
-              return (
-                <Paper
-                  key={o.id}
-                  withBorder
-                  radius="md"
-                  p="sm"
-                  onClick={() => apriOrdine({ ordineId: o.id, numero: o.numero })}
-                  style={{ cursor: "pointer" }}
-                  className="pt-pagamento-row"
-                >
-                  <Group justify="space-between" wrap="nowrap" gap="sm">
-                    <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
-                      <BadgeStato definizione={s} />
-                      <Box style={{ minWidth: 0 }}>
-                        <Text fw={600} size="sm" className="tabular">
-                          {o.numero}
-                        </Text>
-                        <Group gap={6} wrap="wrap" style={{ rowGap: 2 }} onClick={(e) => e.stopPropagation()}>
-                          <Text size="xs" c="dimmed">
-                            {formattaDataItaliana(o.data)}
+        {/* Il cliente vede anche lo storico chiuso dell'anno corrente. */}
+        {[
+          { titolo: "Ordini in attesa", vuoto: "Nessun ordine in attesa.", ordini: inAttesa },
+          ...(tipo === "cliente" ? [{ titolo: `Ordini chiusi · ${annoCorrente}`, vuoto: "Nessun ordine chiuso nell'anno in corso.", ordini: chiusi }] : []),
+        ].map((sezione) => (
+          <Box key={sezione.titolo}>
+            <Text size="xs" c="dimmed" fw={600} tt="uppercase" mb={6}>
+              {sezione.titolo}
+            </Text>
+            {sezione.ordini.length === 0 ? (
+              <Text c="dimmed" size="sm" py="xl" ta="center">
+                {sezione.vuoto}
+              </Text>
+            ) : (
+              <Stack gap={6} pb="md">
+                {sezione.ordini.map((o) => {
+                  const s = statoDef(o.stato);
+                  return (
+                    <Paper
+                      key={o.id}
+                      withBorder
+                      radius="md"
+                      p="sm"
+                      onClick={() => apriOrdine({ ordineId: o.id, numero: o.numero })}
+                      style={{ cursor: "pointer" }}
+                      className="pt-pagamento-row"
+                    >
+                      <Group justify="space-between" wrap="nowrap" gap="sm">
+                        <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                          <BadgeStato definizione={s} />
+                          <Box style={{ minWidth: 0 }}>
+                            <Text fw={600} size="sm" className="tabular">
+                              {o.numero}
+                            </Text>
+                            <Group gap={6} wrap="wrap" style={{ rowGap: 2 }} onClick={(e) => e.stopPropagation()}>
+                              <Text size="xs" c="dimmed">
+                                {formattaDataItaliana(o.data)}
+                              </Text>
+                              {tipo !== "cliente" && o.clienteId && (
+                                <EntitaLink ruolo="Cliente" tipo="cliente" id={o.clienteId} nome={o.clienteNome} onApri={apriEntita} />
+                              )}
+                              {tipo !== "medico" && o.medicoId && (
+                                <EntitaLink ruolo="Medico" tipo="medico" id={o.medicoId} nome={o.medicoNome} onApri={apriEntita} />
+                              )}
+                              {tipo !== "agente" && o.agenteId && (
+                                <EntitaLink ruolo="Agente" tipo="agente" id={o.agenteId} nome={o.agenteNome} onApri={apriEntita} />
+                              )}
+                              {isSpedito(o.stato) && (
+                                <Text size="xs" c="dimmed">
+                                  · spedito
+                                </Text>
+                              )}
+                            </Group>
+                          </Box>
+                        </Group>
+                        <Box ta="right" style={{ whiteSpace: "nowrap" }}>
+                          <Text fw={600} size="sm" className="tabular">
+                            {euro(o.totale)}
                           </Text>
-                          {tipo !== "cliente" && o.clienteId && (
-                            <EntitaLink ruolo="Cliente" tipo="cliente" id={o.clienteId} nome={o.clienteNome} onApri={apriEntita} />
-                          )}
-                          {tipo !== "medico" && o.medicoId && (
-                            <EntitaLink ruolo="Medico" tipo="medico" id={o.medicoId} nome={o.medicoNome} onApri={apriEntita} />
-                          )}
-                          {tipo !== "agente" && o.agenteId && (
-                            <EntitaLink ruolo="Agente" tipo="agente" id={o.agenteId} nome={o.agenteNome} onApri={apriEntita} />
-                          )}
-                          {isSpedito(o.stato) && (
-                            <Text size="xs" c="dimmed">
-                              · spedito
+                          {o.residuo > 0 && (
+                            <Text size="xs" c="red.7" className="tabular">
+                              da saldare {euro(o.residuo)}
                             </Text>
                           )}
-                        </Group>
-                      </Box>
-                    </Group>
-                    <Box ta="right" style={{ whiteSpace: "nowrap" }}>
-                      <Text fw={600} size="sm" className="tabular">
-                        {euro(o.totale)}
-                      </Text>
-                      {o.residuo > 0 && (
-                        <Text size="xs" c="red.7" className="tabular">
-                          da saldare {euro(o.residuo)}
-                        </Text>
-                      )}
-                    </Box>
-                  </Group>
-                </Paper>
-              );
-            })}
-          </Stack>
-        )}
+                        </Box>
+                      </Group>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+            )}
+          </Box>
+        ))}
 
       </ScrollArea>
     </Box>

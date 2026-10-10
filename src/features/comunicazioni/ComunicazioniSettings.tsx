@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -46,6 +46,7 @@ import {
 } from "../../lib/tauri";
 import { dialog } from "../../ui/dialog/store";
 import { toast } from "../../ui/toast/store";
+import { inserisciDatoModello, type SelezioneTestoModello } from "./modelliComunicazione";
 
 const PRESET: ConfigurazioneEmailSalvaInput = {
   nomeMittente: "PharmaTek",
@@ -223,6 +224,24 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   const [modelloSelezionato, setModelloSelezionato] = useState("");
   const [modelloForm, setModelloForm] =
     useState<ModelloComunicazioneSalvaInput | null>(null);
+  const messaggioRef = useRef<HTMLTextAreaElement>(null);
+  const selezioneMessaggioRef = useRef<SelezioneTestoModello | null>(null);
+  const cursoreDaRipristinareRef = useRef<number | null>(null);
+  const memorizzaSelezioneMessaggio = (campo: HTMLTextAreaElement) => {
+    selezioneMessaggioRef.current = {
+      inizio: campo.selectionStart,
+      fine: campo.selectionEnd,
+    };
+  };
+  useLayoutEffect(() => {
+    const cursore = cursoreDaRipristinareRef.current;
+    const campo = messaggioRef.current;
+    if (cursore === null || !campo) return;
+    cursoreDaRipristinareRef.current = null;
+    campo.focus();
+    campo.setSelectionRange(cursore, cursore);
+    memorizzaSelezioneMessaggio(campo);
+  }, [modelloForm?.corpo]);
   const [modelloSalvando, setModelloSalvando] = useState(false);
   const [modelloErrore, setModelloErrore] = useState("");
   const [whatsappAperto, setWhatsappAperto] = useState(false);
@@ -291,6 +310,8 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   };
 
   const selezionaModello = (modello: ModelloComunicazione) => {
+    selezioneMessaggioRef.current = null;
+    cursoreDaRipristinareRef.current = null;
     setModelloSelezionato(modello.id);
     setModelloForm({
       id: modello.id,
@@ -304,6 +325,8 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
   };
 
   const nuovoModello = () => {
+    selezioneMessaggioRef.current = null;
+    cursoreDaRipristinareRef.current = null;
     const tipo =
       modelloCorrente?.tipo ??
       ("sollecito_pagamento" satisfies TipoModelloComunicazione);
@@ -1271,12 +1294,16 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
 
                   <Textarea
                     label="Messaggio e-mail e WhatsApp"
+                    ref={messaggioRef}
+                    onSelect={(event) => memorizzaSelezioneMessaggio(event.currentTarget)}
+                    onBlur={(event) => memorizzaSelezioneMessaggio(event.currentTarget)}
                     value={modelloForm.corpo}
                     autosize
                     minRows={9}
                     maxRows={18}
                     onChange={(event) => {
                       const corpo = event.currentTarget.value;
+                      memorizzaSelezioneMessaggio(event.currentTarget);
                       setModelloForm((corrente) =>
                         corrente ? { ...corrente, corpo } : corrente,
                       );
@@ -1297,22 +1324,20 @@ export function ComunicazioniSettings({ onReady }: { onReady?: () => void }) {
                           size="compact-xs"
                           variant="light"
                           color="gray"
-                          onClick={() =>
-                            setModelloForm((corrente) =>
-                              corrente
-                                ? {
-                                    ...corrente,
-                                    corpo: `${corrente.corpo}${
-                                      corrente.corpo &&
-                                      !corrente.corpo.endsWith(" ") &&
-                                      !corrente.corpo.endsWith("\n")
-                                        ? " "
-                                        : ""
-                                    }{{${variabile.chiave}}}`,
-                                  }
-                                : corrente,
-                            )
-                          }
+                          onClick={() => {
+                            if (!modelloForm) return;
+                            const inserimento = inserisciDatoModello(
+                              modelloForm.corpo,
+                              variabile.chiave,
+                              selezioneMessaggioRef.current,
+                            );
+                            selezioneMessaggioRef.current = {
+                              inizio: inserimento.cursore,
+                              fine: inserimento.cursore,
+                            };
+                            cursoreDaRipristinareRef.current = inserimento.cursore;
+                            setModelloForm({ ...modelloForm, corpo: inserimento.testo });
+                          }}
                         >
                           {variabile.etichetta}
                         </Button>

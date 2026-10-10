@@ -87,8 +87,9 @@ import {
 } from "./BollettazioneReviewModal";
 import {
   GruppoSpedDettaglio,
-  clearRiepilogoCache,
 } from "./GruppoSpedDettaglio";
+import { clearRiepilogoCache, conservaRiepiloghiLotti } from "./cacheRiepilogo";
+import { applicaDatiSpedizioneSalvati } from "./datiSpedizione";
 import { EsportaTabella } from "../../ui/esporta/EsportaTabella";
 import {
   colonneProfilo,
@@ -102,10 +103,16 @@ import { BadgeStatoAdattivo } from "../../ui/BadgeStato";
 import { useRicaricaSuEventi } from "../../lib/useRicaricaSuEventi";
 import { PremiumAction } from "../../premium/PremiumAction";
 import {
+  colliSpedizioneEffettuata,
   ordineHaDatiVaccino,
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
 import { apriAvvisiSpedizione, numeroComunicazioniSpedizione } from "./comunicazioniSpedizione";
+import {
+  applicaBozzeNumeriVaccino,
+  conservaBozzeNumeriVaccino,
+  type BozzeNumeriVaccino,
+} from "./bozzeNumeriVaccino";
 export { numeroComunicazioniSpedizione } from "./comunicazioniSpedizione";
 
 type Vista = "da_spedire" | "effettuate";
@@ -451,8 +458,15 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       ? saved
       : "da_spedire";
   });
-  const [daSpedire, setDaSpedire] = useState<OrdineDaSpedire[]>([]);
+  const [daSpedireBackend, setDaSpedire] = useState<OrdineDaSpedire[]>([]);
+  const daSpedireBackendRef = useRef<OrdineDaSpedire[]>([]);
+  const [numeriBozza, setNumeriBozza] = useState<BozzeNumeriVaccino>(() => new Map());
+  const daSpedire = useMemo(
+    () => applicaBozzeNumeriVaccino(daSpedireBackend, numeriBozza),
+    [daSpedireBackend, numeriBozza],
+  );
   const [effettuate, setEffettuate] = useState<Spedizione[]>([]);
+  const richiestaCaricamentoRef = useRef(0);
   const [caricamento, setCaricamento] = useState(true);
   const [cerca, setCerca] = useState("");
   const [cercaFiltro, setCercaFiltro] = useState("");
@@ -497,9 +511,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
   const [bozzeBollettazione, setBozzeBollettazione] = useState<
     Record<string, BozzaRiga> | undefined
   >();
-  // Espansione inline «Da spedire» (FASE 7): il numero/lotto vive sulle righe di `daSpedire`
-  // (così un salvataggio dall'editor lo ri-allinea col backend), mentre qui teniamo solo i
-  // prodotti **esclusi** dalla spedizione (default = tutti inclusi). Tutto si trasporta nel modale.
+  // I prodotti esclusi restano locali anche quando cambia un numero salvato altrove.
   const [esclusi, setEsclusi] = useState<Set<string>>(new Set());
   const [editor, setEditor] = useState<{
     ordineId: string | null;
@@ -567,33 +579,50 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     return () => window.clearTimeout(t);
   }, [effettuate, caricamento]);
 
+  const aggiornaDaSpedire = useCallback((ordini: OrdineDaSpedire[]) => {
+    const precedenti = daSpedireBackendRef.current;
+    daSpedireBackendRef.current = ordini;
+    setDaSpedire(ordini);
+    setNumeriBozza((bozze) => conservaBozzeNumeriVaccino(bozze, ordini, precedenti));
+    setSelezione((sel) => sel.flatMap((selezionato) => {
+      const aggiornato = ordini.find((o) => o.ordineId === selezionato.ordineId);
+      return aggiornato ? [aggiornato] : [];
+    }));
+  }, []);
+
   const carica = useCallback(async (silente = false) => {
+    const richiesta = ++richiestaCaricamentoRef.current;
     if (!silente) setCaricamento(true);
-    clearRiepilogoCache(); // i dati cambiano: il riepilogo lazy va ricalcolato
     try {
       const [d, e] = await Promise.all([
         api.righeDaSpedire(),
         api.spedizioniLista(),
       ]);
-      setDaSpedire(d);
+      if (richiesta !== richiestaCaricamentoRef.current) return;
+      aggiornaDaSpedire(d);
+      // Compatibilità con backend precedenti: senza firma resta l'invalidazione
+      // prudente. Con la firma si ricalcolano solo i lotti contabili cambiati.
+      if (e.some((s) => s.riepilogoFingerprint == null)) clearRiepilogoCache();
+      const lottiAttivi = new Set(e.map((s) => s.lotto));
+      conservaRiepiloghiLotti(lottiAttivi);
       setEffettuate(e);
-      setSelezione((sel) =>
-        sel.filter((s) => d.some((o) => o.ordineId === s.ordineId)),
-      );
       setSelezioneEff((sel) =>
-        sel.filter((g) => e.some((s) => s.lotto === g.lotto)),
+        sel.filter((g) => lottiAttivi.has(g.lotto)),
       );
     } catch (err) {
-      toast.error(`Caricamento spedizioni non riuscito: ${err}`);
+      if (richiesta === richiestaCaricamentoRef.current) {
+        toast.error(`Caricamento spedizioni non riuscito: ${err}`);
+      }
     } finally {
-      setCaricamento(false);
+      if (richiesta === richiestaCaricamentoRef.current) setCaricamento(false);
     }
-  }, []);
+  }, [aggiornaDaSpedire]);
 
   useEffect(() => {
     carica(false);
+    return () => { richiestaCaricamentoRef.current++; };
   }, [carica]);
-  useRicaricaSuEventi(EVENTI_RICARICA, () => carica(true), 160);
+  useRicaricaSuEventi(EVENTI_RICARICA, () => carica(true));
 
   const toggleIncluso = useCallback(
     (rigaId: string, incluso: boolean) =>
@@ -606,22 +635,15 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     [],
   );
 
-  // Edit inline del numero/lotto: aggiorna direttamente la riga in `daSpedire` (fonte unica,
-  // ri-allineata dal backend a ogni `carica`).
+  // Le modifiche restano locali fino alla creazione della spedizione: i refresh
+  // invariati le conservano, mentre un nuovo numero salvato altrove prevale.
   const setRigaNumero = useCallback(
     (rigaId: string, numero: string) =>
-      setDaSpedire((ds) =>
-        ds.map((o) => ({
-          ...o,
-          righe: o.righe.map((r) =>
-            r.rigaId === rigaId ? { ...r, numero } : r,
-          ),
-        })),
-      ),
+      setNumeriBozza((bozze) => new Map(bozze).set(rigaId, numero)),
     [],
   );
 
-  // Bozze passate al modale «Crea spedizione»: numero dalle righe + incluso dal set esclusi.
+  // Il modale usa gli stessi numeri visualizzati nella lista, comprese le bozze.
   const bozzeModal = useMemo(() => {
     const m: Record<string, BozzaRiga> = {};
     for (const o of daSpedire)
@@ -839,13 +861,13 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
 
   const aggiornaSpedizioneEffettuata = useCallback(
     (spedizione?: Spedizione) => {
-      clearRiepilogoCache();
       if (!spedizione) {
-        carica(true);
-        return;
+        return carica(true);
       }
       setEffettuate((cur) =>
-        cur.map((s) => (s.id === spedizione.id ? spedizione : s)),
+        cur.map((s) => s.id === spedizione.id
+          ? applicaDatiSpedizioneSalvati(s, spedizione)
+          : s),
       );
     },
     [carica],
@@ -1114,6 +1136,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       content: ({ record }: { record: GruppoSped }) => (
         <GruppoSpedDettaglio
           lotto={record.lotto}
+          firmaRiepilogo={record.spedizioni[0]?.riepilogoFingerprint}
           spedizioni={record.spedizioni}
           unito={record.unito}
           onAnnullaCollo={annulla}
@@ -1357,7 +1380,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
             ...new Set(g.spedizioni.map((s) => s.corriereNome).filter(Boolean)),
           ];
           const nColli = g.spedizioni.reduce(
-            (tot, s) => tot + Math.max(1, s.colli || 0),
+            (tot, s) => tot + colliSpedizioneEffettuata(s),
             0,
           );
           const mostraColli = g.spedizioni.some(spedizioneHaDatiVaccino);
@@ -1845,7 +1868,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
           if (creaTarget) {
             try {
               const fresh = await api.righeDaSpedire();
-              setDaSpedire(fresh);
+              aggiornaDaSpedire(fresh);
               setCreaTarget((cur) =>
                 cur
                   ? cur.map(

@@ -22,6 +22,15 @@ function record(id: string, data: Record<string, unknown>): RecordDto {
 }
 
 describe("preventivoDaBozza", () => {
+  it("mantiene una bozza vuota locale per l'inserimento manuale nell'editor", () => {
+    const doc = preventivoDaBozza({data: "2026-10-09", linea: "Immunoterapia", clienteId: "", medicoId: "m1", agenteId: "", note: "", righe: []}, configurazione, [], [record("m1", {nome: "Medico"})], []);
+    expect(doc.righe).toEqual([]);
+    expect(doc.totale).toBe(0);
+    expect(doc.ordineId).toBe("");
+    expect(doc.esiste).toBe(false);
+    expect(doc.medicoId).toBe("m1");
+  });
+
   it("crea lo snapshot locale convertendo prezzi e riferimenti", () => {
     const bozza: BozzaPreventivoDaZero = {
       data: "2026-08-18",

@@ -24,6 +24,30 @@ export function campiProduzione(data: Record<string, unknown>): CampiProduzione 
   };
 }
 
+export function stessiCampiProduzione(a: CampiProduzione, b: CampiProduzione): boolean {
+  return a.formulazione === b.formulazione && a.posologia === b.posologia &&
+    stessiAllergeni(a.allergeni, b.allergeni);
+}
+
+function stessiAllergeni(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((valore, i) => valore === b[i]);
+}
+
+/** Solo i campi cambiati nel salvataggio sostituiscono la bozza inline.
+ * Un refresh con dati invariati conserva anche gli svuotamenti locali. */
+export function aggiornaBozzaProduzione(
+  bozza: CampiProduzione,
+  precedenti: CampiProduzione,
+  ricevuti: CampiProduzione,
+): CampiProduzione {
+  if (stessiCampiProduzione(precedenti, ricevuti)) return bozza;
+  return {
+    formulazione: precedenti.formulazione === ricevuti.formulazione ? bozza.formulazione : ricevuti.formulazione,
+    posologia: precedenti.posologia === ricevuti.posologia ? bozza.posologia : ricevuti.posologia,
+    allergeni: stessiAllergeni(precedenti.allergeni, ricevuti.allergeni) ? bozza.allergeni : ricevuti.allergeni,
+  };
+}
+
 /** Una riga è "completa" per la produzione quando ha formulazione, posologia e almeno un
  * allergene/ceppo: sono i dati minimi che Laboratorio richiede per produrre il set di fiale. */
 export function rigaProduzioneCompleta(v: CampiProduzione): boolean {

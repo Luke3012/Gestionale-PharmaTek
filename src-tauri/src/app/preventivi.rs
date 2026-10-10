@@ -1944,6 +1944,11 @@ fn scheda_cliente_dto(
     let fatt_cap = str_field(&ordine.data, "fatt_cap");
     let fatt_prov = str_field(&ordine.data, "fatt_prov");
     let fatt_codice_fiscale = str_field(&ordine.data, "fatt_piva");
+    let fatt_codice_fiscale = if fatt_codice_fiscale.trim().is_empty() {
+        str_field(&cliente, "cf").trim().to_string()
+    } else {
+        fatt_codice_fiscale
+    };
     let intestatario_indirizzo = {
         let localita = [fatt_cap, fatt_citta]
             .into_iter()
@@ -2037,8 +2042,8 @@ fn scheda_cliente_dto(
     // quindi sempre derivati dal libro mastro, anche su una scheda già salvata.
     campi.importo_acconto = prefill.importo_acconto;
     campi.data_contabile_valuta = prefill.data_contabile_valuta;
-    // Paziente e intestatario arrivano dall'ordine: non devono restare congelati nella
-    // copia della scheda né ricadere sui dati anagrafici generici del cliente.
+    // Nome e indirizzo dell'intestatario arrivano dall'ordine; soltanto il codice
+    // fiscale usa l'anagrafica cliente quando manca quello di fatturazione.
     if campi.pazienti.trim().is_empty() && !prefill.pazienti.is_empty() {
         campi.pazienti = prefill.pazienti.clone();
     }
@@ -2826,6 +2831,54 @@ mod tests {
             aggiornata.campi.intestatario_indirizzo,
             "Via Fatture 5, 20100 Milano (MI)"
         );
+    }
+
+    #[test]
+    fn scheda_cliente_cf_usa_anagrafica_solo_se_manca_in_fattura() {
+        let (_app, _data, state) = stato_test(true);
+        let cliente = state
+            .record_create("cliente", campi(&[("nome", json!("Cliente anagrafica"))]))
+            .unwrap();
+        let ordine = crea_ordine(&state);
+        state
+            .record_update(
+                "ordine",
+                &ordine.id,
+                campi(&[("cliente_id", json!(cliente.id.clone()))]),
+            )
+            .unwrap();
+        let iniziale = state.scheda_cliente_get(&ordine.id).unwrap();
+        state
+            .scheda_cliente_salva(SchedaClienteSalvaInput {
+                ordine_id: ordine.id.clone(),
+                ordine_revision: iniziale.ordine_revision,
+                scheda_revision: String::new(),
+                campi: iniziale.campi,
+            })
+            .unwrap();
+
+        for (cf_fattura, cf_cliente, atteso) in [
+            ("RSSMRA80A01F205X", "BNCLCU85B02H501Y", "RSSMRA80A01F205X"),
+            ("", "BNCLCU85B02H501Y", "BNCLCU85B02H501Y"),
+            ("   ", "BNCLCU85B02H501Y", "BNCLCU85B02H501Y"),
+            ("", "", ""),
+            ("", "   ", ""),
+        ] {
+            state
+                .record_update(
+                    "ordine",
+                    &ordine.id,
+                    campi(&[("fatt_piva", json!(cf_fattura))]),
+                )
+                .unwrap();
+            state
+                .record_update("cliente", &cliente.id, campi(&[("cf", json!(cf_cliente))]))
+                .unwrap();
+            let scheda = state.scheda_cliente_get(&ordine.id).unwrap();
+            assert_eq!(scheda.campi.intestatario_codice_fiscale, atteso);
+            assert_eq!(scheda.campi.intestatario_nome, "");
+            assert_eq!(scheda.campi.intestatario_indirizzo, "");
+        }
     }
 
     #[test]

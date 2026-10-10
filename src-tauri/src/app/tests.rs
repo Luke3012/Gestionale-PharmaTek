@@ -6839,6 +6839,175 @@ fn due_dispositivi_sincronizzano_scadenza_e_anticipo_del_promemoria() {
 }
 
 #[test]
+fn due_dispositivi_aggiornano_firma_e_riepilogo_spedizioni() {
+    let data = tempfile::tempdir().unwrap();
+    let app_a = tempfile::tempdir().unwrap();
+    let app_b = tempfile::tempdir().unwrap();
+    let a = AppState::init(app_a.path().to_path_buf()).unwrap();
+    let b = AppState::init(app_b.path().to_path_buf()).unwrap();
+    a.open_data_dir(data.path().to_str().unwrap()).unwrap();
+    b.open_data_dir(data.path().to_str().unwrap()).unwrap();
+    let conto = a
+        .record_create(
+            "conto",
+            campi(&[("nome", json!("Banca")), ("tipo", json!("banca"))]),
+        )
+        .unwrap();
+    let agente = a
+        .record_create("agente", campi(&[("nome", json!("Agente remoto"))]))
+        .unwrap();
+    let crea = |prezzo: i64, acconto: i64| {
+        let ordine = a
+            .record_create("ordine", campi(&[("acconto", json!(acconto))]))
+            .unwrap();
+        let spedizione = a
+            .record_create(
+                "spedizione",
+                campi(&[
+                    ("lotto", json!("lotto-sync")),
+                    ("data", json!("2026-10-09")),
+                ]),
+            )
+            .unwrap();
+        let riga = a
+            .record_create(
+                "riga_ordine",
+                campi(&[
+                    ("ordine_id", json!(ordine.id)),
+                    ("spedizione_id", json!(spedizione.id)),
+                    ("qta", json!(1)),
+                    ("prezzo", json!(prezzo)),
+                    ("numero", json!("vaccino")),
+                ]),
+            )
+            .unwrap();
+        let pagamento = a
+            .record_create(
+                "pagamento",
+                campi(&[
+                    ("ordine_id", json!(ordine.id)),
+                    ("tipo", json!("saldo")),
+                    ("importo", json!(prezzo)),
+                    ("saldato", json!(false)),
+                    ("conto_id", json!(conto.id)),
+                ]),
+            )
+            .unwrap();
+        (ordine, spedizione, riga, pagamento)
+    };
+    let (ordine_a, sped_a, _, _) = crea(10000, 4000);
+    let (ordine_b, _, riga_b, pagamento_b) = crea(12000, 0);
+    let non_spedita = a
+        .record_create(
+            "riga_ordine",
+            campi(&[
+                ("ordine_id", json!(ordine_a.id)),
+                ("qta", json!(1)),
+                ("prezzo", json!(10000)),
+            ]),
+        )
+        .unwrap();
+    b.force_sync().unwrap();
+    let firma = |state: &AppState| {
+        let spedizioni = state.spedizioni_lista().unwrap();
+        assert_eq!(spedizioni.len(), 2);
+        assert_eq!(
+            spedizioni[0].riepilogo_fingerprint,
+            spedizioni[1].riepilogo_fingerprint
+        );
+        spedizioni[0].riepilogo_fingerprint.clone().unwrap()
+    };
+    let iniziale = firma(&a);
+    assert_eq!(firma(&b), iniziale);
+    assert_eq!(a.spedizione_riepilogo("lotto-sync").unwrap().totale, 20000);
+
+    b.record_update(
+        "spedizione",
+        &sped_a.id,
+        campi(&[
+            ("note", json!("Nota dall'altra postazione")),
+            ("colli_export", json!(3)),
+            ("peso_export", json!(5)),
+        ]),
+    )
+    .unwrap();
+    a.force_sync().unwrap();
+    assert_eq!(firma(&a), iniziale);
+    let spedizioni = a.spedizioni_lista().unwrap();
+    let aggiornata = spedizioni.iter().find(|s| s.id == sped_a.id).unwrap();
+    assert_eq!(aggiornata.note, "Nota dall'altra postazione");
+    assert_eq!(
+        (aggiornata.colli_export, aggiornata.peso_export),
+        (Some(3), Some(5))
+    );
+
+    // Anche un pagamento di un ordine nascosto dalla ricerca invalida tutto il lotto.
+    b.record_update(
+        "pagamento",
+        &pagamento_b.id,
+        campi(&[("saldato", json!(true))]),
+    )
+    .unwrap();
+    a.force_sync().unwrap();
+    let saldata = firma(&a);
+    assert_ne!(saldata, iniziale);
+    assert_eq!(saldata, firma(&b));
+    let riepilogo = a.spedizione_riepilogo("lotto-sync").unwrap();
+    assert_eq!(
+        (riepilogo.gia_incassato, riepilogo.da_incassare),
+        (12000, 8000)
+    );
+
+    b.record_update(
+        "ordine",
+        &ordine_b.id,
+        campi(&[("agente_id", json!(agente.id))]),
+    )
+    .unwrap();
+    b.record_update(
+        "conto",
+        &conto.id,
+        campi(&[("nome", json!("Banca rinominata"))]),
+    )
+    .unwrap();
+    a.force_sync().unwrap();
+    let agente_conto = firma(&a);
+    assert_ne!(agente_conto, saldata);
+    let riepilogo = a.spedizione_riepilogo("lotto-sync").unwrap();
+    assert_eq!(riepilogo.per_conto[0].conto_nome, "Banca rinominata");
+    assert!(riepilogo
+        .per_agente
+        .iter()
+        .any(|ag| ag.agente_id == agente.id && ag.totale == 12000));
+
+    // La ripartizione dell'acconto dipende anche dalle righe NON spedite.
+    b.record_delete("riga_ordine", &non_spedita.id).unwrap();
+    a.force_sync().unwrap();
+    let ripartita = firma(&a);
+    assert_ne!(ripartita, agente_conto);
+    assert_eq!(a.spedizione_riepilogo("lotto-sync").unwrap().totale, 18000);
+    b.record_update("riga_ordine", &riga_b.id, campi(&[("prezzo", json!(9000))]))
+        .unwrap();
+    a.force_sync().unwrap();
+    let prezzo = firma(&a);
+    assert_ne!(prezzo, ripartita);
+    assert_eq!(a.spedizione_riepilogo("lotto-sync").unwrap().totale, 15000);
+
+    b.record_create("ordine", campi(&[("acconto", json!(100000))]))
+        .unwrap();
+    a.force_sync().unwrap();
+    assert_eq!(
+        firma(&a),
+        prezzo,
+        "gli ordini estranei alle spedizioni non invalidano la cache"
+    );
+    b.record_delete("ordine", &ordine_b.id).unwrap();
+    a.force_sync().unwrap();
+    assert_ne!(firma(&a), prezzo);
+    assert_eq!(a.spedizione_riepilogo("lotto-sync").unwrap().totale, 6000);
+}
+
+#[test]
 fn risalvare_un_valore_identico_resta_un_evento_lww() {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_str().unwrap();
@@ -7448,6 +7617,12 @@ fn annullo_spedizione_da_ordine_chiuso_ripristina_stato_precedente() {
 
 #[test]
 fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
+    for profilo in ["gls", "corriere_a", "mbe"] {
+        verifica_colli_uniti_e_separati(profilo);
+    }
+}
+
+fn verifica_colli_uniti_e_separati(profilo: &str) {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let state = AppState::init(app.path().to_path_buf()).unwrap();
@@ -7469,7 +7644,13 @@ fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
         )
         .unwrap();
     let gls = state
-        .record_create("corriere", campi(&[("nome", json!("CORRIERE_B"))]))
+        .record_create(
+            "corriere",
+            campi(&[
+                ("nome", json!(profilo.to_uppercase())),
+                ("profilo", json!(profilo)),
+            ]),
+        )
         .unwrap();
     let crea = |numero: &str, prezzo: i64| {
         let ordine = state
@@ -7511,21 +7692,30 @@ fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
     };
     let sp1 = crea("A", 10000);
     let sp2 = crea("B", 12000);
+    let prima = state.spedizioni_lista().unwrap();
+    let firma_lotto = prima[0].riepilogo_fingerprint.clone();
+    assert!(firma_lotto.is_some());
+    assert_eq!(prima[1].riepilogo_fingerprint, firma_lotto);
 
     state
         .spedizione_destinatari_unisci(vec![sp1.id.clone(), sp2.id.clone()])
         .unwrap();
     let unite = state.spedizioni_lista().unwrap();
     assert_eq!(unite.len(), 1);
+    assert_eq!(unite[0].riepilogo_fingerprint, firma_lotto);
     assert_eq!(unite[0].id, sp1.id);
     assert_eq!(unite[0].n_righe, 2);
     assert_eq!(unite[0].colli, 2);
+    assert_eq!((unite[0].colli_export, unite[0].peso_export), (None, None));
     assert_eq!(unite[0].contrassegno, 22000);
     assert!(unite[0].destinatari_uniti);
 
     state.spedizione_destinatari_separa(&sp1.id).unwrap();
     let separate = state.spedizioni_lista().unwrap();
     assert_eq!(separate.len(), 2);
+    assert!(separate
+        .iter()
+        .all(|s| s.riepilogo_fingerprint == firma_lotto));
     let a = separate.iter().find(|s| s.id == sp1.id).unwrap();
     let b = separate.iter().find(|s| s.id == sp2.id).unwrap();
     assert_eq!(
@@ -7533,6 +7723,45 @@ fn spedizione_destinatari_unisci_e_separa_righe_e_collo() {
         (1, 1, 10000, false)
     );
     assert_eq!((b.n_righe, b.colli, b.contrassegno), (1, 1, 12000));
+    // Le modifiche del popover devono tornare alla UI anche per CORRIERE_A.
+    state
+        .record_update(
+            "spedizione",
+            &sp1.id,
+            campi(&[
+                ("colli", json!(4)),
+                ("peso", json!(7)),
+                ("colli_export", json!(4)),
+                ("peso_export", json!(7)),
+            ]),
+        )
+        .unwrap();
+    let aggiornate = state.spedizioni_lista().unwrap();
+    let modificata = aggiornate.iter().find(|s| s.id == sp1.id).unwrap();
+    assert_eq!((modificata.colli, modificata.peso), (4, 7));
+    assert_eq!(modificata.riepilogo_fingerprint, firma_lotto);
+    assert_eq!(
+        (modificata.colli_export, modificata.peso_export),
+        (Some(4), Some(7))
+    );
+    // Un ordine secondario può essere nascosto dalla ricerca o unito al primo.
+    // Deve comunque invalidare la firma di TUTTE le spedizioni dello stesso lotto.
+    let ordine_secondario = b.righe.first().unwrap().ordine_id.clone();
+    state
+        .record_update(
+            "ordine",
+            &ordine_secondario,
+            campi(&[("agente_id", json!("agente-secondario"))]),
+        )
+        .unwrap();
+    let cambiate = state.spedizioni_lista().unwrap();
+    assert!(cambiate
+        .iter()
+        .all(|s| s.riepilogo_fingerprint != firma_lotto));
+    assert_eq!(
+        cambiate[0].riepilogo_fingerprint,
+        cambiate[1].riepilogo_fingerprint
+    );
 }
 
 #[test]
@@ -11135,6 +11364,75 @@ fn spedizione_riepilogo_per_conto_e_agente_esclude_acconti() {
     assert_eq!(rp.per_agente[0].agente_nome, "Vitale");
     assert_eq!(rp.per_agente[0].totale, 80000);
     assert_eq!(rp.per_agente[0].conti[0].conto_nome, "Contrassegno");
+
+    let firma = || {
+        state
+            .spedizioni_lista()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == sp.id)
+            .unwrap()
+            .riepilogo_fingerprint
+            .unwrap()
+    };
+    let iniziale = firma();
+    state
+        .record_update(
+            "spedizione",
+            &sp.id,
+            campi(&[
+                ("indirizzo", json!("Nuovo indirizzo")),
+                ("note", json!("Nuove note")),
+                ("colli_export", json!(4)),
+                ("peso_export", json!(7)),
+                ("numero", json!("9002")),
+                ("preavviso", json!(true)),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(
+        firma(),
+        iniziale,
+        "i dati logistici non invalidano il riepilogo"
+    );
+    let saldo = state
+        .records_list("pagamento")
+        .unwrap()
+        .into_iter()
+        .find(|p| str_field(&p.data, "tipo") == "saldo")
+        .unwrap();
+    state
+        .record_update("pagamento", &saldo.id, campi(&[("saldato", json!(true))]))
+        .unwrap();
+    let saldata = firma();
+    assert_ne!(saldata, iniziale);
+    assert_eq!(
+        state.spedizione_riepilogo("lottoR").unwrap().gia_incassato,
+        80000
+    );
+    state
+        .record_update("agente", &ag.id, campi(&[("nome", json!("Nuovo nome"))]))
+        .unwrap();
+    let rinominata = firma();
+    assert_ne!(rinominata, saldata);
+    state
+        .record_update(
+            "conto",
+            &contra.id,
+            campi(&[("nome", json!("Nuovo conto"))]),
+        )
+        .unwrap();
+    let conto = firma();
+    assert_ne!(conto, rinominata);
+    state
+        .record_update("ordine", &o.id, campi(&[("agente_id", json!(""))]))
+        .unwrap();
+    let altro_agente = firma();
+    assert_ne!(altro_agente, conto);
+    state
+        .record_update("riga_ordine", &riga.id, campi(&[("prezzo", json!(90000))]))
+        .unwrap();
+    assert_ne!(firma(), altro_agente);
 }
 
 #[test]

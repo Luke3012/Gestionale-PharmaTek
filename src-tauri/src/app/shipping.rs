@@ -1,5 +1,177 @@
 use super::*;
 
+#[cfg(test)]
+mod riepilogo_performance_tests {
+    use super::*;
+
+    /// Misura ripetibile senza I/O, eseguita solo su richiesta con --ignored.
+    #[test]
+    #[ignore]
+    fn misura_firme_riepilogo_su_dataset_sintetico() {
+        let record =
+            |entity: &str, id: String, data: serde_json::Value| crate::projection::Record {
+                entity: entity.into(),
+                id,
+                data: data.as_object().unwrap().clone(),
+                deleted: false,
+                created_hlc: crate::sync::hlc::Hlc::new(1, 0, "test"),
+                updated_hlc: crate::sync::hlc::Hlc::new(1, 0, "test"),
+            };
+        let nomi = HashMap::from([("conto".into(), "Banca".into())]);
+        let tipi = HashMap::from([("conto".into(), "banca".into())]);
+        for n in [1000, 10000] {
+            let ordini: Vec<_> = (0..n)
+                .map(|i| record("ordine", format!("o{i}"), json!({"acconto": 1000})))
+                .collect();
+            let spedizioni: Vec<_> = (0..n)
+                .map(|i| {
+                    record(
+                        "spedizione",
+                        format!("s{i}"),
+                        json!({"lotto": format!("lotto-{}", i / 20)}),
+                    )
+                })
+                .collect();
+            let righe: Vec<_> = (0..n).flat_map(|i| (0..3).map(move |j| record("riga_ordine", format!("r{i}-{j}"), json!({
+                "ordine_id": format!("o{i}"), "spedizione_id": format!("s{i}"), "qta": 1, "prezzo": 10000,
+            })))).collect();
+            let pagamenti: Vec<_> = (0..n).map(|i| record("pagamento", format!("p{i}"), json!({
+                "ordine_id": format!("o{i}"), "tipo": "saldo", "importo": 29000, "conto_id": "conto", "saldato": false,
+            }))).collect();
+            let mut tempi = Vec::new();
+            for _ in 0..5 {
+                let inizio = std::time::Instant::now();
+                let firme = firme_riepiloghi(
+                    &ordini,
+                    &righe,
+                    &pagamenti,
+                    &spedizioni,
+                    &HashMap::new(),
+                    &nomi,
+                    &tipi,
+                );
+                tempi.push(inizio.elapsed());
+                assert_eq!(firme.len(), n / 20);
+            }
+            tempi.sort();
+            eprintln!(
+                "{n} spedizioni, {} righe: mediana {:?} (5 misure, solo firme)",
+                righe.len(),
+                tempi[2]
+            );
+        }
+    }
+}
+
+/// Firma dei soli dati letti dal riepilogo. Riusa i record già caricati per
+/// l'elenco, includendo ordini/collo nascosti dai filtri dell'interfaccia.
+fn firme_riepiloghi(
+    ordini: &[crate::projection::Record],
+    righe: &[crate::projection::Record],
+    pagamenti: &[crate::projection::Record],
+    spedizioni: &[crate::projection::Record],
+    agenti: &HashMap<String, String>,
+    conti_nomi: &HashMap<String, String>,
+    conti_tipi: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let lotti: HashMap<&str, String> = spedizioni
+        .iter()
+        .map(|s| (s.id.as_str(), str_field(&s.data, "lotto")))
+        .collect();
+    let ordini_spediti: HashSet<String> = righe
+        .iter()
+        .filter(|r| lotti.contains_key(str_field(&r.data, "spedizione_id").as_str()))
+        .map(|r| str_field(&r.data, "ordine_id"))
+        .filter(|id| !id.is_empty())
+        .collect();
+    #[derive(Default, Serialize)]
+    struct DatiOrdine<'a> {
+        ordine: Option<(String, Option<&'a String>, i64)>,
+        righe: Vec<(&'a str, i64, i64)>,
+        pagamenti: Vec<(
+            &'a str,
+            String,
+            i64,
+            bool,
+            String,
+            String,
+            Option<&'a String>,
+            Option<&'a String>,
+        )>,
+    }
+    let mut per_ordine: HashMap<String, DatiOrdine<'_>> = HashMap::new();
+    for ordine in ordini.iter().filter(|o| ordini_spediti.contains(&o.id)) {
+        let agente = str_field(&ordine.data, "agente_id");
+        let nome = agenti.get(&agente);
+        per_ordine.entry(ordine.id.clone()).or_default().ordine =
+            Some((agente, nome, i64_field(&ordine.data, "acconto")));
+    }
+    let mut per_lotto: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for riga in righe {
+        let ordine = str_field(&riga.data, "ordine_id");
+        if !ordini_spediti.contains(&ordine) {
+            continue;
+        }
+        per_ordine.entry(ordine.clone()).or_default().righe.push((
+            &riga.id,
+            i64_field(&riga.data, "qta"),
+            i64_field(&riga.data, "prezzo"),
+        ));
+        let sid = str_field(&riga.data, "spedizione_id");
+        if let Some(lotto) = lotti.get(sid.as_str()) {
+            per_lotto
+                .entry(lotto.clone())
+                .or_default()
+                .push((riga.id.clone(), ordine));
+        }
+    }
+    for pagamento in pagamenti {
+        let ordine = str_field(&pagamento.data, "ordine_id");
+        if !ordini_spediti.contains(&ordine) {
+            continue;
+        }
+        let conto = str_field(&pagamento.data, "conto_id");
+        let nome = conti_nomi.get(&conto);
+        let tipo = conti_tipi.get(&conto);
+        per_ordine.entry(ordine).or_default().pagamenti.push((
+            &pagamento.id,
+            str_field(&pagamento.data, "tipo"),
+            i64_field(&pagamento.data, "importo"),
+            bool_field(&pagamento.data, "saldato"),
+            str_field(&pagamento.data, "scadenza"),
+            conto,
+            nome,
+            tipo,
+        ));
+    }
+    let firme_ordini: HashMap<String, String> = per_ordine
+        .into_iter()
+        .map(|(id, mut dati)| {
+            dati.righe.sort_unstable_by_key(|r| r.0);
+            dati.pagamenti.sort_unstable_by_key(|p| p.0);
+            // Una sola serializzazione, direttamente in byte: niente JSON intermedi
+            // per ogni riga/pagamento, né stringhe nuovamente escapate.
+            let bytes = serde_json::to_vec(&dati).expect("dati contabili primitivi serializzabili");
+            (id, communication::sha256_hex(bytes))
+        })
+        .collect();
+    per_lotto
+        .into_iter()
+        .map(|(lotto, mut righe)| {
+            righe.sort();
+            let ordini: std::collections::BTreeSet<&str> =
+                righe.iter().map(|(_, o)| o.as_str()).collect();
+            let firme: Vec<_> = ordini
+                .into_iter()
+                .map(|id| (id, firme_ordini.get(id)))
+                .collect();
+            let bytes = serde_json::to_vec(&(&righe, firme)).expect("firma lotto serializzabile");
+            let firma = communication::sha256_hex(bytes);
+            (lotto, firma)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GruppoDestinatarioIn {
@@ -777,6 +949,23 @@ impl AppState {
                     })
                     .collect();
 
+                let conti_nomi = nome_map(p, "conto");
+                let conti_tipi: HashMap<String, String> = p
+                    .list("conto")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.id, str_field(&r.data, "tipo")))
+                    .collect();
+                let firme = firme_riepiloghi(
+                    &ordini_records,
+                    &righe_records,
+                    &pagamenti_records,
+                    &spedizioni_records,
+                    &agenti,
+                    &conti_nomi,
+                    &conti_tipi,
+                );
+
                 // Righe per spedizione.
                 let mut righe_per_sped: HashMap<String, Vec<SpedizioneRigaDto>> = HashMap::new();
                 let mut righe_totali: HashMap<String, (i64, i64)> = HashMap::new();
@@ -828,14 +1017,6 @@ impl AppState {
                             riga_id: r.id,
                         });
                 }
-
-                let conti_nomi = nome_map(p, "conto");
-                let conti_tipi: HashMap<String, String> = p
-                    .list("conto")
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|r| (r.id, str_field(&r.data, "tipo")))
-                    .collect();
 
                 let mut acconti: HashMap<String, i64> = HashMap::new();
                 let mut pagamenti_per_ordine: HashMap<String, Vec<crate::projection::Record>> =
@@ -1018,6 +1199,12 @@ impl AppState {
                                     .unwrap_or((None, None))
                             };
                         Some(SpedizioneDto {
+                            riepilogo_fingerprint: Some(
+                                firme
+                                    .get(&str_field(&r.data, "lotto"))
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ),
                             destinatari_comunicazione,
                             comunicazione_fingerprint,
                             lotto: str_field(&r.data, "lotto"),
@@ -1025,16 +1212,10 @@ impl AppState {
                             corriere_nome: corrieri.get(&corriere_id).cloned().unwrap_or_default(),
                             corriere_id,
                             numero: numero_join,
-                            colli: if corriere_profilo == "corriere_a" {
-                                1
-                            } else {
-                                i64_field(&r.data, "colli")
-                            },
-                            peso: if corriere_profilo == "corriere_a" {
-                                1
-                            } else {
-                                i64_field(&r.data, "peso")
-                            },
+                            colli: i64_field(&r.data, "colli"),
+                            peso: i64_field(&r.data, "peso"),
+                            colli_export: r.data.get("colli_export").and_then(|v| v.as_i64()),
+                            peso_export: r.data.get("peso_export").and_then(|v| v.as_i64()),
                             servizi: str_field(&r.data, "servizi"),
                             preavviso: bool_field(&r.data, "preavviso"),
                             mezzo: str_field(&r.data, "mezzo"),
@@ -2276,6 +2457,7 @@ impl AppState {
                             .unwrap_or((None, None))
                     };
                 Some(SpedizioneDto {
+                    riepilogo_fingerprint: None,
                     destinatari_comunicazione,
                     comunicazione_fingerprint,
                     lotto: str_field(&r.data, "lotto"),
@@ -2283,16 +2465,10 @@ impl AppState {
                     corriere_nome: corrieri.get(&corriere_id).cloned().unwrap_or_default(),
                     corriere_id,
                     numero: numero_join,
-                    colli: if corriere_profilo == "corriere_a" {
-                        1
-                    } else {
-                        i64_field(&r.data, "colli")
-                    },
-                    peso: if corriere_profilo == "corriere_a" {
-                        1
-                    } else {
-                        i64_field(&r.data, "peso")
-                    },
+                    colli: i64_field(&r.data, "colli"),
+                    peso: i64_field(&r.data, "peso"),
+                    colli_export: r.data.get("colli_export").and_then(|v| v.as_i64()),
+                    peso_export: r.data.get("peso_export").and_then(|v| v.as_i64()),
                     servizi: str_field(&r.data, "servizi"),
                     preavviso: bool_field(&r.data, "preavviso"),
                     mezzo: str_field(&r.data, "mezzo"),

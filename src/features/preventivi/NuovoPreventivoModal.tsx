@@ -695,10 +695,6 @@ export function NuovoPreventivoModal({
       return;
     }
     let pronte = righe;
-    if (pronte.length === 0) {
-      toast.warning("Aggiungi almeno un prodotto al preventivo prima di continuare.");
-      return;
-    }
     if (pronte.some((riga) => !riga.prodottoNome.trim())) {
       toast.warning("Verifica le righe evidenziate prima di continuare.");
       return;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Spedizione } from "../../lib/tauri";
 import { isModalitaRicerca, numeroComunicazioniSpedizione } from "./SpedizioniView";
-import { contaLottiSpedizionePerAnno } from "./filtriSpedizione";
+import { contaLottiSpedizionePerAnno, opzioniLottiSpedizione } from "./filtriSpedizione";
 
 const spedizione = (id: string, clienteId: string) =>
   ({ id, clienteId }) as Spedizione;
@@ -30,6 +30,15 @@ describe("isModalitaRicerca", () => {
 });
 
 describe("conteggio lotti di spedizione per anno", () => {
+  it("somma i colli spediti dei singoli record, senza sommare i vaccini uniti", () => {
+    const spedizioni = [
+      { id: "s1", data: "2026-10-09", lotto: "lotto-a", corriereNome: "CORRIERE_B", colli: 99, destinatariUniti: true, colliExport: null },
+      { id: "s2", data: "2026-10-09", lotto: "lotto-a", corriereNome: "CORRIERE_A", colli: 3, colliExport: 2 },
+      { id: "s3", data: "2026-10-09", lotto: "lotto-a", corriereNome: "CORRIERE_C", colli: 4 },
+    ] as Spedizione[];
+    expect(opzioniLottiSpedizione(spedizioni, 2026)[0].label).toContain("4 colli");
+    expect(opzioniLottiSpedizione([spedizioni[0]], 2026)[0].label).toContain("1 collo");
+  });
   it("conta i gruppi visivi e non le singole spedizioni", () => {
     const spedizioni = [
       { id: "s1", data: "2026-01-10", lotto: "lotto-a" },

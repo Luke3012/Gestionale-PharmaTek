@@ -32,7 +32,6 @@ import {
   type ComuneInfo,
 } from "../../lib/cap-lookup";
 import { NumeriLottoInput } from "../../ui/NumeriLottoInput";
-import { normalizzaColliPesoCorriere } from "./profiliCorriere";
 import {
   rigaHaDatiVaccino,
   spedizioneHaDatiVaccino,
@@ -60,7 +59,6 @@ type DatiSpedizioneForm = {
 type PopoverPosition = "bottom-end" | "bottom-start" | "top-end" | "top-start" | "left-start" | "left-end";
 
 function formDaSpedizione(s: Spedizione): DatiSpedizioneForm {
-  const valori = normalizzaColliPesoCorriere(s.corriereProfilo, s.colli || 1, s.peso || 1);
   return {
     cliente: s.clienteNome || "",
     indirizzo: s.indirizzo || "",
@@ -70,8 +68,8 @@ function formDaSpedizione(s: Spedizione): DatiSpedizioneForm {
     regione: s.regione || "",
     telefono: s.telefono || "",
     email: s.email || "",
-    colli: valori.colli,
-    peso: valori.peso,
+    colli: Math.max(1, s.colliExport || 1),
+    peso: Math.max(1, s.pesoExport || 1),
     preavviso: !!s.preavviso,
     numeroManuale: s.numero || "",
     lotti: Object.fromEntries(s.righe.map((r) => [r.rigaId, r.numero || ""])),
@@ -221,11 +219,8 @@ export function DatiSpedizionePopover({
           ? 1
           : Number(form.colli);
       const pesoRichiesto = form.peso === "" ? richiesti : Number(form.peso);
-      const { colli, peso } = normalizzaColliPesoCorriere(
-        spedizione.corriereProfilo,
-        richiesti,
-        pesoRichiesto
-      );
+      const colli = Math.max(1, richiesti);
+      const peso = Math.max(1, pesoRichiesto);
       await api.recordUpdate("spedizione", spedizione.id, {
         dest_cliente: form.cliente.trim(),
         dest_indirizzo: form.indirizzo.trim(),
@@ -237,6 +232,8 @@ export function DatiSpedizionePopover({
         dest_email: form.email.trim(),
         colli,
         peso,
+        colli_export: colli === 1 ? null : colli,
+        peso_export: peso === 1 ? null : peso,
         preavviso: form.preavviso,
         ...(manuale ? { numero: form.numeroManuale.trim() } : {}),
       });
@@ -259,6 +256,8 @@ export function DatiSpedizionePopover({
         email: form.email.trim(),
         colli,
         peso,
+        colliExport: colli === 1 ? null : colli,
+        pesoExport: peso === 1 ? null : peso,
         preavviso: form.preavviso,
         numero: manuale
           ? form.numeroManuale.trim()
@@ -433,7 +432,6 @@ export function DatiSpedizionePopover({
                 label="Colli"
                 value={form.colli}
                 onChange={(v) => setF("colli", v === "" ? "" : Number(v))}
-                disabled={spedizione.corriereProfilo === "corriere_a"}
                 min={1}
                 w={86}
               />
@@ -442,7 +440,6 @@ export function DatiSpedizionePopover({
               label="Peso"
               value={form.peso}
               onChange={(v) => setF("peso", v === "" ? "" : Number(v))}
-              disabled={spedizione.corriereProfilo === "corriere_a"}
               min={1}
               w={86}
             />

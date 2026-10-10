@@ -306,6 +306,9 @@ pub struct SpedizioneRigaDto {
 #[serde(rename_all = "camelCase")]
 pub struct SpedizioneDto {
     pub id: String,
+    /// Dipendenze contabili dell'intero lotto, per validare il riepilogo lazy.
+    /// Presente nell'elenco; assente nel DTO restituito dalla creazione.
+    pub riepilogo_fingerprint: Option<String>,
     /// Fotografia semantica usata dagli avvisi: cambia se cambiano data,
     /// corriere, destinatario o numeri delle righe, non quando si salva l'esito.
     pub comunicazione_fingerprint: String,
@@ -319,6 +322,9 @@ pub struct SpedizioneDto {
     pub numero: String,
     pub colli: i64,
     pub peso: i64,
+    /// Valori espliciti della distinta; assenti = default 1/1.
+    pub colli_export: Option<i64>,
+    pub peso_export: Option<i64>,
     pub servizi: String,
     /// Preavviso telefonico attivo per questa spedizione.
     pub preavviso: bool,

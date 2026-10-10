@@ -71,6 +71,7 @@ import { OrdineEditor, type EditorTarget } from "../giornaliero/OrdineEditor";
 import { apriFinestraOrdine } from "../giornaliero/apriFinestra";
 import { useDeepLink } from "../../shell/navigazione";
 import {
+  aggiornaBozzaProduzione,
   campiDiagnostica,
   campiProduzione,
   diagnosticaIncompleta,
@@ -78,6 +79,8 @@ import {
   pazienteEffettivoProduzione,
   rigaProduzioneCompleta,
   suggerimentiProduzione,
+  stessiCampiProduzione,
+  type CampiProduzione,
   type Suggerimenti,
 } from "./datiProduzione";
 import { gruppiRigheIncomplete } from "./gruppiProduzione";
@@ -328,9 +331,20 @@ function RigaProduzione({
   onSaved: () => void;
 }) {
   const orig = riga.data;
-  const [form, setForm] = useState((orig.formulazione as string) || "");
-  const [pos, setPos] = useState((orig.posologia as string) || "");
-  const [all, setAll] = useState<string[]>(Array.isArray(orig.allergeni) ? (orig.allergeni as string[]) : []);
+  const ricevuti = campiProduzione(orig);
+  const [campi, setCampi] = useState(() => ({ ricevuti, bozza: ricevuti }));
+  // Sincronizza prima di renderizzare i campi: anche onBlur vede il nuovo valore,
+  // senza rimontare la riga o azzerare bozze di campi rimasti invariati.
+  if (!stessiCampiProduzione(campi.ricevuti, ricevuti)) {
+    setCampi({ ricevuti, bozza: aggiornaBozzaProduzione(campi.bozza, campi.ricevuti, ricevuti) });
+  }
+  const { formulazione: form, posologia: pos, allergeni: all } = campi.bozza;
+  function modifica(patch: Partial<CampiProduzione>) {
+    setCampi((attuali) => ({ ...attuali, bozza: { ...attuali.bozza, ...patch } }));
+  }
+  const setForm = (formulazione: string) => modifica({ formulazione });
+  const setPos = (posologia: string) => modifica({ posologia });
+  const setAll = (allergeni: string[]) => modifica({ allergeni });
   const paz = (orig.paziente as string) || "";
   const qta = typeof orig.qta === "number" ? orig.qta : 1;
 

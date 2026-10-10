@@ -146,6 +146,15 @@ describe("Spotlight promemoria", () => {
 });
 
 describe("Spotlight crediti per spedizione", () => {
+  it("mostra il totale effettivamente spedito, rispettando i valori del popover", () => {
+    const lotto = "01JZLOTTO123456";
+    const dati: DatiRicerca = { ...DATI_VUOTI, spedizioni: [
+      { ...spedizione(lotto), colli: 99, colliExport: null, destinatariUniti: true },
+      { ...spedizione(lotto), id: "sped-2", colliExport: 2 },
+    ] };
+    const voce = costruisciVoci("crediti spedizione", dati).find((v) => v.completion?.includes("CORRIERE_B"));
+    expect(voce?.label).toContain("3 colli");
+  });
   it("trova una spedizione anche tramite il suo lotto di gruppo", () => {
     const lotto = "01JZLOTTO123456";
     const dati: DatiRicerca = { ...DATI_VUOTI, spedizioni: [spedizione(lotto)] };

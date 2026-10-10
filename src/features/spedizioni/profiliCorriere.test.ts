@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Spedizione } from "../../lib/tauri";
+import { colliSpedizioneEffettuata } from "./datiVaccino";
 import {
   colonneProfilo,
   formattaNumeriLottoPerExport,
@@ -45,6 +46,36 @@ function spedizioneCorriereA(): Spedizione {
     ],
   };
 }
+
+describe("colli e peso nelle distinte di tutti i corrieri", () => {
+  it.each(["gls", "corriere_a", "mbe"])("%s rispetta le modifiche del popover anche sul collo unito", (profilo) => {
+    const spedizione = { ...spedizioneCorriereA(), corriereProfilo: profilo, destinatariUniti: true, colliExport: 4, pesoExport: 7 };
+    const righe = preparaRigheEsportazione([spedizione], profilo);
+    expect(righe).toHaveLength(1);
+    expect(righe[0]).toMatchObject({ colli: 4, peso: 7 });
+    expect(preparaRigheEsportazione([{ ...spedizione, colliExport: null, pesoExport: null }], profilo)[0])
+      .toMatchObject({ colli: 1, peso: 1 });
+  });
+  it.each(["gls", "corriere_a", "mbe"])("%s conta due vaccini uniti come un collo e esporta una sola riga 1/1", (profilo) => {
+    const spedizione = { ...spedizioneCorriereA(), corriereProfilo: profilo, colli: 1, righe: spedizioneCorriereA().righe.slice(0, 2) };
+    expect(colliSpedizioneEffettuata(spedizione)).toBe(1);
+    const righe = preparaRigheEsportazione([spedizione], profilo);
+    expect(righe).toHaveLength(1);
+    expect(righe[0]).toMatchObject({ colli: 1, peso: 1 });
+    expect(spedizione.colli).toBe(1);
+  });
+  it.each(["gls", "corriere_a", "mbe"])("%s esporta e stampa 1/1 anche per una spedizione con due colli", (profilo) => {
+    const spedizione = { ...spedizioneCorriereA(), corriereProfilo: profilo, colli: 2, peso: 7 };
+    const prima = structuredClone(spedizione);
+    const righe = preparaRigheEsportazione([spedizione], profilo);
+    expect(righe).toHaveLength(1);
+    for (const key of ["colli", "peso"]) {
+      const colonna = colonneProfilo(profilo).find((c) => c.key === key);
+      expect(colonna?.valore(righe[0])).toBe(1);
+    }
+    expect(spedizione).toEqual(prima);
+  });
+});
 
 describe("numeri lotto nelle distinte corriere", () => {
   it("mantiene ordine ed etichette dei profili di esportazione", () => {
@@ -128,11 +159,11 @@ describe("numeri lotto nelle distinte corriere", () => {
 
     expect(preparaRigheEsportazione([spedizione], "gls")[0].numero).toBe("5081997/8/9");
     expect(preparaRigheEsportazione([spedizione], "mbe")[0].numero).toBe("5081997/8/9");
-    expect(preparaRigheEsportazione([spedizione], "gls")[0].colli).toBe(3);
-    expect(preparaRigheEsportazione([spedizione], "mbe")[0].peso).toBe(3);
+    expect(preparaRigheEsportazione([spedizione], "gls")[0].colli).toBe(1);
+    expect(preparaRigheEsportazione([spedizione], "mbe")[0].peso).toBe(1);
   });
 
-  it.each(["gls", "mbe"])("%s unisce i colli dello stesso indirizzo e somma i dati logistici", (profilo) => {
+  it.each(["gls", "mbe"])("%s unisce i colli dello stesso indirizzo mantenendo colli e peso a 1", (profilo) => {
     const prima = spedizioneCorriereA();
     prima.id = "spedizione-1";
     prima.corriereProfilo = profilo;
@@ -173,8 +204,8 @@ describe("numeri lotto nelle distinte corriere", () => {
     expect(righe[0]).toMatchObject({
       numero: "5081997/8",
       cliente: "Destinatario",
-      colli: 3,
-      peso: 5,
+      colli: 1,
+      peso: 1,
       importo: 2000,
       note: "Citofonare",
     });

@@ -24,3 +24,11 @@ export function spedizioneHaDatiVaccino(
 ): boolean {
   return spedizione.righe.some(rigaHaDatiVaccino);
 }
+
+/** Colli effettivamente affidati al corriere: stesso valore del popover e della
+ * distinta, default 1. Il numero di vaccini contenuti non aumenta il conteggio. */
+export function colliSpedizioneEffettuata(
+  spedizione: Pick<Spedizione, "colliExport">,
+): number {
+  return Math.max(1, spedizione.colliExport || 1);
+}

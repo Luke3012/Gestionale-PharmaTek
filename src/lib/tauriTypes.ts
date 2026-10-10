@@ -871,6 +871,7 @@ export interface Spedizione extends DatiDestinatarioSpedizione {
   id: string;
   /** Fotografia semantica dell'avviso di spedizione, calcolata una volta dal backend. */
   comunicazioneFingerprint?: string;
+  riepilogoFingerprint?: string | null;
   /** Lotto = sessione di creazione (raggruppa le spedizioni create insieme). */
   lotto: string;
   data: string;
@@ -879,6 +880,9 @@ export interface Spedizione extends DatiDestinatarioSpedizione {
   numero: string;
   colli: number;
   peso: number;
+  /** Valori salvati nel popover per la distinta; assenti = 1/1. */
+  colliExport?: number | null;
+  pesoExport?: number | null;
   servizi: string;
   preavviso: boolean;
   /** Incasso alla consegna: "" (prepagato) | contrassegno | assegno. */

@@ -89,6 +89,9 @@ describe("avvisi delle spedizioni unite", () => {
       expect(target.variabili?.riferimento_ordine).toBe(
         `2026-${target.destinatarioId}`,
       );
+      expect(target.variabili?.istruzioni_pagamento).not.toContain("Ordine ");
+      expect(target.variabili?.istruzioni_pagamento).not.toContain(`2026-${target.destinatarioId}`);
+      expect(target.variabili?.istruzioni_pagamento).toContain("IBAN: IT00TEST");
     }
   });
   it("mantiene un messaggio per persona con più prodotti, ordini e colli", () => {
@@ -103,12 +106,10 @@ describe("avvisi delle spedizioni unite", () => {
     expect(targets[0].originiCorrelate).toEqual([
       { id: "collo-2", fingerprint: "fp-Mario" },
     ]);
-    expect(targets[0].variabili?.istruzioni_pagamento).toContain(
-      "Ordine 2026-Mario",
-    );
-    expect(targets[0].variabili?.istruzioni_pagamento).toContain(
-      "Ordine 2026-altro-ordine",
-    );
+    expect(targets[0].variabili?.istruzioni_pagamento).not.toContain("Ordine ");
+    expect(targets[0].variabili?.istruzioni_pagamento).toContain("120,00");
+    expect(targets[0].variabili?.istruzioni_pagamento).toContain("50,00");
+    expect(targets[0].variabili?.riferimento_ordine).toBe("2026-altro-ordine, 2026-Mario");
     expect(targets[0].variabili?.importo_residuo).toContain("170,00");
   });
   it("riprende i soli invii mancanti e mantiene visibile chi non ha recapiti", () => {
@@ -142,6 +143,15 @@ describe("avvisi delle spedizioni unite", () => {
     expect(target.variabili?.istruzioni_pagamento).toContain("Rata 2: € 50,00");
     expect(target.variabili?.istruzioni_pagamento).not.toContain("100,00");
     expect(target.variabili?.istruzioni_pagamento).toContain("70,00");
+    expect(target.variabili?.istruzioni_pagamento).not.toContain("Ordine ");
+    expect(target.variabili?.istruzioni_pagamento).toContain("10/11/2026");
+  });
+  it("non introduce riferimenti automatici quando il residuo è nullo", () => {
+    const mario = persona("Mario", 10000);
+    mario.ordini[0].pagamenti[0].saldato = true;
+    const target = preparaAvvisiSpedizione([collo([mario])], conti)[0];
+    expect(target.variabili?.importo_residuo).toBe("nessun importo da saldare");
+    expect(target.variabili?.istruzioni_pagamento).toBe("Nessun pagamento richiesto alla consegna.");
   });
   it("consente la riapertura esplicita dal dettaglio completo senza reinviare ai già avvisati nel recupero dei mancanti", () => {
     const mario = persona("Mario", 10000);

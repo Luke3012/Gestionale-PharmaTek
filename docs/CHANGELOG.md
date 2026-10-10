@@ -2,6 +2,10 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.5 — 2026-10-10
+
+Adesso viene mostrato il numero di colli reale, per ciascun corriere. Inoltre, è stato migliorato il meccanismo di sincronizzazione manuale.
+
 ## 0.8.4 — 2026-10-03
 
 ✨ Sono state apportate alcune migliorie tecniche!

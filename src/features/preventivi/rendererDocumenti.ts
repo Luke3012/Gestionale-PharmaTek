@@ -302,6 +302,7 @@ function testoMultilinea(
   size: number,
   maxLines: number,
   options: Partial<Omit<TextNode, "kind" | "x" | "y" | "text" | "size">> = {},
+  passoRiga = size * 1.28,
 ): { lines: number; overflow: boolean } {
   const righe = avvolgiTesto(value || "—", maxWidth, size, options.weight ?? 400);
   const visibili = righe.slice(0, maxLines);
@@ -315,7 +316,7 @@ function testoMultilinea(
     visibili[ultima] = `${troncata.trimEnd()}…`;
   }
   visibili.forEach((riga, index) =>
-    testo(nodes, x, y + index * size * 1.28, riga, size, options),
+    testo(nodes, x, y + index * passoRiga, riga, size, options),
   );
   return { lines: visibili.length, overflow };
 }
@@ -409,9 +410,9 @@ export function creaDocumentoPreventivo(
     : dataIt(preventivo.ordineData);
   rect(nodes, 48, y, 698, 54, {
     radius: 8,
-    fill: COLORI.yellow,
-    stroke: COLORI.navy,
-    strokeWidth: 1,
+    fill: COLORI.white,
+    stroke: COLORI.line,
+    strokeWidth: 0.75,
   });
   testo(nodes, 66, y + 19, "PROPOSTA COMMERCIALE", 8, {
     weight: 800,
@@ -576,7 +577,6 @@ export function creaDocumentoPreventivo(
   const card = (
     x: number,
     titolo: string,
-    indice: string,
     contenuto: Array<{ linea: string; principale: boolean }>,
   ) => {
     rect(nodes, x, y, 339, cardHeight, {
@@ -585,14 +585,7 @@ export function creaDocumentoPreventivo(
       stroke: COLORI.line,
       strokeWidth: 0.85,
     });
-    rect(nodes, x, y + 13, 4, cardHeight - 26, { radius: 2, fill: COLORI.yellow });
-    rect(nodes, x + 17, y + 13, 24, 24, { radius: 12, fill: COLORI.yellowSoft });
-    testo(nodes, x + 29, y + 29, indice, 7.2, {
-      align: "center",
-      weight: 800,
-      fill: COLORI.navy,
-    });
-    testo(nodes, x + 51, y + 29, titolo, 8.2, {
+    testo(nodes, x + 17, y + 29, titolo, 8.2, {
       weight: 800,
       fill: COLORI.ink,
       letterSpacing: 0.75,
@@ -607,8 +600,8 @@ export function creaDocumentoPreventivo(
       lineY += cardLineStep;
     });
   };
-  card(48, "DATI DI SPEDIZIONE", "01", contenutoSpedizione);
-  card(407, "DATI DI FATTURAZIONE", "02", contenutoFatturazione);
+  card(48, "DATI DI SPEDIZIONE", contenutoSpedizione);
+  card(407, "DATI DI FATTURAZIONE", contenutoFatturazione);
   y += cardHeight + (compattoTreProdotti ? 10 : 17);
 
   if (preventivo.introduzione.trim()) {
@@ -625,6 +618,9 @@ export function creaDocumentoPreventivo(
       ? preventivo.righe.every((riga) => riga.categoria === "Immunoterapia")
       : preventivo.linee.length === 1 &&
         preventivo.linee[0] === "Immunoterapia";
+  const mostraPrezzo = preventivo.righe.some(
+    (riga) => riga.prezzo !== riga.qta * riga.prezzo,
+  );
   const larghezzaDettagliProdotto = soloImmunoterapia ? 450 : 390;
   const dettagliRiga = (riga: Preventivo["righe"][number]) => {
     const dettagli: string[] = [];
@@ -661,7 +657,9 @@ export function creaDocumentoPreventivo(
       ...(soloImmunoterapia
         ? []
         : ([[centroQta, "Q.TÀ", "center"]] as Array<[number, string, Align]>)),
-      [centroPrezzo, "PREZZO", "center"],
+      ...(mostraPrezzo
+        ? ([[centroPrezzo, "PREZZO", "center"]] as Array<[number, string, Align]>)
+        : []),
       [centroTotale, "TOTALE", "center"],
     ];
     for (const [x, label, align] of colonne) {
@@ -681,7 +679,7 @@ export function creaDocumentoPreventivo(
     testo(nodes, 64, y + 27, "Nessun prodotto inserito.", 9, { fill: COLORI.muted });
     y += 44;
   } else {
-    preventivo.righe.forEach((riga, index) => {
+    preventivo.righe.forEach((riga) => {
       const nomeLines = avvolgiTesto(
         riga.prodottoNome || "Prodotto",
         larghezzaDettagliProdotto,
@@ -702,14 +700,14 @@ export function creaDocumentoPreventivo(
         intestazioneProdotti();
       }
       rect(nodes, 48, y, 698, rowHeight, {
-        fill: index % 2 === 0 ? COLORI.white : "#fffbee",
+        fill: COLORI.white,
         stroke: COLORI.line,
         strokeWidth: 0.65,
       });
       if (!soloImmunoterapia) {
         line(nodes, 466, y, 466, y + rowHeight, COLORI.line, 0.45);
       }
-      line(nodes, 528, y, 528, y + rowHeight, COLORI.line, 0.45);
+      if (mostraPrezzo) line(nodes, 528, y, 528, y + rowHeight, COLORI.line, 0.45);
       line(nodes, 640, y, 640, y + rowHeight, COLORI.line, 0.45);
       nomeLines.forEach((valore, lineIndex) =>
         testo(
@@ -744,9 +742,11 @@ export function creaDocumentoPreventivo(
           },
         );
       }
-      testo(nodes, 584, y + (compattoTreProdotti ? 23 : 25), euro(riga.prezzo), 8.6, {
-        align: "center",
-      });
+      if (riga.prezzo !== riga.qta * riga.prezzo) {
+        testo(nodes, 584, y + (compattoTreProdotti ? 23 : 25), euro(riga.prezzo), 8.6, {
+          align: "center",
+        });
+      }
       testo(nodes, 688, y + (compattoTreProdotti ? 23 : 25), euro(riga.qta * riga.prezzo), 9, {
         align: "center",
         weight: 800,
@@ -1094,6 +1094,38 @@ export function creaDocumentoPreventivo(
   });
   y += compattoTreProdotti ? 86 : 94;
 
+  if (preventivo.note.trim()) {
+    const noteLines = avvolgiTesto(preventivo.note, 577, 8.3);
+    const noteHeight = Math.max(36, 20 + noteLines.length * 10);
+    assicuratiSpazio(noteHeight);
+    rect(nodes, 48, y, 698, noteHeight, {
+      radius: 8,
+      fill: COLORI.white,
+      stroke: COLORI.line,
+    });
+    rect(nodes, 48, y, 86, noteHeight, {
+      radius: 8,
+      fill: COLORI.pale,
+    });
+    testo(nodes, 91, y + noteHeight / 2 + 2.6, "NOTE", 7.6, {
+      align: "center",
+      weight: 800,
+      fill: COLORI.navy,
+      letterSpacing: 0.7,
+    });
+    noteLines.forEach((valore, index) =>
+      testo(
+        nodes,
+        151,
+        y + (noteHeight - noteLines.length * 10) / 2 + 8 + index * 10,
+        valore,
+        8.3,
+        { fill: COLORI.ink },
+      ),
+    );
+    y += noteHeight + 4;
+  }
+
   const pagamentoAcconto = pagamenti.find((pagamento) => pagamento.tipo === "acconto");
   const primoPagamentoBancario = pagamenti.find(
     (pagamento) => pagamento.contoTipo === "banca" && pagamento.contoIban?.trim(),
@@ -1124,13 +1156,14 @@ export function creaDocumentoPreventivo(
     Math.max(0, confermaLines.length - 1) * 9 +
     (accordiLines.length ? 24 + accordiLines.length * 9 : 0);
   assicuratiSpazio(condizioniHeight);
+  y = Math.max(y, limiteContenuto - condizioniHeight);
   rect(nodes, 48, y, 698, condizioniHeight, {
     radius: 9,
     fill: COLORI.white,
-    stroke: COLORI.navy,
-    strokeWidth: 1,
+    stroke: COLORI.line,
+    strokeWidth: 0.75,
   });
-  rect(nodes, 48, y, 698, 34, { radius: 9, fill: COLORI.yellow });
+  rect(nodes, 48, y, 698, 34, { radius: 9, fill: COLORI.pale });
   testo(nodes, 66, y + 23, "CONDIZIONI DI PAGAMENTO", 9, {
     weight: 800,
     fill: COLORI.navy,
@@ -1219,38 +1252,6 @@ export function creaDocumentoPreventivo(
   }
   y += condizioniHeight + 4;
 
-  if (preventivo.note.trim()) {
-    const noteLines = avvolgiTesto(preventivo.note, 662, 8.3);
-    const noteHeight = Math.max(36, 20 + noteLines.length * 10);
-    assicuratiSpazio(noteHeight);
-    rect(nodes, 48, y, 698, noteHeight, {
-      radius: 8,
-      fill: COLORI.yellowSoft,
-      stroke: COLORI.yellow,
-    });
-    rect(nodes, 48, y, 86, noteHeight, {
-      radius: 8,
-      fill: COLORI.yellow,
-    });
-    testo(nodes, 91, y + noteHeight / 2 + 2.6, "NOTE", 7.6, {
-      align: "center",
-      weight: 800,
-      fill: COLORI.navy,
-      letterSpacing: 0.7,
-    });
-    noteLines.forEach((valore, index) =>
-      testo(
-        nodes,
-        151,
-        y + (noteHeight - noteLines.length * 10) / 2 + 8 + index * 10,
-        valore,
-        8.3,
-        { fill: COLORI.ink },
-      ),
-    );
-    y += noteHeight;
-  }
-
   const numeroPagine = pagine.length;
   pagine.forEach((pagina, index) => {
     line(pagina, 48, 1074, 746, 1074, COLORI.navy, 0.8);
@@ -1334,7 +1335,7 @@ function campoCartaceo(
     weight: 800,
   });
   for (let index = 0; index < righe; index += 1) {
-    line(nodes, x, y + 14 + index * 28, x + width, y + 14 + index * 28, SCHEDA_NERO, 1);
+    line(nodes, x, y + 14 + index * 30, x + width, y + 14 + index * 30, SCHEDA_NERO, 1);
   }
   if (!value.trim()) return;
   const testoValore = testoMultilinea(
@@ -1346,6 +1347,7 @@ function campoCartaceo(
     13,
     righe,
     { weight: 600, fontFamily: "arial", fill: SCHEDA_NERO },
+    30,
   );
   if (testoValore.overflow) {
     overflow.push(
@@ -1571,11 +1573,11 @@ export function creaDocumentoSchedaCliente(
     opzioni.agenteNome?.trim() ? `Agente: ${opzioni.agenteNome.trim()}` : "",
   ].filter(Boolean).join(" · ");
   if (noteComplete && !opzioni.nascondiValoriEditabili) {
-    const note = testoMultilinea(nodes, 52, 817, noteComplete, 690, 12.8, 3, {
-      weight: 600,
-      fontFamily: "arial",
-      fill: SCHEDA_NERO,
-    });
+    const note = testoMultilinea(
+      nodes, 52, 817, noteComplete, 690, 12.8, 3,
+      { weight: 600, fontFamily: "arial", fill: SCHEDA_NERO },
+      30,
+    );
     if (note.overflow) overflow.push("Le note superano tre righe.");
   }
 

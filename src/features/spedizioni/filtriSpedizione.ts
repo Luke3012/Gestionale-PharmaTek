@@ -1,5 +1,6 @@
 import { formattaDataItaliana } from "../../lib/date";
 import type { Spedizione } from "../../lib/tauri";
+import { colliSpedizioneEffettuata } from "./datiVaccino";
 
 /** Appartenenza della spedizione all'anno di lavoro (0 = tutti gli anni). */
 export function spedizioneNellAnno(spedizione: Spedizione, anno: number): boolean {
@@ -39,7 +40,7 @@ export function opzioniLottiSpedizione(spedizioni: Spedizione[], anno: number) {
       colli: 0,
     };
     if (spedizione.corriereNome) gruppo.corrieri.add(spedizione.corriereNome);
-    gruppo.colli += Math.max(1, spedizione.colli || 0);
+    gruppo.colli += colliSpedizioneEffettuata(spedizione);
     gruppi.set(spedizione.lotto, gruppo);
   }
   return [...gruppi.entries()]

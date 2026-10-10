@@ -7,6 +7,7 @@
 // stesse cose (tutti i termini devono comparire). Le date si riconoscono sia in
 // formato ISO (2025-04-10) sia italiano (10/04/2025): basta che il termine
 // compaia nel "blob" dell'elemento, che include entrambe le forme.
+import { colliSpedizioneEffettuata } from "../features/spedizioni/datiVaccino";
 import {
   IconAddressBook,
   IconBell,
@@ -1227,7 +1228,7 @@ function costruisciPagamentiSmart(query: string, dati: DatiRicerca): VoceRicerca
       const date = gruppo.map((s) => s.data).sort();
       const data = date[date.length - 1] ?? "";
       const corrieri = [...new Set(gruppo.map((s) => s.corriereNome).filter(Boolean))].join(" / ") || "spedizione";
-      const colli = gruppo.reduce((totale, s) => totale + Math.max(1, s.colli || 0), 0);
+      const colli = gruppo.reduce((totale, s) => totale + colliSpedizioneEffettuata(s), 0);
       const breve = lotto.slice(-6);
       return {
         tipo: "spedizione_lotto" as const,

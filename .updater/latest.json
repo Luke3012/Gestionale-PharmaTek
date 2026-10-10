@@ -1,11 +1,11 @@
 {
-    "version":  "0.8.4",
-    "notes":  "✨ Sono state apportate alcune migliorie tecniche!",
-    "pub_date":  "2026-10-03T17:47:41Z",
+    "version":  "0.8.5",
+    "notes":  "Adesso viene mostrato il numero di colli reale, per ciascun corriere. Inoltre, è stato migliorato il meccanismo di sincronizzazione manuale.",
+    "pub_date":  "2026-10-10T12:35:10Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM3RnQlZMRjhxRERlWi9YdVZDZFMvcmxYdVFkSmNhc1hYWG45cVZvVWxYOTFqeEREMCtpaWV4UmdHdVhLMGlNcFNZSHpjS2hmamR6eWhwWFhCOWJJamdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDQ5NjUwCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjRfeDY0LXNldHVwLmV4ZQpzSjVUYTZDQmFwWE40eEc2b0E3Ykl4ZUd6YkphT0pTemJ6Wnd4VHo0ZG9Yb3B1SXFtR3dEbXVvWEk4MWVCY3pmcXFOZnRIN2tnVmd1TEJpZzRoeHRBUT09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/608251902"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2dwWEE0NTdhVjdTUFkxOXRpTHkwTzMwQWhRbklPRVNlNkRDSm5iSDBaQTE5aGNnajdPMXQyMFpIOU1rb0Q3bURzR3hLbkVjU3VQZ2xBZCs4VDVMK2dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjM1Njk5CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjVfeDY0LXNldHVwLmV4ZQoyK2lIZ1h3MU1rajhzRktDV0crc1IyS0VRaW8wREFlRkpTWEh5Rm9NYTRCbG9hNHJUcDJIVzRBLzd2YU5hVTVETkdJSFdtY2xvT1B1enV3V3Y0TlhDdz09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/627933537"
                                          }
                   }
 }

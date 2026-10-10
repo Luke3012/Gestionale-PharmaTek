@@ -10,6 +10,7 @@
 import type { Spedizione } from "../../lib/tauri";
 import type { ColonnaExport } from "../../ui/esporta/EsportaTabella";
 import { raggruppaPerIndirizzoCompatibile, unisciNoteSpedizione } from "./confrontoIndirizzi";
+import { colliSpedizioneEffettuata } from "./datiVaccino";
 
 /** Riga "piatta" della distinta corriere, costruita da una spedizione (collo). */
 export interface RigaCorriere {
@@ -69,8 +70,8 @@ export function rigaCorriere(s: Spedizione): RigaCorriere {
     citta: s.citta,
     prov: s.prov,
     regione: s.regione,
-    colli: 1,
-    peso: 1,
+    colli: colliSpedizioneEffettuata(s),
+    peso: Math.max(1, s.pesoExport || 1),
     telefono: s.telefono,
     importo: s.mezzo ? s.contrassegno : "",
     note,
@@ -105,12 +106,10 @@ function estraiNumeriLottoSpedizione(s: Spedizione): string[] {
 
 /** Prepara le righe per la distinta CORRIERE_A: 1 riga per ogni collo/spedizione presente
  * nel gestionale, con tutti i lotti del collo uniti con " + " e ordinati in modo naturale,
- * senza separare per paziente. Colli e peso sono sempre impostati a 1. */
+ * senza separare per paziente. Colli e peso seguono i valori del popover (default 1/1). */
 function preparaRigheCorriereA(spedizioni: Spedizione[]): RigaCorriere[] {
   return spedizioni.map((s) => {
     const riga = rigaCorriere(s);
-    riga.colli = 1;
-    riga.peso = 1;
     const lotti = estraiNumeriLottoSpedizione(s);
     riga.numero = lotti.join(" + ");
     return riga;
@@ -164,9 +163,15 @@ function preparaRigheGlsMbe(spedizioni: Spedizione[]): RigaCorriere[] {
     const gruppo = perIndirizzo.get(s) ?? [s];
     gruppo.forEach((collo) => viste.add(collo));
     const riga = rigaCorriere(s);
-    riga.colli = gruppo.reduce((somma, collo) => somma + Math.max(1, collo.colli || 0), 0);
-    riga.peso = gruppo.reduce((somma, collo) => somma + Math.max(1, collo.peso || 0), 0);
     if (gruppo.length > 1) {
+      // Il default resta 1 per la riga aggregata; dopo una modifica esplicita
+      // si sommano i valori configurati dei colli esportati insieme.
+      if (gruppo.some((collo) => collo.colliExport != null)) {
+        riga.colli = gruppo.reduce((somma, collo) => somma + colliSpedizioneEffettuata(collo), 0);
+      }
+      if (gruppo.some((collo) => collo.pesoExport != null)) {
+        riga.peso = gruppo.reduce((somma, collo) => somma + Math.max(1, collo.pesoExport || 1), 0);
+      }
       riga.numero = comprimiNumeriLotto(gruppo.flatMap(numeriNonCompressi));
       riga.importo = gruppo.some((collo) => !!collo.mezzo)
         ? gruppo.reduce((somma, collo) => somma + (collo.mezzo ? collo.contrassegno : 0), 0)
@@ -187,7 +192,8 @@ function preparaRigheGlsMbe(spedizioni: Spedizione[]): RigaCorriere[] {
  *  - CORRIERE_A: una riga per collo/spedizione del gestionale; tutti i vaccini del collo condividono la
  *    cella numero uniti con " + " in ordine naturale (es. `5081997 + 5081998 + 5081999`),
  *    senza separazione per paziente. Se i numeri mancano, la riga resta presente con cella vuota.
- *  Per CORRIERE_A colli e peso sono sempre 1; CORRIERE_B/CORRIERE_C conservano o sommano i valori dei colli.
+ *  In tutti i profili colli e peso partono da 1/1; le modifiche esplicite del popover
+ *  sono rispettate anche per le spedizioni unite.
  */
 export function preparaRigheEsportazione(spedizioni: Spedizione[], profilo: string): RigaCorriere[] {
   if (profilo === "corriere_a") return preparaRigheCorriereA(spedizioni);

@@ -168,10 +168,7 @@ export function preparaAvvisiSpedizione(
           pagamenti.reduce((totale, p) => totale + p.importo, 0),
         ),
         istruzioni_pagamento: blocchi
-          .map(
-            (b) =>
-              `${b.ordine.ordineNumero ? `Ordine ${b.ordine.ordineNumero}\n` : ""}${b.dati.istruzioni_pagamento}`,
-          )
+          .map((b) => b.dati.istruzioni_pagamento)
           .join("\n\n"),
         iban: distinti(blocchi.map((b) => b.dati.iban)),
         modalita_pagamento: distinti(
