@@ -123,6 +123,9 @@ export function bollettazioneReviewIssue(
   if (blocking) return `${blocking.label}: ${row.reason}`;
   if (!resolution.match) return "Scegli una riga ordine oppure salta questa riga.";
   if (selectedRowCount > 1) return "La stessa riga ordine è associata a più riferimenti: cambia associazione o salta una riga.";
+  if (row.reuseShippedReference && !resolution.confirmed) {
+    return "Lotto già spedito: conferma la sostituzione con Associa oppure salta questa riga.";
+  }
   const conflicts = bollettazioneReviewConflicts(resolution.match);
   if (conflicts.some((conflict) => !resolution.conflictChoices[conflict.field])) {
     return "Scegli quale valore mantenere per ciascuna differenza.";
@@ -171,6 +174,7 @@ export function bollettazioneConfirmation(
   if (!match || resolution.skipped || row.status === "gia_registrato"
     || bollettazioneReviewIssue(row, resolution, selectedRowCount)) return null;
   return {
+    ...(row.reuseShippedReference ? { reuseShippedReference: true } : {}),
     sourceReference: row.reference,
     rowId: match.rowId,
     orderId: match.orderId,

@@ -797,6 +797,7 @@ export interface BollettazioneRow {
   treatment: string;
   /** Famiglia del trattamento nel file; assente nei vecchi snapshot. */
   productFamily?: string;
+  reuseShippedReference?: boolean;
   status: BollettazioneRowStatus;
   reason: string;
   selectedMatch?: BollettazioneMatch | null;
@@ -812,6 +813,7 @@ export interface BollettazioneAnalisi {
 }
 
 export interface BollettazioneConfermaRiga {
+  reuseShippedReference?: boolean;
   sourceReference: string;
   rowId: string;
   orderId: string;

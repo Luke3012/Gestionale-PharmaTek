@@ -1,11 +1,11 @@
 {
     "version":  "0.8.6",
     "notes":  "🍝 Adesso PharmaTek non blocca più l\u0027interfaccia mentre è in attesa di sincronizzazione.",
-    "pub_date":  "2026-10-16T11:56:33Z",
+    "pub_date":  "2026-10-16T17:54:01Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM20rTi9kdHdrN2czbm5EbGZjWm1qS1RzQTN2dGpEWG5XbEo2eTJxeTdKQmlQbXVNV1FEM0tUNm9UejlpREpLNWNSVGRaTm54YnJkT09pOVBnNnJQMndzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTUxNzY0CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjZfeDY0LXNldHVwLmV4ZQp1cTFKanp3Qnl6a2RKYmFVNU52c3ZTL1Z6MnNhbUdvWkIyRmRZV1BnZ0V3eTUrWVZXc0pwY2k3dnVFVGJ2cjcyVmdsZ1BaZ2pZbU1Sdk5kVUZKNWdEUT09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/647189829"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2dnQllKY1VVZyszWms5MWFZWWxjTTAwSDY3eEVjaXZwZXNFQm5peFRIanBqWDVzR3c4MFpyUmxodWJldStBSzFxYUY5RTkwaVVMM25HcVNKNWdnZXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTczMjMzCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjZfeDY0LXNldHVwLmV4ZQpNMzl0MlVlZFpFSHAwaTlJNVdpQlV0M0ROdm8rZSswbWJBV2dLWmNVeThNa01jUHZIdUNPTmhObEEyV1hYK2Y3VkFvbTIxcW8xKzlqMWd1K0w3MXdDQT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/648125405"
                                          }
                   }
 }

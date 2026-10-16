@@ -83,6 +83,7 @@ pub struct BollettazioneRowDto {
     pub doctor: String,
     pub treatment: String,
     pub product_family: String,
+    pub reuse_shipped_reference: bool,
     pub status: String,
     pub reason: String,
     pub selected_match: Option<BollettazioneMatchDto>,
@@ -166,6 +167,8 @@ pub struct BollettazioneConfermaRigaIn {
     pub order_id: String,
     pub expected_row_revision: String,
     pub expected_order_revision: String,
+    #[serde(default)]
+    pub reuse_shipped_reference: bool,
     #[serde(default)]
     pub accepted_fields: Map<String, Value>,
 }
@@ -1312,6 +1315,67 @@ type CandidateData = (
     HashMap<String, Vec<(String, bool)>>,
 );
 
+// Eccezione esplicita per una sostituzione omaggio dello stesso cliente,
+// medico, paziente e prodotto. Gli altri proprietari del lotto devono essere
+// tutti già spediti; non autorizza mai due righe ancora da spedire.
+fn lotto_riutilizzabile(
+    p: &crate::projection::Projection,
+    target: &crate::projection::Record,
+    owners: &[crate::projection::Record],
+    reference: &str,
+) -> bool {
+    let Some(order) = p
+        .get("ordine", &str_field(&target.data, "ordine_id"))
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    if order.data.get("omaggio").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    let number = str_field(&target.data, "numero");
+    if !number.trim().is_empty() && riferimento_chiave(number.trim()) != reference {
+        return false;
+    }
+    let client = str_field(&order.data, "cliente_id");
+    let doctor = str_field(&order.data, "medico_id");
+    if client.is_empty() || doctor.is_empty() {
+        return false;
+    }
+    let patient_words = |data: &Map<String, Value>| -> HashSet<String> {
+        normalizza_nome(&str_field(data, "paziente"))
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect()
+    };
+    let historical: Vec<_> = owners
+        .iter()
+        .filter(|owner| owner.id != target.id)
+        .collect();
+    !historical.is_empty()
+        && historical.iter().all(|owner| {
+            if !riga_spedita(&owner.data) {
+                return false;
+            }
+            let Some(original) = p
+                .get("ordine", &str_field(&owner.data, "ordine_id"))
+                .ok()
+                .flatten()
+            else {
+                return false;
+            };
+            original.id != order.id
+                && str_field(&original.data, "cliente_id") == client
+                && str_field(&original.data, "medico_id") == doctor
+                && patient_words(&owner.data) == patient_words(&target.data)
+                && str_field(&owner.data, "prodotto_id") == str_field(&target.data, "prodotto_id")
+                && (!str_field(&target.data, "prodotto_id").is_empty()
+                    || normalizza_testo(&str_field(&owner.data, "prodotto_nome"))
+                        == normalizza_testo(&str_field(&target.data, "prodotto_nome")))
+        })
+}
+
 /// Le proposte non rendono pronta una riga: l'operatore deve confermarle.
 /// Prima riserviamo tutte le assegnazioni sicure, poi proponiamo solo righe libere.
 fn suggest_review_assignments(
@@ -1541,6 +1605,25 @@ impl AppState {
                 .iter()
                 .map(|row| normalize_treatment(row, &products, &canonical_allergens))
                 .collect();
+            let reuse_candidates: HashMap<String, HashSet<String>> = engine.with_projection(|p| {
+                let gift_orders: HashSet<_> = p.list("ordine").unwrap_or_default().into_iter()
+                    .filter(|order| order.data.get("omaggio").and_then(Value::as_bool) == Some(true))
+                    .map(|order| order.id).collect();
+                let available_ids: HashSet<_> = candidates.iter().map(|candidate| candidate.row_id.as_str()).collect();
+                let targets: Vec<_> = p.list("riga_ordine").unwrap_or_default().into_iter()
+                    .filter(|target| available_ids.contains(target.id.as_str())
+                        && gift_orders.contains(&str_field(&target.data, "ordine_id")))
+                    .collect();
+                source_rows.iter().filter_map(|source| {
+                    let references = existing_references.get(&source.reference)?;
+                    let owners: Vec<_> = references.iter().filter_map(|(id, _)| p.get("riga_ordine", id).ok().flatten()).collect();
+                    if owners.len() != references.len() { return None; }
+                    let eligible = targets.iter().filter_map(|target| {
+                        lotto_riutilizzabile(p, target, &owners, &source.reference).then(|| target.id.clone())
+                    }).collect::<HashSet<_>>();
+                    (!eligible.is_empty()).then(|| (source.reference.clone(), eligible))
+                }).collect()
+            });
             let mut rankings: Vec<Vec<Ranked>> = source_rows
                 .iter()
                 .zip(&normalized)
@@ -1557,9 +1640,12 @@ impl AppState {
                                 .and_then(Value::as_str)
                                 .unwrap_or_default();
                             if reference_already_exists {
-                                existing_references[&row.reference]
+                                if let Some(eligible) = reuse_candidates.get(&row.reference) {
+                                    eligible.contains(&candidate.row_id)
+                                } else { existing_references[&row.reference]
                                     .iter()
                                     .any(|(row_id, _)| row_id == &candidate.row_id)
+                                }
                             } else {
                                 current_number.trim().is_empty()
                             }
@@ -1627,7 +1713,12 @@ impl AppState {
             let mut automatic =
                 automatic_assignments(&source_rows, &candidates, &rankings, &excluded_automatic);
             suggest_review_assignments(
-                &source_rows, &candidates, &rankings, &excluded_automatic, &mut automatic,
+                &source_rows, &candidates, &rankings,
+                &excluded_automatic.iter().copied().filter(|index| {
+                    !reuse_candidates.contains_key(&source_rows[*index].reference)
+                        || repeated_duplicates.contains(index) || conflicting_duplicates.contains(index)
+                        || source_rows[*index].quantity > 1 || source_rows[*index].reference_ambiguous
+                }).collect(), &mut automatic,
             );
 
             let mut rows = Vec::with_capacity(source_rows.len());
@@ -1645,6 +1736,17 @@ impl AppState {
                         )
                     })
                     .collect();
+                // Recupero unico dalla graduatoria completa: il limite riguarda
+                // le alternative mostrate, mai la riga già scelta dall'assegnazione.
+                let assigned_match = automatic.by_source.get(&index).and_then(|row_id| {
+                    ranked.iter().find(|item| &candidates[item.candidate_index].row_id == row_id)
+                        .map(|item| ranked_to_dto(item, &candidates[item.candidate_index], &row.reference, normalized))
+                });
+                if let Some(matched) = &assigned_match {
+                    if !alternatives.iter().any(|item| item.row_id == matched.row_id) {
+                        alternatives.push(matched.clone());
+                    }
+                }
                 let existing = existing_references.get(&row.reference);
                 let quantity_issue = row.quantity > 1;
                 let lab_issue = !row.lab_status.is_empty()
@@ -1675,7 +1777,10 @@ impl AppState {
                         blocking: false,
                     });
                 } else if let Some(existing) = existing {
-                    if existing.len() == 1 {
+                    if reuse_candidates.contains_key(&row.reference) {
+                        reason = "Lotto già spedito: verifica e conferma l'associazione alla sostituzione".into();
+                        selected_match = assigned_match.clone();
+                    } else if existing.len() == 1 || existing.iter().all(|(_, shipped)| *shipped) {
                         if existing[0].1 {
                             status = STATO_REGISTRATO.into();
                             reason = "Riferimento già spedito".into();
@@ -1725,25 +1830,8 @@ impl AppState {
                     || (normalized.product_id.is_empty() && normalized.vials > 0)
                 {
                     reason = "Trattamento o numero di fiale non presente nel catalogo".into();
-                } else if let Some(row_id) = automatic.by_source.get(&index) {
-                    let matched = alternatives
-                        .iter()
-                        .find(|item| &item.row_id == row_id)
-                        .cloned()
-                        .or_else(|| {
-                            ranked
-                                .iter()
-                                .find(|item| &candidates[item.candidate_index].row_id == row_id)
-                                .map(|item| {
-                                    ranked_to_dto(
-                                        item,
-                                        &candidates[item.candidate_index],
-                                        &row.reference,
-                                        normalized,
-                                    )
-                                })
-                        });
-                    if let Some(matched) = matched {
+                } else if automatic.by_source.contains_key(&index) {
+                    if let Some(matched) = assigned_match {
                         let match_has_conflicts = !matched.conflicts.is_empty();
                         let matched_row_id = matched.row_id.clone();
                         let candidate = candidates
@@ -1840,6 +1928,7 @@ impl AppState {
                     doctor: row.doctor.clone(),
                     treatment: row.treatment.clone(),
                     product_family: normalized.family.clone(),
+                    reuse_shipped_reference: reuse_candidates.contains_key(&row.reference),
                     status,
                     reason,
                     selected_match,
@@ -1966,6 +2055,34 @@ impl AppState {
                         let accepted_numbers: HashSet<String> =
                             accepted_lines.iter().cloned().collect();
                         fields.insert("numero".into(), json!(accepted_lines.join("\n")));
+                        let reference_owners: Vec<_> = projection
+                            .list("riga_ordine")
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|other| {
+                                str_field(&other.data, "numero").lines().any(|value| {
+                                    !value.trim().is_empty()
+                                        && riferimento_chiave(value.trim())
+                                            == riferimento_chiave(&row.source_reference)
+                                })
+                            })
+                            .collect();
+                        let reuse_allowed = row.reuse_shipped_reference
+                            && accepted_numbers.len() == 1
+                            && accepted_numbers
+                                .contains(&riferimento_chiave(&row.source_reference))
+                            && lotto_riutilizzabile(
+                                projection,
+                                &current,
+                                &reference_owners,
+                                &riferimento_chiave(&row.source_reference),
+                            );
+                        if row.reuse_shipped_reference && !reuse_allowed {
+                            return Err(
+                                "le condizioni della sostituzione sono cambiate: ricarica i file"
+                                    .into(),
+                            );
+                        }
                         for other in projection.list("riga_ordine").unwrap_or_default() {
                             if other.id == row.row_id {
                                 continue;
@@ -1977,6 +2094,11 @@ impl AppState {
                                         == riferimento_chiave(&row.source_reference)
                                         || accepted_numbers.contains(&riferimento_chiave(value)))
                             }) {
+                                if reuse_allowed
+                                    && reference_owners.iter().any(|owner| owner.id == other.id)
+                                {
+                                    continue;
+                                }
                                 return Err("un riferimento è già assegnato a un'altra riga".into());
                             }
                         }
@@ -2217,6 +2339,7 @@ mod tests {
         reference: &str,
     ) -> BollettazioneConfermaRigaIn {
         BollettazioneConfermaRigaIn {
+            reuse_shipped_reference: false,
             source_reference: reference.into(),
             row_id: order.righe[index].id.clone(),
             order_id: order.id.clone(),
@@ -3348,6 +3471,7 @@ mod tests {
         assert!(analysis.rows[1].selected_match.is_none());
         let courier = state.records_list("corriere").unwrap()[0].id.clone();
         let confirmation = BollettazioneConfermaRigaIn {
+            reuse_shipped_reference: false,
             source_reference: "5083088".into(),
             row_id: row_id.clone(),
             order_id: matched.order_id.clone(),
@@ -3379,6 +3503,341 @@ mod tests {
         let after = analyze();
         assert_eq!(after.rows[0].status, STATO_REGISTRATO);
         assert!(after.rows[0].selected_match.is_none());
+    }
+
+    fn replacement_order(
+        state: &AppState,
+        original: &OrdineSalvaBaseResult,
+    ) -> OrdineSalvaBaseResult {
+        state
+            .ordine_salva_base(OrdineSalvaBaseInput {
+                id: None,
+                rimborso_extra: None,
+                expected_righe: vec![],
+                fields: fields(&[
+                    ("stato", json!("Nuovo")),
+                    ("data", json!("2026-10-16")),
+                    ("omaggio", json!(true)),
+                    ("cliente_id", original.ordine.data["cliente_id"].clone()),
+                    ("medico_id", original.ordine.data["medico_id"].clone()),
+                ]),
+                righe: vec![OrdineSalvaRigaInput {
+                    id: None,
+                    fields: fields(&[
+                        ("prodotto_id", original.righe[0].data["prodotto_id"].clone()),
+                        ("paziente", original.righe[0].data["paziente"].clone()),
+                        ("qta", json!(1)),
+                        ("prezzo", json!(0)),
+                        ("stato_riga", json!("da_spedire")),
+                    ]),
+                }],
+            })
+            .unwrap()
+    }
+
+    fn reviewed_confirmation(row: &BollettazioneRowDto) -> BollettazioneConfermaRigaIn {
+        let matched = row.selected_match.as_ref().unwrap();
+        BollettazioneConfermaRigaIn {
+            source_reference: row.reference.clone(),
+            row_id: matched.row_id.clone(),
+            order_id: matched.order_id.clone(),
+            expected_row_revision: matched.expected_row_revision.clone(),
+            expected_order_revision: matched.expected_order_revision.clone(),
+            accepted_fields: matched.proposed_fields.clone(),
+            reuse_shipped_reference: row.reuse_shipped_reference,
+        }
+    }
+
+    #[test]
+    fn lotto_spedito_propone_sostituzione_con_conferma_arrivo_e_spedizione_senza_toccare_originale()
+    {
+        let (_app, data, state) = test_state();
+        let original = order_with_rows(&state, 1);
+        let original_row = state
+            .record_update(
+                "riga_ordine",
+                &original.righe[0].id,
+                fields(&[
+                    ("numero", json!("5083088")),
+                    ("stato_riga", json!("spedita")),
+                ]),
+            )
+            .unwrap();
+        let replacement = replacement_order(&state, &original);
+        let path = data.path().join("sostituzione.xlsx");
+        provisional_file(
+            &path,
+            &[(
+                "5083088",
+                "Paziente Test 0",
+                "BELTAVAC Polimerizado 3 (ITA)",
+            )],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let analysis = analyze();
+        assert_eq!(analysis.rows[0].status, STATO_CONTROLLO);
+        assert!(analysis.rows[0].reuse_shipped_reference);
+        assert_eq!(
+            analysis.rows[0].selected_match.as_ref().unwrap().row_id,
+            replacement.righe[0].id
+        );
+        let second_replacement = replacement_order(&state, &original);
+        let ambiguous = analyze();
+        assert_eq!(ambiguous.rows[0].status, STATO_CONTROLLO);
+        assert_eq!(ambiguous.rows[0].alternatives.len(), 2);
+        assert!(ambiguous.rows[0]
+            .alternatives
+            .iter()
+            .all(|item| item.row_id != original.righe[0].id));
+        state
+            .record_update(
+                "ordine",
+                &second_replacement.id,
+                fields(&[("stato", json!("Annullato"))]),
+            )
+            .unwrap();
+        let mut confirmation = reviewed_confirmation(&analysis.rows[0]);
+        confirmation.reuse_shipped_reference = false;
+        let arrived = |row| BollettazioneConfermaIn {
+            mode: "arrivato_it".into(),
+            data_arrivo: "2026-10-16".into(),
+            rows: vec![row],
+            shipments: vec![],
+        };
+        assert!(state
+            .bollettazione_conferma(arrived(confirmation.clone()))
+            .is_err());
+        confirmation.reuse_shipped_reference = true;
+        state.bollettazione_conferma(arrived(confirmation)).unwrap();
+        let analysis = analyze();
+        assert_eq!(analysis.rows[0].status, STATO_CONTROLLO);
+        let confirmation = reviewed_confirmation(&analysis.rows[0]);
+        let shipment = BollettazioneSpedizioneIn {
+            data: "2026-10-16".into(),
+            corriere_id: state.records_list("corriere").unwrap()[0].id.clone(),
+            colli: 1,
+            peso: 1,
+            servizi: String::new(),
+            preavviso: false,
+            mezzo: String::new(),
+            contrassegno: 0,
+            note: String::new(),
+            row_ids: vec![replacement.righe[0].id.clone()],
+            gruppi_destinatari: vec![],
+        };
+        let ship = || BollettazioneConfermaIn {
+            mode: "spedizione".into(),
+            data_arrivo: "2026-10-16".into(),
+            rows: vec![confirmation.clone()],
+            shipments: vec![shipment.clone()],
+        };
+        state.bollettazione_conferma(ship()).unwrap();
+        assert!(state.bollettazione_conferma(ship()).is_err());
+        assert_eq!(analyze().rows[0].status, STATO_REGISTRATO);
+        let unchanged = state
+            .records_list("riga_ordine")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == original_row.id)
+            .unwrap();
+        assert_eq!(unchanged.revision, original_row.revision);
+        assert_eq!(unchanged.data, original_row.data);
+    }
+
+    #[test]
+    fn piu_righe_con_lotto_tutte_spedite_sono_registrate_ma_non_due_righe_da_spedire() {
+        let (_app, data, state) = test_state();
+        let a = order_with_rows(&state, 1);
+        let b = order_with_rows(&state, 1);
+        for id in [&a.righe[0].id, &b.righe[0].id] {
+            state
+                .record_update(
+                    "riga_ordine",
+                    id,
+                    fields(&[
+                        ("numero", json!("5083088")),
+                        ("stato_riga", json!("spedita")),
+                    ]),
+                )
+                .unwrap();
+        }
+        let path = data.path().join("storico.xlsx");
+        provisional_file(
+            &path,
+            &[(
+                "5083088",
+                "Paziente Test 0",
+                "BELTAVAC Polimerizado 3 (ITA)",
+            )],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        assert_eq!(analyze().rows[0].status, STATO_REGISTRATO);
+        for id in [&a.righe[0].id, &b.righe[0].id] {
+            state
+                .record_update(
+                    "riga_ordine",
+                    id,
+                    fields(&[("stato_riga", json!("da_spedire"))]),
+                )
+                .unwrap();
+        }
+        let analysis = analyze();
+        assert_eq!(analysis.rows[0].status, STATO_CONTROLLO);
+        assert!(analysis.rows[0].conflicts.iter().any(|c| c.blocking));
+        assert!(!analysis.rows[0].reuse_shipped_reference);
+    }
+
+    #[test]
+    fn associazioni_oltre_dodici_alternative_restano_selezionate_per_ordini_e_sostituzioni() {
+        for reuse in [true, false] {
+            let (_app, data, state) = test_state();
+            let original = order_with_rows(&state, 1);
+            let historical: Vec<String> = (0..13).map(|i| format!("508{:04}", 3100 + i)).collect();
+            state
+                .record_update(
+                    "riga_ordine",
+                    &original.righe[0].id,
+                    fields(&[
+                        ("qta", json!(13)),
+                        ("numero", json!(historical.join("\n"))),
+                        ("stato_riga", json!("spedita")),
+                    ]),
+                )
+                .unwrap();
+            let expected: HashSet<_> = (0..13)
+                .map(|_| replacement_order(&state, &original).righe[0].id.clone())
+                .collect();
+            let references: Vec<String> = if reuse {
+                historical
+            } else {
+                (0..13).map(|i| format!("508{:04}", 3200 + i)).collect()
+            };
+            let file_rows: Vec<_> = references
+                .iter()
+                .map(|reference| {
+                    (
+                        reference.as_str(),
+                        "Paziente Test 0",
+                        "BELTAVAC Polimerizado 3 (ITA)",
+                    )
+                })
+                .collect();
+            let path = data.path().join("tredici.xlsx");
+            provisional_file(&path, &file_rows);
+            let analysis = state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap();
+            let selected: HashSet<_> = analysis
+                .rows
+                .iter()
+                .map(|row| {
+                    assert_eq!(row.status, STATO_CONTROLLO);
+                    assert_eq!(row.reuse_shipped_reference, reuse);
+                    let selected = row
+                        .selected_match
+                        .as_ref()
+                        .expect("anche la tredicesima associazione deve restare proposta");
+                    assert!(
+                        row.alternatives
+                            .iter()
+                            .any(|alternative| alternative.row_id == selected.row_id),
+                        "la selezione deve essere disponibile anche nel menu"
+                    );
+                    selected.row_id.clone()
+                })
+                .collect();
+            assert_eq!(selected, expected);
+        }
+    }
+
+    #[test]
+    fn riuso_rifiuta_ordini_ordinari_e_cambiamenti_dello_storico_senza_scritture_parziali() {
+        let (_app, data, state) = test_state();
+        let original = order_with_rows(&state, 1);
+        state
+            .record_update(
+                "riga_ordine",
+                &original.righe[0].id,
+                fields(&[
+                    ("numero", json!("5083088")),
+                    ("stato_riga", json!("spedita")),
+                ]),
+            )
+            .unwrap();
+        let replacement = replacement_order(&state, &original);
+        let path = data.path().join("sostituzione.xlsx");
+        provisional_file(
+            &path,
+            &[(
+                "5083088",
+                "Paziente Test 0",
+                "BELTAVAC Polimerizado 3 (ITA)",
+            )],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let confirmation = reviewed_confirmation(&analyze().rows[0]);
+        state
+            .record_update(
+                "riga_ordine",
+                &original.righe[0].id,
+                fields(&[("stato_riga", json!("da_spedire"))]),
+            )
+            .unwrap();
+        let result = state.bollettazione_conferma(BollettazioneConfermaIn {
+            mode: "arrivato_it".into(),
+            data_arrivo: "2026-10-16".into(),
+            rows: vec![confirmation],
+            shipments: vec![],
+        });
+        assert!(result
+            .err()
+            .unwrap()
+            .contains("condizioni della sostituzione"));
+        let target = state
+            .records_list("riga_ordine")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == replacement.righe[0].id)
+            .unwrap();
+        assert_eq!(target.revision, replacement.righe[0].revision);
+        state
+            .record_update(
+                "riga_ordine",
+                &original.righe[0].id,
+                fields(&[("stato_riga", json!("spedita"))]),
+            )
+            .unwrap();
+        state
+            .record_update(
+                "ordine",
+                &replacement.id,
+                fields(&[("omaggio", json!(false))]),
+            )
+            .unwrap();
+        assert_eq!(analyze().rows[0].status, STATO_REGISTRATO);
+        state
+            .record_update(
+                "ordine",
+                &replacement.id,
+                fields(&[
+                    ("omaggio", json!(true)),
+                    ("cliente_id", json!("altro-cliente")),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(analyze().rows[0].status, STATO_REGISTRATO);
     }
 
     #[test]

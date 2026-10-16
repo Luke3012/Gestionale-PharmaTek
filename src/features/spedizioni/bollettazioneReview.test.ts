@@ -113,6 +113,15 @@ describe("esclusioni prodotti e modifiche della revisione", () => {
 });
 
 describe("revisione bollettazione", () => {
+  it("richiede conferma esplicita per riusare un lotto già spedito sulla sostituzione", () => {
+    const replacement = { ...row, reuseShippedReference: true };
+    const resolution = { ...initialBollettazioneResolution(replacement), conflictChoices: { numero: "file" as const } };
+    expect(bollettazioneReviewIssue(replacement, resolution)).toContain("conferma la sostituzione");
+    expect(bollettazioneConfirmation(replacement, resolution)).toBeNull();
+    resolution.confirmed = true;
+    expect(bollettazioneConfirmation(replacement, resolution)?.reuseShippedReference).toBe(true);
+    expect(bollettazioneConfirmation(replacement, { ...resolution, skipped: true })).toBeNull();
+  });
   it("mantiene il valore gestionale finché l'operatore non sceglie il file", () => {
     const resolution = initialBollettazioneResolution(row);
     expect(bollettazioneAcceptedFields(resolution).numero).toBe(
