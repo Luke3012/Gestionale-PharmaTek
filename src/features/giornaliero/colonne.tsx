@@ -567,9 +567,12 @@ export const COLONNE: ColDef[] = [
     esporta: { valore: (o) => o.note },
     render: (o) =>
       o.note ? (
-        <Text size="sm" truncate maw={200}>
-          {o.note}
-        </Text>
+        <Tooltip label={o.note} withArrow multiline maw={420}
+          styles={{ tooltip: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}>
+          <Text size="sm" truncate maw={200}>
+            {o.note}
+          </Text>
+        </Tooltip>
       ) : (
         "—"
       ),

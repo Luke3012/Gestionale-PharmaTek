@@ -70,6 +70,7 @@ type AzioneClienteDettaglio = "whatsapp" | "email";
 type ClienteDettaglio = {
   label: string;
   valore: string;
+  testoCompleto?: string;
   Ico: typeof IconUser;
   azione?: AzioneClienteDettaglio;
 };
@@ -791,7 +792,7 @@ function dettagliClienteDaRecord(rec: RecordDto | null): ClienteDettaglio[] {
       azione: "email",
     });
   }
-  if (note) dettagli.push({ label: "Note", valore: note.length > 90 ? `${note.slice(0, 87).trim()}...` : note, Ico: IconNote });
+  if (note) dettagli.push({ label: "Note", valore: note.length > 90 ? `${note.slice(0, 87).trim()}...` : note, testoCompleto: note, Ico: IconNote });
   return dettagli;
 }
 
@@ -866,7 +867,9 @@ function ClienteInfoMain({
   onAzione: (dettaglio: ClienteDettaglio) => void;
 }) {
   return (
-    <Group gap="sm" wrap="nowrap" align="flex-start" style={{ minWidth: 0 }} title={`${dettaglio.label}: ${dettaglio.valore}`}>
+    <Tooltip label={dettaglio.testoCompleto} disabled={!dettaglio.testoCompleto} withArrow multiline maw={420}
+      styles={{ tooltip: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}>
+    <Group gap="sm" wrap="nowrap" align="flex-start" style={{ minWidth: 0 }} title={dettaglio.testoCompleto ? undefined : `${dettaglio.label}: ${dettaglio.valore}`}>
       <ClienteInfoIcona
         dettaglio={dettaglio}
         size={42}
@@ -896,6 +899,7 @@ function ClienteInfoMain({
         </Text>
       </Box>
     </Group>
+    </Tooltip>
   );
 }
 
@@ -930,11 +934,13 @@ function ClienteInfoMeta({
   onAzione: (dettaglio: ClienteDettaglio) => void;
 }) {
   return (
+    <Tooltip label={dettaglio.testoCompleto} disabled={!dettaglio.testoCompleto} withArrow multiline maw={420}
+      styles={{ tooltip: { whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}>
     <Group
       gap={8}
       wrap="nowrap"
       style={{ minWidth: 0, paddingRight: 8 }}
-      title={`${dettaglio.label}: ${dettaglio.valore}`}
+      title={dettaglio.testoCompleto ? undefined : `${dettaglio.label}: ${dettaglio.valore}`}
     >
       <ClienteInfoIcona
         dettaglio={dettaglio}
@@ -953,6 +959,7 @@ function ClienteInfoMeta({
         </Text>
       </Box>
     </Group>
+    </Tooltip>
   );
 }
 
