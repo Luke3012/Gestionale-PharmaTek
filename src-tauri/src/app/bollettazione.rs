@@ -82,6 +82,7 @@ pub struct BollettazioneRowDto {
     pub patient: String,
     pub doctor: String,
     pub treatment: String,
+    pub product_family: String,
     pub status: String,
     pub reason: String,
     pub selected_match: Option<BollettazioneMatchDto>,
@@ -226,16 +227,26 @@ fn cell_text(cell: Option<&Data>) -> String {
 fn normalizza_header(value: &str) -> String {
     value
         .chars()
+        .map(deaccent_char)
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
 }
 
 fn header_index(headers: &[String], name: &str) -> Option<usize> {
-    let target = normalizza_header(name);
-    headers
-        .iter()
-        .position(|header| normalizza_header(header) == target)
+    let aliases: &[&str] = match name {
+        "Referencia" => &["Referencia", "Nº Referencia", "N° Referencia"],
+        "Paciente" => &["Paciente", "Nombre Paciente"],
+        "Doctor" => &["Doctor", "Nombre Médico"],
+        "Tratamiento" => &["Tratamiento", "Descripción tratamiento"],
+        _ => &[name],
+    };
+    aliases.iter().find_map(|alias| {
+        let target = normalizza_header(alias);
+        headers
+            .iter()
+            .position(|header| normalizza_header(header) == target)
+    })
 }
 
 fn cell_i64(cell: Option<&Data>) -> i64 {
@@ -887,6 +898,22 @@ fn product_score_for(normalized: &TrattamentoNormalizzato, candidate: &Candidato
         _ => false,
     };
     if same_family {
+        // Zero indica fiale non disponibili, non una quantità dedotta dalla posologia.
+        // Il prodotto dell'ordine resta invariato; PRO e formulazioni note devono concordare.
+        if normalized.vials <= 0 && normalized.product_id.is_empty() {
+            let candidate_pro = candidate_name.contains(" pro");
+            let source_pro = normalized.product_fallback;
+            let formulation = normalizza_testo(&candidate.formulation);
+            let compatible_formulation = normalized.formulation.is_empty()
+                || (formulation.is_empty() && normalized.family != "veb")
+                || formulation == normalizza_testo(&normalized.formulation);
+            let compatible_dosage = normalized.dosage.is_empty()
+                || candidate.dosage.is_empty()
+                || normalizza_testo(&normalized.dosage) == normalizza_testo(&candidate.dosage);
+            if candidate_pro == source_pro && compatible_formulation && compatible_dosage {
+                return 1.0;
+            }
+        }
         return 0.55;
     }
     if normalized.veb_product_ambiguous
@@ -1097,7 +1124,10 @@ fn automatic_assignments(
     excluded_sources: &HashSet<usize>,
 ) -> AutomaticAssignments {
     let mut source_group_sizes: HashMap<String, usize> = HashMap::new();
-    for row in source_rows {
+    for (index, row) in source_rows.iter().enumerate() {
+        if excluded_sources.contains(&index) {
+            continue;
+        }
         *source_group_sizes
             .entry(source_group_signature(row))
             .or_default() += 1;
@@ -1121,6 +1151,10 @@ fn automatic_assignments(
                     association_edge(&source_rows[index], &candidates[item.candidate_index], item)
                 })
                 .collect();
+            // Senza fiale non usiamo il margine di punteggio per scegliere tra più righe.
+            if source_rows[index].vials <= 0 && eligible.len() != 1 {
+                return None;
+            }
             let best = eligible.first()?;
             let second = eligible.get(1).map(|item| item.score).unwrap_or(0.0);
             let best_candidate = &candidates[best.candidate_index];
@@ -1172,7 +1206,10 @@ fn automatic_assignments(
     // lotti fra le righe fisiche non cambia il risultato della spedizione.
     let mut source_groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, row) in source_rows.iter().enumerate() {
-        if excluded_sources.contains(&index) || assignments.by_source.contains_key(&index) {
+        if excluded_sources.contains(&index)
+            || assignments.by_source.contains_key(&index)
+            || row.vials <= 0
+        {
             continue;
         }
         source_groups
@@ -1275,6 +1312,67 @@ type CandidateData = (
     HashMap<String, Vec<(String, bool)>>,
 );
 
+/// Le proposte non rendono pronta una riga: l'operatore deve confermarle.
+/// Prima riserviamo tutte le assegnazioni sicure, poi proponiamo solo righe libere.
+fn suggest_review_assignments(
+    source_rows: &[RigaLaboratorio],
+    candidates: &[Candidato],
+    rankings: &[Vec<Ranked>],
+    excluded_sources: &HashSet<usize>,
+    assignments: &mut AutomaticAssignments,
+) {
+    let eligible = |index: usize, item: &Ranked| {
+        let row = &source_rows[index];
+        let candidate = &candidates[item.candidate_index];
+        let source_name = normalizza_nome(&row.patient);
+        let candidate_name = normalizza_nome(&candidate.patient);
+        let source_words: HashSet<_> = source_name.split_whitespace().collect();
+        let candidate_words: HashSet<_> = candidate_name.split_whitespace().collect();
+        let contained_name = source_words.len().min(candidate_words.len()) >= 2
+            && (source_words.is_subset(&candidate_words)
+                || candidate_words.is_subset(&source_words));
+        doctor_is_compatible(item)
+            && item.product_score >= 0.55
+            && (patient_is_compatible(row, candidate, item)
+                || item.patient_score >= 0.80
+                || contained_name)
+    };
+    let mut used: HashSet<String> = assignments.by_source.values().cloned().collect();
+    let mut pending: Vec<usize> = (0..source_rows.len())
+        .filter(|index| {
+            !excluded_sources.contains(index) && !assignments.by_source.contains_key(index)
+        })
+        .collect();
+    let best_score = |index: usize| {
+        rankings[index]
+            .iter()
+            .find(|item| eligible(index, item))
+            .map(|item| item.score)
+            .unwrap_or(0.0)
+    };
+    pending.sort_by(|left, right| {
+        best_score(*right)
+            .partial_cmp(&best_score(*left))
+            .unwrap_or(Ordering::Equal)
+            .then(
+                source_rows[*left]
+                    .reference
+                    .cmp(&source_rows[*right].reference),
+            )
+            .then(left.cmp(right))
+    });
+    for index in pending {
+        if let Some(item) = rankings[index].iter().find(|item| {
+            eligible(index, item) && !used.contains(&candidates[item.candidate_index].row_id)
+        }) {
+            let row_id = candidates[item.candidate_index].row_id.clone();
+            used.insert(row_id.clone());
+            assignments.by_source.insert(index, row_id);
+            assignments.forced_review.insert(index);
+        }
+    }
+}
+
 fn candidate_data(p: &crate::projection::Projection) -> CandidateData {
     let order_numbers = numeri_ordini(p);
     let orders: HashMap<String, crate::projection::Record> = p
@@ -1336,15 +1434,18 @@ fn candidate_data(p: &crate::projection::Projection) -> CandidateData {
         };
         let product_id = str_field(&row.data, "prodotto_id");
         let product_name = nome_riga_prodotto(&product_names, &product_id, &row.data);
-        let category = product_names
-            .get(&product_id)
-            .and_then(|_| {
-                products_records
-                    .iter()
-                    .find(|product| product.id == product_id)
-                    .map(|product| str_field(&product.data, "categoria"))
-            })
-            .unwrap_or_else(|| str_field(&row.data, "categoria"));
+        let category = products_records
+            .iter()
+            .find(|product| product.id == product_id)
+            .map(|product| str_field(&product.data, "categoria"))
+            .filter(|category| !category.trim().is_empty())
+            .or_else(|| opt_str_field(&row.data, "categoria"))
+            .unwrap_or_else(|| {
+                // I prodotti liberi/storici ereditano la categoria dell'ordine.
+                // Come nella creazione spedizioni, gli ordini storici senza
+                // categoria appartengono all'Immunoterapia.
+                opt_str_field(&order.data, "categoria").unwrap_or_else(|| "Immunoterapia".into())
+            });
         if category != "Immunoterapia" {
             continue;
         }
@@ -1455,11 +1556,13 @@ impl AppState {
                                 .get("numero")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default();
-                            reference_already_exists
-                                || current_number.trim().is_empty()
-                                || current_number
-                                    .lines()
-                                    .any(|value| riferimento_chiave(value) == row.reference)
+                            if reference_already_exists {
+                                existing_references[&row.reference]
+                                    .iter()
+                                    .any(|(row_id, _)| row_id == &candidate.row_id)
+                            } else {
+                                current_number.trim().is_empty()
+                            }
                         })
                         .map(|(candidate_index, candidate)| {
                             rank_candidate(row, normalized, candidate_index, candidate)
@@ -1516,14 +1619,16 @@ impl AppState {
                         || existing_references.contains_key(&row.reference)
                         || row.quantity > 1
                         || normalized.family.is_empty()
-                        || normalized.product_id.is_empty()
-                        || normalized.vials <= 0
+                        || (normalized.product_id.is_empty() && normalized.vials > 0)
                         || row.reference_ambiguous)
                         .then_some(index)
                 })
                 .collect();
-            let automatic =
+            let mut automatic =
                 automatic_assignments(&source_rows, &candidates, &rankings, &excluded_automatic);
+            suggest_review_assignments(
+                &source_rows, &candidates, &rankings, &excluded_automatic, &mut automatic,
+            );
 
             let mut rows = Vec::with_capacity(source_rows.len());
             for (index, (row, normalized)) in source_rows.iter().zip(&normalized).enumerate() {
@@ -1571,28 +1676,31 @@ impl AppState {
                     });
                 } else if let Some(existing) = existing {
                     if existing.len() == 1 {
-                        let same_row = ranked.first().is_some_and(|best| {
-                            candidates[best.candidate_index].row_id == existing[0].0
-                        });
-                        if existing[0].1 || same_row {
+                        if existing[0].1 {
                             status = STATO_REGISTRATO.into();
-                            reason = if existing[0].1 {
-                                "Riferimento già spedito".into()
+                            reason = "Riferimento già spedito".into();
+                        } else if let Some(item) = ranked.first() {
+                            let candidate = &candidates[item.candidate_index];
+                            let matched = ranked_to_dto(item, candidate, &row.reference, normalized);
+                            let compatible = association_edge(row, candidate, item)
+                                && !requires_review(row, candidate, item)
+                                && !normalized.product_fallback
+                                && !veb_products_cross_family(normalized, candidate)
+                                && !quantity_issue && !lab_issue && !row.reference_ambiguous
+                                && matched.conflicts.is_empty();
+                            selected_match = Some(matched);
+                            if compatible {
+                                status = STATO_PRONTO.into();
+                                reason = "Riferimento già assegnato: riga ancora da spedire confermata".into();
                             } else {
-                                "Riferimento già registrato sulla stessa riga".into()
-                            };
+                                reason = "Riferimento già assegnato: verifica le differenze prima di spedire".into();
+                            }
                         } else {
-                            reason =
-                                "Riferimento già assegnato a un'altra riga: controllo bloccante"
-                                    .into();
+                            reason = "Il riferimento appartiene a una riga non più spedibile".into();
                             conflicts.push(BollettazioneConflictDto {
-                                field: "numero".into(),
-                                label: "Numero lotto".into(),
-                                current: json!("Presente su un'altra riga"),
-                                proposed: json!(row.reference),
-                                current_display: None,
-                                proposed_display: None,
-                                blocking: true,
+                                field: "numero".into(), label: "Numero lotto".into(),
+                                current: json!("Riga non spedibile"), proposed: json!(row.reference),
+                                current_display: None, proposed_display: None, blocking: true,
                             });
                         }
                     } else {
@@ -1614,8 +1722,7 @@ impl AppState {
                         .clone()
                         .unwrap_or_else(|| "Riferimento ambiguo: controllo obbligatorio".into());
                 } else if normalized.family.is_empty()
-                    || normalized.product_id.is_empty()
-                    || normalized.vials <= 0
+                    || (normalized.product_id.is_empty() && normalized.vials > 0)
                 {
                     reason = "Trattamento o numero di fiale non presente nel catalogo".into();
                 } else if let Some(row_id) = automatic.by_source.get(&index) {
@@ -1686,7 +1793,7 @@ impl AppState {
                             if automatic.forced_review.contains(&index)
                                 && reasons.is_empty()
                             {
-                                reasons.push("Abbinamento da verificare");
+                                reasons.push("Associazione proposta: conferma la riga ordine");
                             }
                             if reasons.is_empty() {
                                 status = STATO_PRONTO.into();
@@ -1702,12 +1809,6 @@ impl AppState {
                         }
                     }
                 } else if normalized.product_fallback {
-                    if let Some(best) = ranked.first() {
-                        selected_match = alternatives
-                            .iter()
-                            .find(|item| item.row_id == candidates[best.candidate_index].row_id)
-                            .cloned();
-                    }
                     reason =
                         MOTIVAZIONE_PRODOTTO_NON_CORRISPONDE.into();
                 } else if let Some(best) = ranked.first() {
@@ -1738,6 +1839,7 @@ impl AppState {
                     patient: row.patient.clone(),
                     doctor: row.doctor.clone(),
                     treatment: row.treatment.clone(),
+                    product_family: normalized.family.clone(),
                     status,
                     reason,
                     selected_match,
@@ -2843,6 +2945,490 @@ mod tests {
         );
         assert_eq!(assignments.by_source.len(), 1);
         assert!(assignments.forced_review.contains(&0));
+    }
+
+    fn provisional_file(path: &Path, rows: &[(&str, &str, &str)]) {
+        let mut workbook = rust_xlsxwriter::Workbook::new();
+        let sheet = workbook.add_worksheet();
+        for (column, header) in [
+            "Nº Referencia",
+            "Fecha pedido",
+            "Venta a-Nombre",
+            "Nombre Paciente",
+            "Nombre Médico",
+            "Descripción tratamiento",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sheet.write_string(0, column as u16, *header).unwrap();
+        }
+        for (index, (reference, patient, treatment)) in rows.iter().enumerate() {
+            let r = index as u32 + 1;
+            sheet.write_string(r, 0, *reference).unwrap();
+            sheet.write_number(r, 1, 46275).unwrap();
+            sheet.write_string(r, 2, "Cliente di prova").unwrap();
+            sheet.write_string(r, 3, *patient).unwrap();
+            sheet.write_string(r, 4, "Medico Test").unwrap();
+            sheet.write_string(r, 5, *treatment).unwrap();
+        }
+        workbook.save(path).unwrap();
+    }
+
+    #[test]
+    fn parser_provvisorio_legge_alias_e_non_deduce_fiale_dalla_posologia() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[("5083088", "Paziente Test", "BELTAORAL DUO 2,2 (ITA)")],
+        );
+        let rows = parse_workbook(&path).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reference, "5083088");
+        assert_eq!(rows[0].patient, "Paziente Test");
+        assert_eq!(rows[0].doctor, "Medico Test");
+        assert_eq!(rows[0].quantity, 1);
+        assert_eq!(rows[0].vials, 0);
+        assert!(rows[0].lab_status.is_empty());
+        assert_eq!(
+            header_index(&["  NOMBRE MÉDICO  ".into()], "Doctor"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn campione_provvisorio_reale_opzionale_legge_71_riferimenti() {
+        let Some(path) = std::env::var_os("PHARMATEK_LAB_PROVISIONAL_SAMPLE") else {
+            return;
+        };
+        let path = Path::new(&path);
+        let before = fs::read(path).unwrap();
+        let rows = parse_workbook(path).unwrap();
+        assert_eq!(rows.len(), 71);
+        assert_eq!(
+            rows.iter()
+                .map(|r| &r.reference)
+                .collect::<HashSet<_>>()
+                .len(),
+            71
+        );
+        assert!(rows.iter().all(|r| r.vials == 0
+            && r.quantity == 1
+            && !r.patient.is_empty()
+            && !r.doctor.is_empty()));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn campione_locale_opzionale_trova_i_pazienti_segnalati() {
+        let (Some(database), Some(sample), Some(references)) = (
+            std::env::var_os("PHARMATEK_LAB_PROJECTION_SAMPLE"),
+            std::env::var_os("PHARMATEK_LAB_PROVISIONAL_SAMPLE"),
+            std::env::var_os("PHARMATEK_LAB_REVIEW_REFERENCES"),
+        ) else {
+            return;
+        };
+        // Apriamo soltanto una copia temporanea: mai la proiezione operativa.
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("projection.sqlite");
+        fs::copy(database, &copy).unwrap();
+        let projection = crate::projection::Projection::open(&copy).unwrap();
+        let (candidates, products, allergens, _) = candidate_data(&projection);
+        let rows = parse_workbook(Path::new(&sample)).unwrap();
+        for reference in references.to_string_lossy().split(',') {
+            let row = rows.iter().find(|row| row.reference == reference).unwrap();
+            let normalized = normalize_treatment(row, &products, &allergens);
+            let matches: Vec<_> = candidates
+                .iter()
+                .enumerate()
+                .filter(|(i, candidate)| {
+                    let rank = rank_candidate(row, &normalized, *i, candidate);
+                    patient_is_compatible(row, candidate, &rank) && doctor_is_compatible(&rank)
+                })
+                .collect();
+            eprintln!(
+                "riferimento {reference}: {} righe disponibili per paziente e medico",
+                matches.len()
+            );
+            assert!(!matches.is_empty(), "nessun candidato per {reference}");
+            let mut ranked: Vec<_> = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    candidate
+                        .current_fields
+                        .get("numero")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .is_empty()
+                })
+                .map(|(i, candidate)| rank_candidate(row, &normalized, i, candidate))
+                .collect();
+            ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            let position = ranked
+                .iter()
+                .position(|item| matches.iter().any(|(i, _)| *i == item.candidate_index));
+            eprintln!("riferimento {reference}: posizione candidato compatibile {position:?}");
+            assert!(position.is_some_and(|position| position < 12));
+            let rankings = [ranked];
+            let mut assignments = automatic_assignments(
+                std::slice::from_ref(row),
+                &candidates,
+                &rankings,
+                &HashSet::new(),
+            );
+            suggest_review_assignments(
+                std::slice::from_ref(row),
+                &candidates,
+                &rankings,
+                &HashSet::new(),
+                &mut assignments,
+            );
+            assert!(
+                assignments.by_source.get(&0).is_some_and(|row_id| {
+                    matches
+                        .iter()
+                        .any(|(_, candidate)| &candidate.row_id == row_id)
+                }),
+                "il candidato corretto deve essere proposto per {reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn prodotto_libero_eredita_categoria_e_paziente_dall_ordine_senza_includere_altre_categorie() {
+        let (_app, data, state) = test_state();
+        let order = order_with_rows(&state, 1);
+        let row_id = &order.righe[0].id;
+        state
+            .record_update(
+                "riga_ordine",
+                row_id,
+                fields(&[
+                    ("prodotto_id", json!("")),
+                    ("prodotto_nome", json!("SUBLINGUALE 1 FLAC")),
+                    ("paziente", json!("")),
+                    ("formulazione", json!("gocce")),
+                    ("posologia", json!("2")),
+                ]),
+            )
+            .unwrap();
+        let path = data.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[("5083088", "Test Paziente", "BELTAORAL DUO 2,2 (ITA)")],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let analysis = analyze();
+        assert_ne!(analysis.rows[0].status, STATO_NON_TROVATO);
+        let selected = analysis.rows[0].selected_match.as_ref().unwrap();
+        assert_eq!(&selected.row_id, row_id);
+        assert_eq!(selected.patient, "Paziente Test");
+        assert_eq!(selected.product_name, "SUBLINGUALE 1 FLAC");
+        assert!(!selected.proposed_fields.contains_key("prodotto_nome"));
+
+        state
+            .record_update(
+                "riga_ordine",
+                row_id,
+                fields(&[("categoria", json!("Integratori"))]),
+            )
+            .unwrap();
+        assert!(
+            analyze().rows[0].selected_match.is_none(),
+            "la categoria esplicita della riga va rispettata"
+        );
+        state
+            .record_update(
+                "riga_ordine",
+                row_id,
+                fields(&[("categoria", json!("Immunoterapia"))]),
+            )
+            .unwrap();
+        let other = state
+            .record_create(
+                "prodotto",
+                fields(&[
+                    ("nome", json!("Sublinguale di altra categoria")),
+                    ("categoria", json!("Integratori")),
+                ]),
+            )
+            .unwrap();
+        state
+            .record_update(
+                "riga_ordine",
+                row_id,
+                fields(&[("prodotto_id", json!(other.id))]),
+            )
+            .unwrap();
+        assert!(
+            analyze().rows[0].selected_match.is_none(),
+            "la categoria del catalogo non va sostituita con quella dell'ordine"
+        );
+    }
+
+    #[test]
+    fn provvisorio_assegna_univoco_senza_cambiare_prodotto_e_rivede_ambigui() {
+        let (_app, data, state) = test_state();
+        let order = order_with_rows(&state, 1);
+        let path = data.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[(
+                "5083088",
+                "Paziente Test 0",
+                "BELTAVAC Polimerizado 3 (ITA)",
+            )],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let analysis = analyze();
+        assert_eq!(
+            analysis.rows[0].status, STATO_PRONTO,
+            "{}",
+            analysis.rows[0].reason
+        );
+        let matched = analysis.rows[0].selected_match.as_ref().unwrap();
+        assert_eq!(matched.row_id, order.righe[0].id);
+        assert_eq!(analysis.rows[0].product_family, "beltavac");
+        assert_eq!(
+            serde_json::to_value(&analysis.rows[0]).unwrap()["productFamily"],
+            "beltavac"
+        );
+        assert!(!matched.proposed_fields.contains_key("prodotto_id"));
+        assert!(!matched.proposed_fields.contains_key("prodotto_nome"));
+        let repeated = state
+            .bollettazione_analizza(&[
+                path.to_string_lossy().into_owned(),
+                path.to_string_lossy().into_owned(),
+            ])
+            .unwrap();
+        assert_eq!(
+            repeated
+                .rows
+                .iter()
+                .filter(|r| r.status == STATO_PRONTO)
+                .count(),
+            1
+        );
+        assert_eq!(
+            repeated
+                .rows
+                .iter()
+                .filter(|r| r.status == STATO_REGISTRATO)
+                .count(),
+            1
+        );
+        let (candidates, products, allergens, _) = state
+            .with_engine(|engine| Ok(engine.with_projection(candidate_data)))
+            .unwrap();
+        let mut source = parse_workbook(&path).unwrap().remove(0);
+        source.treatment = "BELTAVAC Polimerizado PRO2 1 Vial (ITA)".into();
+        let pro = normalize_treatment(&source, &products, &allergens);
+        assert!(
+            product_score_for(&pro, &candidates[0]) < 1.0,
+            "PRO non deve diventare standard per le fiale assenti"
+        );
+        source.treatment = "VEB Sublinguale Spray 3,3 (ITA)".into();
+        let veb = normalize_treatment(&source, &products, &allergens);
+        let mut candidate = candidates[0].clone();
+        candidate.product_name = "Lisato batterico 2 fiale".into();
+        candidate.formulation = "VEB sottocute".into();
+        assert!(
+            product_score_for(&veb, &candidate) < 1.0,
+            "formulazioni VEB diverse richiedono revisione"
+        );
+        order_with_rows(&state, 1);
+        let ambiguous = analyze();
+        assert_ne!(ambiguous.rows[0].status, STATO_PRONTO);
+        assert!(
+            ambiguous.rows[0].selected_match.is_some(),
+            "l'ambiguità deve avere una proposta da confermare"
+        );
+    }
+
+    #[test]
+    fn proposte_revisione_usano_righe_distinte_disponibili_e_nomi_invertiti() {
+        let (_app, data, state) = test_state();
+        let order = order_with_rows(&state, 2);
+        for row in &order.righe {
+            state
+                .record_update(
+                    "riga_ordine",
+                    &row.id,
+                    fields(&[("paziente", json!("PAZIENTE TEST EDUARDO"))]),
+                )
+                .unwrap();
+        }
+        let path = data.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[
+                ("5083088", "Test Paziente", "BELTAVAC Polimerizado 3 (ITA)"),
+                ("5083089", "Test Paziente", "BELTAVAC Polimerizado 3 (ITA)"),
+                ("5083090", "Test Paziente", "BELTAVAC Polimerizado 3 (ITA)"),
+                (
+                    "5083091",
+                    "Persona Diversa",
+                    "BELTAVAC Polimerizado 3 (ITA)",
+                ),
+            ],
+        );
+        let analysis = state
+            .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+            .unwrap();
+        let proposed: Vec<_> = analysis
+            .rows
+            .iter()
+            .filter_map(|r| r.selected_match.as_ref())
+            .collect();
+        assert_eq!(
+            proposed.len(),
+            2,
+            "due righe disponibili per tre riferimenti compatibili"
+        );
+        assert_ne!(proposed[0].row_id, proposed[1].row_id);
+        assert!(analysis.rows.iter().all(|r| r.status != STATO_PRONTO));
+        assert!(
+            analysis.rows[3].selected_match.is_none(),
+            "non proporre altri pazienti dello stesso medico"
+        );
+    }
+
+    #[test]
+    fn riferimento_esistente_non_spedito_pronto_e_riservato_poi_escluso_se_spedito() {
+        let (_app, data, state) = test_state();
+        let order = order_with_rows(&state, 1);
+        let row_id = &order.righe[0].id;
+        state
+            .record_update(
+                "riga_ordine",
+                row_id,
+                fields(&[("numero", json!("5083088"))]),
+            )
+            .unwrap();
+        let path = data.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[
+                (
+                    "5083088",
+                    "Paziente Test 0",
+                    "BELTAVAC Polimerizado 3 (ITA)",
+                ),
+                (
+                    "5083089",
+                    "Paziente Test 0",
+                    "BELTAVAC Polimerizado 3 (ITA)",
+                ),
+            ],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let analysis = analyze();
+        assert_eq!(
+            analysis.rows[0].status, STATO_PRONTO,
+            "{}",
+            analysis.rows[0].reason
+        );
+        let matched = analysis.rows[0].selected_match.as_ref().unwrap();
+        assert_eq!(&matched.row_id, row_id);
+        assert!(analysis.rows[1].selected_match.is_none());
+        let courier = state.records_list("corriere").unwrap()[0].id.clone();
+        let confirmation = BollettazioneConfermaRigaIn {
+            source_reference: "5083088".into(),
+            row_id: row_id.clone(),
+            order_id: matched.order_id.clone(),
+            expected_row_revision: matched.expected_row_revision.clone(),
+            expected_order_revision: matched.expected_order_revision.clone(),
+            accepted_fields: matched.proposed_fields.clone(),
+        };
+        let shipment = BollettazioneSpedizioneIn {
+            data: "2026-10-16".into(),
+            corriere_id: courier,
+            colli: 1,
+            peso: 1,
+            servizi: String::new(),
+            preavviso: false,
+            mezzo: String::new(),
+            contrassegno: 0,
+            note: String::new(),
+            row_ids: vec![row_id.clone()],
+            gruppi_destinatari: Vec::new(),
+        };
+        let input = || BollettazioneConfermaIn {
+            mode: "spedizione".into(),
+            data_arrivo: "2026-10-16".into(),
+            rows: vec![confirmation.clone()],
+            shipments: vec![shipment.clone()],
+        };
+        state.bollettazione_conferma(input()).unwrap();
+        assert!(state.bollettazione_conferma(input()).is_err());
+        let after = analyze();
+        assert_eq!(after.rows[0].status, STATO_REGISTRATO);
+        assert!(after.rows[0].selected_match.is_none());
+    }
+
+    #[test]
+    fn provvisorio_riferimenti_multipli_annullati_e_differenze_non_sono_pronti() {
+        let (_app, data, state) = test_state();
+        let order = order_with_rows(&state, 2);
+        for row in &order.righe {
+            state
+                .record_update(
+                    "riga_ordine",
+                    &row.id,
+                    fields(&[("numero", json!("5083088"))]),
+                )
+                .unwrap();
+        }
+        let path = data.path().join("provvisorio.xlsx");
+        provisional_file(
+            &path,
+            &[("5083088", "Paziente Test 0", "BELTAORAL DUO 2,2 (ITA)")],
+        );
+        let analyze = || {
+            state
+                .bollettazione_analizza(&[path.to_string_lossy().into_owned()])
+                .unwrap()
+        };
+        let duplicate = analyze();
+        assert!(duplicate.rows[0].conflicts.iter().any(|c| c.blocking));
+        state
+            .record_update(
+                "riga_ordine",
+                &order.righe[1].id,
+                fields(&[("numero", json!(""))]),
+            )
+            .unwrap();
+        let mismatch = analyze();
+        assert_ne!(mismatch.rows[0].status, STATO_PRONTO);
+        assert_eq!(
+            mismatch.rows[0].selected_match.as_ref().unwrap().row_id,
+            order.righe[0].id
+        );
+        state
+            .record_update(
+                "ordine",
+                &order.id,
+                fields(&[("stato", json!("Annullato"))]),
+            )
+            .unwrap();
+        let cancelled = analyze();
+        assert!(cancelled.rows[0].conflicts.iter().any(|c| c.blocking));
+        assert!(cancelled.rows[0].selected_match.is_none());
     }
 
     #[test]

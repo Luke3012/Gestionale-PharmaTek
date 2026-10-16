@@ -28,7 +28,6 @@ import { oggiIso as oggi } from "../../lib/date";
 import { centsToEurStr, eurToCents } from "../../lib/money";
 import { focusInvalidField } from "../../ui/focusInvalid";
 import { Tabella, type DataTableColumn } from "../../ui/Tabella";
-import { modalTableHeight } from "../../ui/modalTableHeight";
 import { DataAdattiva } from "../../ui/DataAdattiva";
 import { useModalSnapshot } from "../../ui/useModalSnapshot";
 import { opzioniRecordNome } from "../../lib/opzioniRecord";
@@ -52,7 +51,7 @@ export function DistintaModal({
     <Modal
       opened={opened}
       onClose={onClose}
-      size="xl"
+      size="min(1440px, calc(100vw - 32px))"
       zIndex={1300}
       title={
         <Group gap="sm">
@@ -284,8 +283,8 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
   );
 
   return (
-    <Box className="pt-modal-shell pt-modal-shell-table">
-      <Box className="pt-modal-scroll">
+    <Box className="pt-modal-shell">
+      <Box className="pt-modal-scroll pt-distinta-scroll">
         <Stack gap="sm">
           <Group grow align="flex-end">
             <Select
@@ -357,7 +356,6 @@ function Form({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }
             caricamentoIniziale={caricamento}
             idAccessor="id"
             storeColumnsKey="contabilita-nuova-distinta"
-            height={modalTableHeight(visibili.length, { min: 60, max: 620, viewportOffset: 430, maxVisibleRows: 10 })}
             onRowClick={({ record }) => toggle(record.id, !spuntati.has(record.id))}
             rowStyle={() => ({ cursor: "pointer" })}
             disattivaChunking

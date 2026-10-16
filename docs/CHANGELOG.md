@@ -2,6 +2,10 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.6 — 2026-10-15
+
+🍝 Adesso PharmaTek non blocca più l'interfaccia mentre è in attesa di sincronizzazione.
+
 ## 0.8.5 — 2026-10-10
 
 Adesso viene mostrato il numero di colli reale, per ciascun corriere. Inoltre, è stato migliorato il meccanismo di sincronizzazione manuale.

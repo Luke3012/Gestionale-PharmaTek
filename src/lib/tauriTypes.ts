@@ -795,6 +795,8 @@ export interface BollettazioneRow {
   patient: string;
   doctor: string;
   treatment: string;
+  /** Famiglia del trattamento nel file; assente nei vecchi snapshot. */
+  productFamily?: string;
   status: BollettazioneRowStatus;
   reason: string;
   selectedMatch?: BollettazioneMatch | null;

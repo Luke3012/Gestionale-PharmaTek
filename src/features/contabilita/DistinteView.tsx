@@ -14,7 +14,6 @@ import { Tabella, type DataTableColumn, type DataTableSortStatus } from "../../u
 import { usePaginaPronta } from "../../pages/Pagina";
 import { DistintaModal } from "./DistintaModal";
 import { usePrefs } from "../../lib/prefs";
-import { modalTableHeight } from "../../ui/modalTableHeight";
 import { VistaTabellaParallela } from "../../ui/VistaTabellaParallela";
 import { formattaDataItaliana } from "../../lib/date";
 import { DataAdattiva } from "../../ui/DataAdattiva";
@@ -281,7 +280,7 @@ function DettaglioModal({
           </Badge>
         ),
       },
-      { accessor: "data", title: "Data", cellsClassName: "tabular", render: (r) => <DataAdattiva iso={r.data} /> },
+      { accessor: "data", title: "Data", cellsClassName: "tabular", render: (r) => <DataAdattiva iso={r.data} compatta={false} /> },
       {
         accessor: "importo",
         title: "Importo",
@@ -297,7 +296,7 @@ function DettaglioModal({
     <Modal
       opened={!!distinta}
       onClose={onClose}
-      size="lg"
+      size="min(1440px, calc(100vw - 32px))"
       zIndex={1300}
       title={
         <Group gap="sm">
@@ -311,7 +310,7 @@ function DettaglioModal({
     >
       {mostrato && (
         <Box className="pt-modal-shell">
-          <Box className="pt-modal-scroll">
+          <Box className="pt-modal-scroll pt-distinta-scroll">
             <Stack gap="sm">
               <Group gap="xl">
                 <Info etichetta="Data distinta" valore={formattaDataItaliana(mostrato.dataDistinta)} />
@@ -320,18 +319,15 @@ function DettaglioModal({
                 <Info etichetta="Importo" valore={`€ ${centsToEurStr(mostrato.importo)}`} />
               </Group>
 
-              <Box style={{ height: modalTableHeight(righe.length, { max: 360 }) }}>
-                <Tabella<ContrassegnoAperto>
-                  height="100%"
-                  columns={columns}
-                  records={caricamento ? [] : righe}
-                  caricamentoIniziale={caricamento}
-                  idAccessor="id"
-                  storeColumnsKey="contabilita-distinta-dettaglio"
-                  emptyState={caricamento ? <Box /> : <Text size="sm" c="dimmed" py="md" ta="center">Nessun pagamento nella distinta.</Text>}
-                  disattivaChunking
-                />
-              </Box>
+              <Tabella<ContrassegnoAperto>
+                columns={columns}
+                records={caricamento ? [] : righe}
+                caricamentoIniziale={caricamento}
+                idAccessor="id"
+                storeColumnsKey="contabilita-distinta-dettaglio"
+                emptyState={caricamento ? <Box /> : <Text size="sm" c="dimmed" py="md" ta="center">Nessun pagamento nella distinta.</Text>}
+                disattivaChunking
+              />
             </Stack>
           </Box>
 

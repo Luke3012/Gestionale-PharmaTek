@@ -40,9 +40,18 @@ import {
 import { formattaDataItaliana, oggiIso } from "../../lib/date";
 import { dur, easeOut, useAnimazioniRidotte } from "../../ui/motion";
 import { toast } from "../../ui/toast/store";
+import { dialog } from "../../ui/dialog/store";
+import { BollettazioneProductExclusions } from "./BollettazioneProductExclusions";
 import {
+  bollettazioneActiveRows,
+  bollettazioneProductGroups,
+  bollettazioneRowKey as rowKey,
+  bollettazioneReviewChanged,
+  bollettazioneSelectedRowCounts,
   bollettazioneConflictIsOperational,
   bollettazioneConfirmation,
+  bollettazioneReviewIssue,
+  bollettazioneReviewConflicts,
   initialBollettazioneResolution,
   trattamentoBollettazioneLabel,
   type BollettazioneResolution,
@@ -83,10 +92,6 @@ function initialFilter(
   );
 }
 
-function rowKey(row: BollettazioneRow): string {
-  return `${row.source}\u0000${row.sourceRow}\u0000${row.reference}`;
-}
-
 function readableValue(value: unknown): string {
   if (Array.isArray(value)) return value.join(", ") || "—";
   if (value === null || value === undefined || value === "") return "—";
@@ -110,6 +115,7 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
   ) => void;
 }) {
   const match = resolution.match;
+  const issue = bollettazioneReviewIssue(row, resolution, selectedRowCount);
   const alternatives = useMemo(
     () =>
       row.alternatives.map((alternative) => ({
@@ -165,6 +171,7 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
         </Text>
       </Group>
 
+      {issue && <Text size="xs" c="orange" role="status" mt={6}>{issue}</Text>}
       {row.status !== "gia_registrato" && (
         <Stack gap="xs" mt="sm">
           {row.conflicts
@@ -250,7 +257,7 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
                   associazione o salta una delle righe.
                 </Text>
               )}
-              {row.status !== "pronto" && !resolution.confirmed && (
+              {row.status !== "pronto" && !resolution.confirmed && !!issue && (
                 <Button
                   size="compact-xs"
                   variant="light"
@@ -265,8 +272,7 @@ const BollettazioneReviewRow = memo(function BollettazioneReviewRow({
 
           {match &&
             !resolution.skipped &&
-            match.conflicts
-              .filter((conflict) => bollettazioneConflictIsOperational(conflict.field))
+            bollettazioneReviewConflicts(match)
               .map((conflict) => (
                 <Box
                   key={conflict.field}
@@ -330,7 +336,14 @@ export function BollettazioneReviewModal({
     initialFilter(analysis),
   );
   const [saving, setSaving] = useState(false);
+  const [unresolvedKey, setUnresolvedKey] = useState<string | null>(null);
   const [arrivalDate, setArrivalDate] = useState(oggiIso);
+  const initialArrivalDate = useRef(arrivalDate);
+  const [excludedProducts, setExcludedProducts] = useState<Set<string>>(() => new Set());
+  const [exclusionsOpen, setExclusionsOpen] = useState(false);
+  const closePending = useRef(false);
+  const currentAnalysis = useRef(analysis);
+  currentAnalysis.current = analysis;
   const [espansioneCompletata, setEspansioneCompletata] = useState(false);
 
   useEffect(() => {
@@ -359,6 +372,12 @@ export function BollettazioneReviewModal({
 
   useLayoutEffect(() => {
     if (!analysis) return;
+    initialArrivalDate.current = oggiIso();
+    setArrivalDate(initialArrivalDate.current);
+    setExcludedProducts(new Set());
+    setExclusionsOpen(false);
+    setUnresolvedKey(null);
+    scrollRef.current?.scrollTo({ top: 0 });
     setShownAnalysis(analysis);
     setFilter(initialFilter(analysis));
     setResolutions(
@@ -371,12 +390,30 @@ export function BollettazioneReviewModal({
     );
   }, [analysis]);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: 0,
-      behavior: ridotte ? "auto" : "smooth",
-    });
-  }, [filter, ridotte]);
+  const activeRows = useMemo(() => bollettazioneActiveRows(
+    displayAnalysis?.rows ?? [], excludedProducts,
+  ), [displayAnalysis, excludedProducts]);
+  const productGroups = useMemo(() => bollettazioneProductGroups(displayAnalysis?.rows ?? []), [displayAnalysis]);
+  const requestClose = async () => {
+    if (saving || closePending.current || dialog.isOpen()) return;
+    if (exclusionsOpen) {
+      setExclusionsOpen(false);
+    }
+    if (!analysis || !bollettazioneReviewChanged(analysis.rows, resolutions, excludedProducts,
+      arrivalDate, initialArrivalDate.current)) {
+      onClose();
+      return;
+    }
+    closePending.current = true;
+    try {
+      const discard = await dialog.confirm("Annullare le modifiche?",
+        "Le scelte effettuate in questa revisione andranno perse.",
+        { conferma: "Annulla modifiche", annulla: "Continua revisione" });
+      if (discard && currentAnalysis.current === analysis) onClose();
+    } finally {
+      closePending.current = false;
+    }
+  };
 
   const counts = useMemo(() => {
     const result: Record<BollettazioneRowStatus, number> = {
@@ -385,12 +422,12 @@ export function BollettazioneReviewModal({
       non_trovato: 0,
       gia_registrato: 0,
     };
-    for (const row of displayAnalysis?.rows ?? []) result[row.status] += 1;
+    for (const row of activeRows) result[row.status] += 1;
     return result;
-  }, [displayAnalysis]);
+  }, [activeRows]);
   const visible = useMemo(
-    () => displayAnalysis?.rows.filter((row) => row.status === filter) ?? [],
-    [displayAnalysis, filter],
+    () => activeRows.filter((row) => row.status === filter),
+    [activeRows, filter],
   );
 
   const patch = useCallback(
@@ -399,6 +436,7 @@ export function BollettazioneReviewModal({
       value: Partial<BollettazioneResolution>,
     ) => {
       const key = rowKey(row);
+      setUnresolvedKey(null);
       setResolutions((current) => ({
         ...current,
         [key]: {
@@ -410,63 +448,40 @@ export function BollettazioneReviewModal({
     [],
   );
 
-  const selectedRowCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const resolution of Object.values(resolutions)) {
-      if (!resolution.match || resolution.skipped) continue;
-      counts.set(
-        resolution.match.rowId,
-        (counts.get(resolution.match.rowId) ?? 0) + 1,
-      );
-    }
-    return counts;
-  }, [resolutions]);
+  const selectedRowCounts = useMemo(() => bollettazioneSelectedRowCounts(activeRows, resolutions),
+    [activeRows, resolutions]);
 
   const reviewSummary = useMemo(() => {
     let unresolvedCount = 0;
     let firstUnresolved: BollettazioneRow | null = null;
     let confirmationCount = 0;
-    for (const row of displayAnalysis?.rows ?? []) {
+    for (const row of activeRows) {
       const resolution =
         resolutions[rowKey(row)] ?? initialBollettazioneResolution(row);
-      if (resolution.match && !resolution.skipped) confirmationCount += 1;
-      if (row.status === "gia_registrato" || resolution.skipped) continue;
-
-      const unresolved =
-        row.quantityIssue ||
-        row.conflicts.some(
-          (conflict) =>
-            bollettazioneConflictIsOperational(conflict.field) &&
-            conflict.blocking,
-        ) ||
-        !resolution.match ||
-        (selectedRowCounts.get(resolution.match?.rowId ?? "") ?? 0) > 1 ||
-        (row.status !== "pronto" &&
-          (!resolution.confirmed ||
-            resolution.match.conflicts.some(
-              (conflict) =>
-                bollettazioneConflictIsOperational(conflict.field) &&
-                !resolution.conflictChoices[conflict.field],
-            )));
-      if (!unresolved) continue;
+      const issue = bollettazioneReviewIssue(
+        row, resolution, selectedRowCounts.get(resolution.match?.rowId ?? "") ?? 0,
+      );
+      if (!issue && bollettazioneConfirmation(row, resolution)) confirmationCount += 1;
+      if (!issue) continue;
       unresolvedCount += 1;
       firstUnresolved ??= row;
     }
     return { unresolvedCount, firstUnresolved, confirmationCount };
-  }, [displayAnalysis, resolutions, selectedRowCounts]);
+  }, [activeRows, resolutions, selectedRowCounts]);
 
   const collectConfirmations = useCallback(
     () =>
-      (displayAnalysis?.rows ?? [])
+      activeRows
         .map((row) =>
           bollettazioneConfirmation(
             row,
             resolutions[rowKey(row)] ??
               initialBollettazioneResolution(row),
+            selectedRowCounts.get(resolutions[rowKey(row)]?.match?.rowId ?? "") ?? 0,
           ),
         )
         .filter((row): row is BollettazioneConfermaRiga => !!row),
-    [displayAnalysis, resolutions],
+    [activeRows, resolutions, selectedRowCounts],
   );
 
   const renderRow = useCallback(
@@ -493,10 +508,13 @@ export function BollettazioneReviewModal({
 
   const requireResolved = () => {
     if (reviewSummary.unresolvedCount === 0) return true;
-    setFilter(reviewSummary.firstUnresolved?.status ?? "da_controllare");
-    toast.warning(
-      `Risolvi o salta le ${reviewSummary.unresolvedCount} righe ancora da controllare.`,
-    );
+    const row = reviewSummary.firstUnresolved!;
+    const resolution = resolutions[rowKey(row)] ?? initialBollettazioneResolution(row);
+    setFilter(row.status);
+    setUnresolvedKey(rowKey(row));
+    toast.warning(bollettazioneReviewIssue(
+      row, resolution, selectedRowCounts.get(resolution.match?.rowId ?? "") ?? 0,
+    )!);
     return false;
   };
 
@@ -518,7 +536,7 @@ export function BollettazioneReviewModal({
         dataArrivo: arrivalDate,
         rows: confirmations,
       });
-      const skipped = displayAnalysis?.rows.filter(
+      const skipped = activeRows.filter(
         (row) => resolutions[rowKey(row)]?.skipped,
       ).length;
       toast.success(
@@ -549,7 +567,8 @@ export function BollettazioneReviewModal({
   return (
     <Modal
       opened={!!analysis || analyzing}
-      onClose={onClose}
+      onClose={() => void requestClose()}
+      closeButtonProps={{ "aria-label": "Chiudi bollettazione", disabled: saving }}
       size={displayAnalysis ? "min(1540px, calc(100vw - 24px))" : 480}
       classNames={{
         content: `pt-bollettazione-modal-content ${!displayAnalysis ? "pt-modal-compact" : ""}`,
@@ -568,8 +587,17 @@ export function BollettazioneReviewModal({
           ) : null}
         </Group>
       }
-      closeOnClickOutside={!saving}
-      closeOnEscape={!saving}
+      closeOnClickOutside={!saving && !exclusionsOpen}
+      // Il dialog globale ascolta Esc in capture: aprirlo in bubble evita che
+      // lo stesso tasto annulli anche la conferma appena aperta.
+      closeOnEscape={!analysis && !saving}
+      onKeyDown={(event) => {
+        if (!analysis || event.key !== "Escape" || event.defaultPrevented || exclusionsOpen
+          || (event.target instanceof Element && event.target.closest('[data-mantine-stop-propagation="true"]'))) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void requestClose();
+      }}
       transitionProps={{
         transition: "fade",
         duration: ridotte ? 0 : dur.base * 1000,
@@ -608,7 +636,11 @@ export function BollettazioneReviewModal({
                       className="pt-bollettazione-status"
                       variant={filter === status ? "light" : "default"}
                       color={meta.color}
-                      onClick={() => setFilter(status)}
+                      onClick={() => {
+                        setUnresolvedKey(null);
+                        setFilter(status);
+                        scrollRef.current?.scrollTo({ top: 0, behavior: ridotte ? "auto" : "smooth" });
+                      }}
                     >
                       <span className="pt-bollettazione-status-label">
                         {meta.label}
@@ -669,6 +701,8 @@ export function BollettazioneReviewModal({
                   ) : (
                     <VirtualFlow
                       items={visible}
+                      scrollToKey={unresolvedKey}
+                      scrollBehavior={ridotte ? "auto" : "smooth"}
                       getKey={rowKey}
                       renderItem={renderRow}
                       estimateHeight={
@@ -686,8 +720,8 @@ export function BollettazioneReviewModal({
           </Box>
 
           <div className="pt-modal-footer pt-bollettazione-footer">
+            <Group gap="sm" className="pt-bollettazione-footer-summary">
             <Text
-              className="pt-bollettazione-footer-summary"
               size="sm"
               c={reviewSummary.unresolvedCount ? "orange" : "dimmed"}
               fw={500}
@@ -696,6 +730,10 @@ export function BollettazioneReviewModal({
                 ? `${reviewSummary.unresolvedCount} da risolvere`
                 : `${reviewSummary.confirmationCount} pronte da applicare`}
             </Text>
+            <BollettazioneProductExclusions
+              groups={productGroups} excluded={excludedProducts} onChange={setExcludedProducts}
+              opened={exclusionsOpen} onOpenedChange={setExclusionsOpen} disabled={saving} />
+            </Group>
             <Group
               className="pt-bollettazione-footer-actions"
               gap="md"
@@ -721,6 +759,7 @@ export function BollettazioneReviewModal({
                   color="teal"
                   leftSection={<IconMapPinCheck size={16} />}
                   loading={saving}
+                  disabled={!activeRows.some((row) => row.status !== "gia_registrato")}
                   onClick={markArrived}
                 >
                   Segna come arrivati
@@ -729,7 +768,7 @@ export function BollettazioneReviewModal({
                   color="accent"
                   className="pt-bollettazione-footer-primary"
                   leftSection={<IconPackageExport size={16} />}
-                  disabled={saving}
+                  disabled={saving || !activeRows.some((row) => row.status !== "gia_registrato")}
                   onClick={prepareShipment}
                 >
                   Prepara spedizione

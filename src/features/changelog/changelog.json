@@ -1,6 +1,12 @@
 {
   "versioni": [
     {
+      "versione": "0.8.6",
+      "data": "2026-10-15",
+      "sintesi": "🍝 Adesso PharmaTek non blocca più l'interfaccia mentre è in attesa di sincronizzazione.",
+      "voci": []
+    },
+    {
       "versione": "0.8.5",
       "data": "2026-10-10",
       "sintesi": "Adesso viene mostrato il numero di colli reale, per ciascun corriere. Inoltre, è stato migliorato il meccanismo di sincronizzazione manuale.",

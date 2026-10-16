@@ -1317,18 +1317,19 @@ function RigaRimborso({
             </Group>
           </Box>
         </Group>
-        <Button
-          size="compact-xs"
-          variant="light"
-          color="teal"
-          leftSection={<IconCheck size={14} />}
-          onClick={(event) => {
-            event.stopPropagation();
-            onEffettua();
-          }}
-        >
-          Effettua
-        </Button>
+        <Tooltip label="Effettua" withArrow>
+          <ActionIcon
+            variant="subtle"
+            color="green"
+            aria-label="Effettua rimborso"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEffettua();
+            }}
+          >
+            <IconCheck size={18} />
+          </ActionIcon>
+        </Tooltip>
       </Group>
     </Paper>
   );

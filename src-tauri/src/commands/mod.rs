@@ -501,13 +501,15 @@ pub fn backup_now_progress(
     result
 }
 
-/// Elenco dei backup disponibili.
+/// Le verifiche ZIP possono attendere OneDrive: non trattengono il thread UI.
 #[tauri::command]
-pub fn lista_backup(
+pub async fn lista_backup(
     dest: Option<String>,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<crate::backup::BackupInfo>, String> {
-    state.lista_backup(dest)
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().lista_backup(dest))
+        .await
+        .map_err(|_| "lettura dei backup interrotta".to_string())?
 }
 
 /// Ripristina un backup (sostituisce i dati). Irreversibile.
@@ -528,11 +530,15 @@ pub fn ripristina_backup(
 }
 
 #[tauri::command]
-pub fn backup_snapshot_choices(
+pub async fn backup_snapshot_choices(
     zip_path: String,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<crate::backup::SnapshotInfoDto>, String> {
-    state.backup_snapshot_choices(&zip_path)
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().backup_snapshot_choices(&zip_path)
+    })
+    .await
+    .map_err(|_| "lettura degli snapshot interrotta".to_string())?
 }
 
 #[tauri::command]

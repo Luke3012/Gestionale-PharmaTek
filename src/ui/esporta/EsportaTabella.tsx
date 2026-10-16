@@ -450,7 +450,6 @@ export function EsportaTabella<T>({
   }
 
   const inattivo = disabled || righe.length === 0;
-  const previewMaxHeight = colonneFisseMostrate ? "min(58dvh, 560px)" : "min(46dvh, 430px)";
   const trigger: ReactNode =
     variante === "icona" ? (
       <ActionIcon
@@ -502,7 +501,8 @@ export function EsportaTabella<T>({
         styles={{
           inner: { padding: 16 },
           content: {
-            width: "fit-content",
+            width: "max-content",
+            flex: "0 1 auto",
             minWidth: "min(560px, calc(100vw - 32px))",
             maxWidth: "calc(100vw - 32px)",
             maxHeight: "calc(100dvh - 32px)",
@@ -515,6 +515,7 @@ export function EsportaTabella<T>({
             display: "flex",
             flexDirection: "column",
             minHeight: 0,
+            flex: "1 1 auto",
             overflow: "hidden",
             paddingTop: 0,
           },
@@ -599,14 +600,15 @@ export function EsportaTabella<T>({
             />
           )}
 
-          <Box style={{ minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <Box style={{ flex: "1 1 auto", minHeight: 0, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <Text size="sm" fw={600} mb={6}>
               Anteprima
             </Text>
             <Box
               style={{
                 minHeight: 0,
-                maxHeight: previewMaxHeight,
+                flex: "1 1 auto",
+                minWidth: 0,
                 maxWidth: "calc(100vw - 72px)",
                 overflow: "auto",
                 border: "1px solid var(--mantine-color-gray-3)",

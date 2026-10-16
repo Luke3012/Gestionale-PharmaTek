@@ -362,6 +362,13 @@ export function Impostazioni({ identity }: { identity: Identity }) {
     }
   }
   const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const [caricandoBackup, setCaricandoBackup] = useState(false);
+  const [erroreBackup, setErroreBackup] = useState(false);
+  const backupListInCorso = useRef(false);
+  const backupListRichiesto = useRef(false);
+  const backupViewAttiva = useRef(false);
+  const richiestaSnapshot = useRef(0);
+  const snapshotInCorso = useRef(new Map<string, Promise<SnapshotInfo[]>>());
   const [backuppando, setBackuppando] = useState(false);
   const [lockStatus] = useOperationLockStatus(inTauri);
   const [autostart, setAutostart] = useState(false);
@@ -505,15 +512,31 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   }
 
   async function caricaBackup() {
+    if (!backupViewAttiva.current) return;
+    if (backupListInCorso.current) {
+      backupListRichiesto.current = true;
+      return;
+    }
+    backupListRichiesto.current = false;
+    backupListInCorso.current = true;
+    setCaricandoBackup(true);
+    setErroreBackup(false);
     try {
-      setBackups(await api.listaBackup());
+      const elenco = await api.listaBackup();
+      if (backupViewAttiva.current) setBackups(elenco);
     } catch {
-      /* lista resta vuota */
+      if (backupViewAttiva.current) setErroreBackup(true);
+    } finally {
+      backupListInCorso.current = false;
+      if (backupViewAttiva.current) setCaricandoBackup(false);
+      if (backupListRichiesto.current && backupViewAttiva.current) void caricaBackup();
     }
   }
 
   useEffect(() => {
     if (!inTauri) return;
+    backupViewAttiva.current = true;
+    let attivo = true;
     let offBackupAuto: (() => void) | undefined;
     void caricaBackup();
     const onFocus = () => void caricaBackup();
@@ -526,9 +549,15 @@ export function Impostazioni({ identity }: { identity: Identity }) {
     window.addEventListener("storage", onStorage);
     import("@tauri-apps/api/event")
       .then(({ listen }) => listen("pt:backup-auto-eseguito", () => void caricaBackup()))
-      .then((off) => (offBackupAuto = off))
+      .then((off) => {
+        if (attivo) offBackupAuto = off;
+        else off();
+      })
       .catch(() => {});
     return () => {
+      backupViewAttiva.current = false;
+      attivo = false;
+      richiestaSnapshot.current += 1;
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("pt:backup-auto-eseguito", onBackupAuto);
       window.removeEventListener("storage", onStorage);
@@ -670,20 +699,36 @@ export function Impostazioni({ identity }: { identity: Identity }) {
   }
 
   async function apriRipristinoManuale(b: BackupInfo) {
+    const richiesta = ++richiestaSnapshot.current;
     setBackupManuale(b);
     setSnapshotManuali([]);
     setSnapshotScelto("");
     setCaricandoSnapshot(true);
     try {
-      const choices = await api.backupSnapshotChoices(b.path);
+      let lettura = snapshotInCorso.current.get(b.path);
+      if (!lettura) {
+        lettura = api.backupSnapshotChoices(b.path).finally(() => {
+          snapshotInCorso.current.delete(b.path);
+        });
+        snapshotInCorso.current.set(b.path, lettura);
+      }
+      const choices = await lettura;
+      if (!backupViewAttiva.current || richiestaSnapshot.current !== richiesta) return;
       setSnapshotManuali(choices);
       setSnapshotScelto(choices.find((s) => s.recommended && s.safe)?.pathInZip ?? choices.find((s) => s.safe)?.pathInZip ?? "");
     } catch (e) {
+      if (!backupViewAttiva.current || richiestaSnapshot.current !== richiesta) return;
       toast.error(`Lettura snapshot non riuscita: ${e}`);
       setBackupManuale(null);
     } finally {
-      setCaricandoSnapshot(false);
+      if (backupViewAttiva.current && richiestaSnapshot.current === richiesta) setCaricandoSnapshot(false);
     }
+  }
+
+  function chiudiRipristinoManuale() {
+    if (ripristinoManualeInCorso) return;
+    richiestaSnapshot.current += 1;
+    setBackupManuale(null);
   }
 
   async function confermaRipristinoManuale() {
@@ -1039,7 +1084,18 @@ export function Impostazioni({ identity }: { identity: Identity }) {
                 Apri cartella
               </Anchor>
             </Group>
-            {backupOrdinati.length === 0 ? (
+            {caricandoBackup && (
+              <Text size="xs" c="dimmed" role="status">Controllo i backup...</Text>
+            )}
+            {erroreBackup && (
+              <Alert color="yellow" title="Elenco backup non disponibile">
+                <Text size="sm">Controlla la cartella dati e OneDrive, poi riprova.</Text>
+                <Button size="xs" variant="light" mt="xs" onClick={() => void caricaBackup()}>
+                  Riprova
+                </Button>
+              </Alert>
+            )}
+            {backupOrdinati.length === 0 ? !caricandoBackup && !erroreBackup && (
               <Text size="xs" c="dimmed">
                 Nessun backup ancora. Usa «Backup ora» per crearne uno.
               </Text>
@@ -1452,9 +1508,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
 
         <Modal
           opened={!!backupManuale}
-          onClose={() => {
-            if (!ripristinoManualeInCorso) setBackupManuale(null);
-          }}
+          onClose={chiudiRipristinoManuale}
           title={
             <Group gap="xs">
               <ThemeIcon size={30} radius="md" variant="light" color="blue">
@@ -1522,7 +1576,7 @@ export function Impostazioni({ identity }: { identity: Identity }) {
               </Stack>
             )}
             <Group justify="flex-end" mt="sm">
-              <Button variant="default" disabled={ripristinoManualeInCorso} onClick={() => setBackupManuale(null)}>
+              <Button variant="default" disabled={ripristinoManualeInCorso} onClick={chiudiRipristinoManuale}>
                 Annulla
               </Button>
               <Button

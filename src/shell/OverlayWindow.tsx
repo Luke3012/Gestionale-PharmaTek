@@ -689,8 +689,11 @@ export function OverlayWindow() {
   useEffect(() => {
     if (!inTauri || backupAuto <= 0) return;
     let attivo = true;
+    let controlloInCorso = false;
 
     async function controlla() {
+      if (!attivo || controlloInCorso) return;
+      controlloInCorso = true;
       try {
         if (await interrompiSeDisabilitatoDaRemoto(() => attivo)) return;
 
@@ -699,6 +702,10 @@ export function OverlayWindow() {
 
         const backups = await api.listaBackup();
         if (!attivo) return;
+        // Durante la lettura lenta può essere cambiata la postazione/cartella.
+        const corrente = await api.whoami().catch(() => null);
+        if (!attivo || !corrente || corrente.dataDir !== identity.dataDir ||
+          corrente.deviceId !== identity.deviceId || corrente.userId !== identity.userId) return;
         if (backups.length === 0) {
           const primoAvvio = !localStorage.getItem("pt.backupInizializzato");
           if (primoAvvio) {
@@ -715,7 +722,10 @@ export function OverlayWindow() {
             .then(({ emit }) => emit("pt:backup-auto-eseguito"))
             .catch(() => {});
         }
-      } catch {}
+      } catch {
+      } finally {
+        controlloInCorso = false;
+      }
     }
 
     // Esegui dopo 15 secondi dall'avvio, poi ogni ora

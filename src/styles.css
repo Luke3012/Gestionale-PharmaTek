@@ -664,6 +664,11 @@ body,
   background-color: var(--bg);
   border-top: 1px solid var(--border);
 }
+/* Nelle distinte scorre l'intero contenuto: la barra resta dopo la tabella,
+   senza sovrapporsi alle righe durante lo scorrimento verticale. */
+.pt-distinta-scroll .pt-tabella-scrollbar {
+  position: static;
+}
 .pt-tabella-scrollbar::-webkit-scrollbar {
   height: 10px;
 }
@@ -1989,7 +1994,16 @@ body,
   margin-top: 10px;
 }
 .pt-bollettazione-footer-summary {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+}
+.pt-bollettazione-exclusions-link {
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.pt-bollettazione-exclusions-link:hover {
+  color: var(--mantine-color-text);
 }
 .pt-bollettazione-footer-actions {
   display: flex;

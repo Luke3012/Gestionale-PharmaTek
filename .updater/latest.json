@@ -1,11 +1,11 @@
 {
-    "version":  "0.8.5",
-    "notes":  "Adesso viene mostrato il numero di colli reale, per ciascun corriere. Inoltre, è stato migliorato il meccanismo di sincronizzazione manuale.",
-    "pub_date":  "2026-10-10T12:35:10Z",
+    "version":  "0.8.6",
+    "notes":  "🍝 Adesso PharmaTek non blocca più l\u0027interfaccia mentre è in attesa di sincronizzazione.",
+    "pub_date":  "2026-10-15T22:17:31Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2dwWEE0NTdhVjdTUFkxOXRpTHkwTzMwQWhRbklPRVNlNkRDSm5iSDBaQTE5aGNnajdPMXQyMFpIOU1rb0Q3bURzR3hLbkVjU3VQZ2xBZCs4VDVMK2dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjM1Njk5CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjVfeDY0LXNldHVwLmV4ZQoyK2lIZ1h3MU1rajhzRktDV0crc1IyS0VRaW8wREFlRkpTWEh5Rm9NYTRCbG9hNHJUcDJIVzRBLzd2YU5hVTVETkdJSFdtY2xvT1B1enV3V3Y0TlhDdz09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/627933537"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM3MxV0JLNVhKR1RtWTVCVjkvSmRQRmt4Mk1Jd3JtWVpyUzdxUFJOOUF1MFl4SjhMbmR6V0ZLRzdVYjNLajQ4ZzJQYXFReW4relVkS0RCZFloQVZzdWdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTAyNjQwCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjZfeDY0LXNldHVwLmV4ZQpEaDM3bjAwU3VaQXcxOGFmUldiNGIvak5DZ3FKcHhiNnptbzFteGZFTVhUVHpvWDBsTU0vZmg3VWFhcEhoRy83ZkhXMFd1bkZiR2R0bVhZUm1BLzBDdz09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/645338297"
                                          }
                   }
 }
