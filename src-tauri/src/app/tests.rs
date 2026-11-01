@@ -2750,6 +2750,111 @@ fn pagamenti_attesi_saldo_e_rateizza() {
 }
 
 #[test]
+fn saldo_rata_fuori_ordine_fa_scalare_in_fondo_le_rate_aperte() {
+    let app = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let data_dir = data.path().to_str().unwrap();
+    let state = AppState::init(app.path().to_path_buf()).unwrap();
+    onboarda(&state, data_dir, "Livio");
+
+    let prod = state
+        .record_create(
+            "prodotto",
+            campi(&[("nome", json!("X")), ("prezzo_base_default", json!(1000))]),
+        )
+        .unwrap();
+    let banca = state
+        .record_create("conto", campi(&[("nome", json!("Banca Demo"))]))
+        .unwrap();
+    let crea = |prezzo: i64| {
+        let o = state
+            .record_create("ordine", campi(&[("stato", json!("Confermato"))]))
+            .unwrap();
+        state
+            .record_create(
+                "riga_ordine",
+                campi(&[
+                    ("ordine_id", json!(o.id)),
+                    ("prodotto_id", json!(prod.id)),
+                    ("qta", json!(1)),
+                    ("prezzo", json!(prezzo)),
+                ]),
+            )
+            .unwrap();
+        o
+    };
+    let rata = |ordine_id: &str, scadenza: &str, conto: &str| {
+        state
+            .pagamento_registra(
+                ordine_id, "rata", 10000, false, scadenza, conto, "", false, None,
+            )
+            .unwrap()
+            .id
+    };
+    let pag = |ordine_id: &str, id: &str| {
+        state
+            .pagamenti_ordine(ordine_id)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap()
+    };
+
+    // Piano a date fisse: saldo la 1ª, poi la 4ª → la 4ª occupa il posto della 2ª.
+    let o = crea(40000);
+    let r1 = rata(&o.id, "2026-11-30", &banca.id);
+    let r2 = rata(&o.id, "2026-12-31", &banca.id);
+    let r3 = rata(&o.id, "2027-01-31", &banca.id);
+    let r4 = rata(&o.id, "2027-02-28", &banca.id);
+    state
+        .pagamento_salda(&r1, &banca.id, "2026-11-28", true)
+        .unwrap();
+    state
+        .pagamento_salda(&r4, &banca.id, "2026-12-05", true)
+        .unwrap();
+    assert_eq!(pag(&o.id, &r1).scadenza, "2026-11-30");
+    assert_eq!(pag(&o.id, &r4).scadenza, "2026-12-31");
+    assert_eq!(pag(&o.id, &r2).scadenza, "2027-01-31");
+    assert_eq!(pag(&o.id, &r3).scadenza, "2027-02-28");
+    assert!(!pag(&o.id, &r2).saldato && !pag(&o.id, &r3).saldato);
+
+    // Saldare la prima aperta non sposta nulla.
+    state
+        .pagamento_salda(&r2, &banca.id, "2027-01-20", true)
+        .unwrap();
+    assert_eq!(pag(&o.id, &r2).scadenza, "2027-01-31");
+    assert_eq!(pag(&o.id, &r3).scadenza, "2027-02-28");
+
+    // Piano «spedizione + N gg»: scalano anche le attese legate alla spedizione,
+    // mentre la rata in contrassegno (incasso alla consegna) resta ferma.
+    let o2 = crea(40000);
+    let c = rata(&o2.id, "", CONTO_CONTRASSEGNO);
+    let s1 = rata(&o2.id, "", &banca.id);
+    let s2 = rata(&o2.id, "", &banca.id);
+    let s3 = rata(&o2.id, "", &banca.id);
+    for (id, rel) in [(&c, 0), (&s1, 30), (&s2, 60), (&s3, 90)] {
+        state
+            .record_update(
+                "pagamento",
+                id,
+                campi(&[
+                    ("scad_da_spedizione", json!(true)),
+                    ("scad_rel_giorni", json!(rel)),
+                ]),
+            )
+            .unwrap();
+    }
+    state
+        .pagamento_salda(&s3, &banca.id, "2026-11-10", true)
+        .unwrap();
+    assert_eq!(pag(&o2.id, &c).scad_rel_giorni, 0);
+    assert_eq!(pag(&o2.id, &s3).scad_rel_giorni, 30);
+    assert_eq!(pag(&o2.id, &s1).scad_rel_giorni, 60);
+    assert_eq!(pag(&o2.id, &s2).scad_rel_giorni, 90);
+    assert!(pag(&o2.id, &s1).scad_da_spedizione && pag(&o2.id, &s2).scad_da_spedizione);
+}
+
+#[test]
 fn pagamenti_riallinea_aperti_proporzionale() {
     let app = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

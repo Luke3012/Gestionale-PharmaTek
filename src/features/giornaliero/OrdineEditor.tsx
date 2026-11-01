@@ -144,6 +144,8 @@ import {
   pagamentoPersistitoConImportoPreview,
   pagamentoPreviewLocale,
   proponiPagamentoAggiuntivo,
+  relSpedizioneDaNormalizzare,
+  scalaRateDopoSaldo,
   selezionaProssimoPagamentoDaSaldare,
 } from "./ordineScadenzario";
 import { usePrefs } from "../../lib/prefs";
@@ -1204,6 +1206,15 @@ export function OrdineForm({
     const incassatoPreview = next.filter((pag) => pag.saldato).reduce((s, pag) => s + pag.importo, 0);
     if (pagamentoDraftOrdine?.saldato && totale > 0 && incassatoPreview >= totale) {
       return next.filter((pag) => pag.saldato);
+    }
+
+    // Come farà il backend al saldo: la rata saldata fuori ordine prende il posto della
+    // prima aperta e le attese scalano in fondo.
+    const primaDelSaldo = pagamentoDraftOrdine?.saldato
+      ? pagamentiEffettivi.find((pag) => pag.id === pagamentoDraftOrdine.id)
+      : undefined;
+    if (primaDelSaldo && !primaDelSaldo.saldato) {
+      next = scalaRateDopoSaldo(next, primaDelSaldo);
     }
 
     if (deveRiallineareAperti) {
@@ -2928,15 +2939,10 @@ export function OrdineForm({
           setPatchPagamentiVirtuali({});
         }
 
-        const apertiDaSpediz = pagamentiAggiornati
-          .filter((p) => p.scadDaSpedizione && !p.saldato && (p.tipo === "saldo" || p.tipo === "rata"))
-          .sort(confrontaPagamentiAperti);
-        for (let idx = 0; idx < apertiDaSpediz.length; idx += 1) {
-          const targetRel = idx * 30;
-          if (apertiDaSpediz[idx].scadRelGiorni !== targetRel) {
-            await api.recordUpdate("pagamento", apertiDaSpediz[idx].id, { scad_rel_giorni: targetRel });
-            apertiDaSpediz[idx].scadRelGiorni = targetRel;
-          }
+        for (const [pagId, targetRel] of relSpedizioneDaNormalizzare(pagamentiAggiornati)) {
+          await api.recordUpdate("pagamento", pagId, { scad_rel_giorni: targetRel });
+          const pag = pagamentiAggiornati.find((p) => p.id === pagId);
+          if (pag) pag.scadRelGiorni = targetRel;
         }
 
         if (ordineId) {

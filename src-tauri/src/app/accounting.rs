@@ -8,6 +8,113 @@ struct PagamentoApertoDaRiallineare {
     scadenza: String,
 }
 
+/// Posizione di una rata nel piano: è ciò che "scala" quando si salda fuori ordine.
+#[derive(Clone)]
+struct SlotRata {
+    id: String,
+    scadenza: String,
+    da_spedizione: bool,
+    rel_giorni: i64,
+}
+
+impl SlotRata {
+    fn da_record(r: &crate::projection::Record) -> Self {
+        Self {
+            id: r.id.clone(),
+            scadenza: str_field(&r.data, "scadenza"),
+            da_spedizione: bool_field(&r.data, "scad_da_spedizione"),
+            rel_giorni: i64_field(&r.data, "scad_rel_giorni"),
+        }
+    }
+
+    /// Stesso ordinamento dello scadenzario mostrato in UI (`confrontaRigheScadenzario`).
+    fn confronta(&self, altro: &Self) -> std::cmp::Ordering {
+        if self.da_spedizione && altro.da_spedizione && self.rel_giorni != altro.rel_giorni {
+            return self.rel_giorni.cmp(&altro.rel_giorni);
+        }
+        let chiave = |s: &Self| {
+            if !s.scadenza.is_empty() {
+                s.scadenza.clone()
+            } else if s.da_spedizione {
+                format!("spedizione:{:05}", s.rel_giorni.max(0))
+            } else {
+                "9999-12-31".to_string()
+            }
+        };
+        chiave(self).cmp(&chiave(altro)).then(self.id.cmp(&altro.id))
+    }
+}
+
+/// Quando si salda una rata che non è la prima ancora aperta, il pagamento occupa la
+/// posizione della prima rata aperta e le aperte precedenti scalano di un posto in avanti:
+/// così le rate attese restano sempre in fondo al piano, mai in mezzo a rate saldate.
+/// Scalano scadenza fissa e «spedizione + N gg» (`scad_da_spedizione`/`scad_rel_giorni`).
+/// Le rate alla consegna (conto contrassegno/assegno o legate a una spedizione) restano
+/// ferme: le incassa il corriere e sono agganciate alla distinta.
+pub(super) fn pianifica_scorrimento_rate_saldate(
+    p: &crate::projection::Projection,
+    ordine_id: &str,
+    pagamento_id: &str,
+) -> Vec<Mutation> {
+    let transito = conti_transito(p);
+    let ancorata = |r: &crate::projection::Record| {
+        !str_field(&r.data, "spedizione_id").is_empty()
+            || transito.contains(&str_field(&r.data, "conto_id"))
+    };
+    let mut candidati: Vec<SlotRata> = p
+        .list("pagamento")
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| {
+            !r.deleted
+                && str_field(&r.data, "ordine_id") == ordine_id
+                && !bool_field(&r.data, "saldato")
+                && matches!(str_field(&r.data, "tipo").as_str(), "saldo" | "rata")
+                && !ancorata(r)
+        })
+        .map(SlotRata::da_record)
+        .collect();
+    candidati.sort_by(|a, b| a.confronta(b));
+    let Some(pos) = candidati.iter().position(|s| s.id == pagamento_id) else {
+        return Vec::new();
+    };
+    if pos == 0 {
+        return Vec::new();
+    }
+    // Rotazione sul prefisso [0..=pos]: il saldato prende lo slot 0, l'aperta i lo slot i+1.
+    let prefisso = &candidati[..=pos];
+    let mut assegnazioni = vec![(prefisso[pos].id.clone(), &prefisso[0])];
+    for i in 0..pos {
+        assegnazioni.push((prefisso[i].id.clone(), &prefisso[i + 1]));
+    }
+    let mut mutations = Vec::new();
+    for (id, slot) in assegnazioni {
+        let Some(attuale) = prefisso.iter().find(|s| s.id == id) else {
+            continue;
+        };
+        let mut set = |field: &str, value: serde_json::Value| {
+            mutations.push(Mutation::new(
+                "pagamento",
+                id.clone(),
+                EventBody::FieldSet {
+                    field: field.into(),
+                    value,
+                },
+            ));
+        };
+        if attuale.scadenza != slot.scadenza {
+            set("scadenza", json!(slot.scadenza));
+        }
+        if attuale.da_spedizione != slot.da_spedizione {
+            set("scad_da_spedizione", json!(slot.da_spedizione));
+        }
+        if attuale.rel_giorni != slot.rel_giorni {
+            set("scad_rel_giorni", json!(slot.rel_giorni));
+        }
+    }
+    mutations
+}
+
 /// Costruisce le mutazioni necessarie per riallineare lo scadenzario aperto.
 ///
 /// Gli override sono usati dal salvataggio preventivo: totale, righe ordine,
@@ -609,6 +716,10 @@ impl AppState {
             });
             let ordine_id = ordine_id.ok_or_else(|| "pagamento non trovato".to_string())?;
             let importo_patch = fields.get("importo").and_then(|value| value.as_i64());
+            let tipo_patch = fields
+                .get("tipo")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
             let mut mutations = fields
                 .into_iter()
                 .map(|(field, value)| {
@@ -720,6 +831,15 @@ impl AppState {
                                     Mutation::new("pagamento", record.id, EventBody::Purged)
                                 }),
                         );
+                    } else if tipo_patch
+                        .as_deref()
+                        .is_none_or(|tipo| matches!(tipo, "saldo" | "rata"))
+                    {
+                        mutations.extend(pianifica_scorrimento_rate_saldate(
+                            p,
+                            &ordine_for_check,
+                            id,
+                        ));
                     }
                     Ok(mutations)
                 })

@@ -2,6 +2,10 @@
 
 <!-- Generato da scripts/changelog.ps1 — non modificare a mano. -->
 
+## 0.8.7 — 2026-10-31
+
+😡 Corretta una rogna che si verifica durante la digitazione del Codice Fiscale.
+
 ## 0.8.6 — 2026-10-15
 
 🍝 Adesso PharmaTek non blocca più l'interfaccia mentre è in attesa di sincronizzazione.

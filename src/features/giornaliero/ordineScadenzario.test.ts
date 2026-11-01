@@ -14,6 +14,8 @@ import {
   pagamentoPersistitoConImportoPreview,
   pagamentoPreviewLocale,
   proponiPagamentoAggiuntivo,
+  relSpedizioneDaNormalizzare,
+  scalaRateDopoSaldo,
   selezionaProssimoPagamentoDaSaldare,
 } from "./ordineScadenzario";
 
@@ -389,5 +391,63 @@ describe("scadenzario ordine", () => {
       expect(sorted[0].key).toBe("z-riga-cod");
       expect(sorted[1].key).toBe("a-riga-banca");
     });
+  });
+});
+
+describe("saldo di una rata fuori ordine", () => {
+  const rata = (id: string, patch: Partial<Pagamento> = {}) =>
+    pagamento({ id, tipo: "rata", contoTipo: "banca", scadDaSpedizione: false, scadRelGiorni: 0, ...patch });
+
+  it("la rata saldata prende il posto della prima aperta e le attese scalano in fondo", () => {
+    const prima = [
+      rata("r1", { scadenza: "2026-11-30", saldato: true, data: "2026-11-28" }),
+      rata("r2", { scadenza: "2026-12-31" }),
+      rata("r3", { scadenza: "2027-01-31" }),
+      rata("r4", { scadenza: "2027-02-28" }),
+    ];
+    const dopo = prima.map((p) => (p.id === "r4" ? { ...p, saldato: true, scadenza: "", data: "2026-12-05" } : p));
+    const scalate = scalaRateDopoSaldo(dopo, prima[3]);
+    const scad = Object.fromEntries(scalate.map((p) => [p.id, p.scadenza]));
+    expect(scad).toEqual({ r1: "2026-11-30", r4: "2026-12-31", r2: "2027-01-31", r3: "2027-02-28" });
+  });
+
+  it("saldare la prossima rata non sposta nulla", () => {
+    const pagamenti = [rata("r1", { scadenza: "2026-11-30" }), rata("r2", { scadenza: "2026-12-31" })];
+    expect(scalaRateDopoSaldo(pagamenti, pagamenti[0])).toBe(pagamenti);
+  });
+
+  it("scalano anche le attese «spedizione + N gg», non quelle alla consegna", () => {
+    const prima = [
+      rata("cod", { scadenza: "", scadDaSpedizione: true, scadRelGiorni: 0, contoTipo: "contrassegno" }),
+      rata("s1", { scadenza: "", scadDaSpedizione: true, scadRelGiorni: 30 }),
+      rata("s2", { scadenza: "", scadDaSpedizione: true, scadRelGiorni: 60 }),
+      rata("s3", { scadenza: "", scadDaSpedizione: true, scadRelGiorni: 90 }),
+    ];
+    const dopo = prima.map((p) => (p.id === "s3" ? { ...p, saldato: true, scadDaSpedizione: false } : p));
+    const rel = Object.fromEntries(scalaRateDopoSaldo(dopo, prima[3]).map((p) => [p.id, p.scadRelGiorni]));
+    expect(rel).toEqual({ cod: 0, s3: 30, s1: 60, s2: 90 });
+  });
+
+  it("non scala nulla se si salda una rata alla consegna", () => {
+    const pagamenti = [
+      rata("r1", { scadenza: "2026-11-30" }),
+      rata("cod", { scadenza: "2026-12-31", contoTipo: "contrassegno" }),
+    ];
+    expect(scalaRateDopoSaldo(pagamenti, pagamenti[1])).toBe(pagamenti);
+  });
+
+  it("le distanze dalla spedizione contano anche le rate già saldate", () => {
+    const pagamenti = [
+      rata("r1", { saldato: true, scadDaSpedizione: true, scadRelGiorni: 0 }),
+      rata("r2", { scadDaSpedizione: true, scadRelGiorni: 30 }),
+      rata("r3", { scadDaSpedizione: true, scadRelGiorni: 60 }),
+    ];
+    expect(relSpedizioneDaNormalizzare(pagamenti).size).toBe(0);
+    // Dati vecchi con attesa sovrapposta alla saldata: la saldata resta prima.
+    const sovrapposti = [
+      rata("r1", { saldato: true, scadDaSpedizione: true, scadRelGiorni: 0 }),
+      rata("r2", { scadDaSpedizione: true, scadRelGiorni: 0 }),
+    ];
+    expect([...relSpedizioneDaNormalizzare(sovrapposti)]).toEqual([["r2", 30]]);
   });
 });

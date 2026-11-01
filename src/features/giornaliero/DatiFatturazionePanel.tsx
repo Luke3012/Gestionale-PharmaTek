@@ -9,6 +9,7 @@ import {
 import { CalcolaCFPopover, CFValidationBadge } from "../anagrafiche/CalcolaCFPopover";
 import { ScelteCapPopover } from "../../ui/ScelteCapPopover";
 import { useScelteCap } from "../../ui/useScelteCap";
+import { maiuscoloInput } from "../../ui/maiuscoloInput";
 
 export interface DatiFatturazione {
   ragione_sociale: string;
@@ -96,22 +97,18 @@ export function DatiFatturazionePanel({ expanded, value, onToggle, onChange }: P
               limit={8}
               comboboxProps={{ zIndex: 1400 }}
             />
-            <TextInput label="Prov." maxLength={2} value={value.prov} onChange={(e) => aggiorna({ prov: e.currentTarget.value.toUpperCase() })} />
-            {capAmbiguo || capCittaMultiplo ? (
-              <Popover opened={capPopoverAperto} onChange={setCapPopoverAperto} position="bottom-start" shadow="md" radius="md" width={280} withArrow zIndex={1400}>
-                <Popover.Target><TextInput label="CAP" maxLength={5} value={value.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} /></Popover.Target>
-                <ScelteCapPopover
-                  capCittaMultiplo={capCittaMultiplo}
-                  capAmbiguo={capAmbiguo}
-                  onScegli={usaComune}
-                />
-              </Popover>
-            ) : (
-              <TextInput label="CAP" maxLength={5} value={value.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} />
-            )}
+            <TextInput label="Prov." maxLength={2} value={value.prov} onChange={(e) => aggiorna({ prov: maiuscoloInput(e.currentTarget) })} />
+            <Popover opened={capPopoverAperto} onChange={setCapPopoverAperto} position="bottom-start" shadow="md" radius="md" width={280} withArrow zIndex={1400}>
+              <Popover.Target><TextInput label="CAP" maxLength={5} value={value.cap} onChange={(e) => cambiaCap(e.currentTarget.value)} /></Popover.Target>
+              <ScelteCapPopover
+                capCittaMultiplo={capCittaMultiplo}
+                capAmbiguo={capAmbiguo}
+                onScegli={usaComune}
+              />
+            </Popover>
           </Group>
           <Box>
-            <TextInput label="P.IVA / CF" value={value.piva} onChange={(e) => aggiorna({ piva: e.currentTarget.value.toUpperCase() })} rightSection={<CalcolaCFPopover nomeRecord={value.ragione_sociale} onUsaCF={(cf) => aggiorna({ piva: cf.toUpperCase() })} />} />
+            <TextInput label="P.IVA / CF" value={value.piva} onChange={(e) => aggiorna({ piva: maiuscoloInput(e.currentTarget) })} rightSection={<CalcolaCFPopover nomeRecord={value.ragione_sociale} onUsaCF={(cf) => aggiorna({ piva: cf.toUpperCase() })} />} />
             <CFValidationBadge valoreCF={value.piva} />
           </Box>
           <Text size="xs" c="dimmed">Se vuoti, in fatturazione si usano i dati del cliente dell'ordine.</Text>

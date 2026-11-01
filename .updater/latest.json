@@ -1,11 +1,11 @@
 {
-    "version":  "0.8.6",
-    "notes":  "🍝 Adesso PharmaTek non blocca più l\u0027interfaccia mentre è in attesa di sincronizzazione.",
-    "pub_date":  "2026-10-16T17:54:01Z",
+    "version":  "0.8.7",
+    "notes":  "😡 Corretta una rogna che si verifica durante la digitazione del Codice Fiscale.",
+    "pub_date":  "2026-10-31T15:32:33Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2dnQllKY1VVZyszWms5MWFZWWxjTTAwSDY3eEVjaXZwZXNFQm5peFRIanBqWDVzR3c4MFpyUmxodWJldStBSzFxYUY5RTkwaVVMM25HcVNKNWdnZXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMTczMjMzCWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjZfeDY0LXNldHVwLmV4ZQpNMzl0MlVlZFpFSHAwaTlJNVdpQlV0M0ROdm8rZSswbWJBV2dLWmNVeThNa01jUHZIdUNPTmhObEEyV1hYK2Y3VkFvbTIxcW8xKzlqMWd1K0w3MXdDQT09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/648125405"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2xXRVIzY01UQmtnSXA5UGpJZjRPR3RrbkRJZmJOMDVpVkRFMS8rQml0OHJNa0t5TjFQZkZkY1gwalN3cVRITTVuTUhpRVNjZGpOMUxXeDhzYmpwTXdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDYwNzQ2CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjdfeDY0LXNldHVwLmV4ZQo4UTN3Z0ovWEhCbWVOY3RWN3lnZ2pTdG4xZUhzNUZGV0RNY0N3YkI1NHpybHcweGZnSFFiVmQ3Q2RDdHJqQ1dnWElBdmFWcEVNZWRWTEhyakI1YUpBUT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/695747086"
                                          }
                   }
 }

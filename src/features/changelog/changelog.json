@@ -1,6 +1,12 @@
 {
   "versioni": [
     {
+      "versione": "0.8.7",
+      "data": "2026-10-31",
+      "sintesi": "😡 Corretta una rogna che si verifica durante la digitazione del Codice Fiscale.",
+      "voci": []
+    },
+    {
       "versione": "0.8.6",
       "data": "2026-10-15",
       "sintesi": "🍝 Adesso PharmaTek non blocca più l'interfaccia mentre è in attesa di sincronizzazione.",

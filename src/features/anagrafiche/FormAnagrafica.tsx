@@ -20,6 +20,7 @@ import { CalcolaCFPopover, CFValidationBadge } from "./CalcolaCFPopover";
 import { useTabSelect } from "../../ui/tabCompleta";
 import { ScelteCapPopover } from "../../ui/ScelteCapPopover";
 import { useScelteCap } from "../../ui/useScelteCap";
+import { maiuscoloInput } from "../../ui/maiuscoloInput";
 
 export type Valori = Record<string, string | number>;
 
@@ -130,10 +131,9 @@ export function FormCampiGrid({
 
         // Intercetta onChange per il campo CAP con auto-fill.
         const handleChange = (v: string | number) => {
-          const next = c.tipo === "cf" && typeof v === "string" ? v.toUpperCase() : v;
-          setValori((s) => ({ ...s, [c.key]: next }));
+          setValori((s) => ({ ...s, [c.key]: v }));
           if (setErrori && errori[c.key]) setErrori((e) => ({ ...e, [c.key]: "" }));
-          if (isCAPConAutoFill) onCAPChange(next);
+          if (isCAPConAutoFill) onCAPChange(v);
         };
 
         const campoNode = (
@@ -158,9 +158,7 @@ export function FormCampiGrid({
 
         // Se è il campo CAP con disambiguazione, wrap con Popover suggerimenti.
         const contenuto =
-          isCAPConAutoFill &&
-          ((capAmbiguo?.length ?? 0) > 1 ||
-            (capCittaMultiplo?.cap.length ?? 0) > 1) ? (
+          isCAPConAutoFill ? (
             <Popover
               opened={capPopoverAperto}
               onChange={setCapPopoverAperto}
@@ -390,7 +388,7 @@ const CampoForm = React.memo(function CampoForm({
           <TextInput
             {...comune}
             value={String(valore ?? "")}
-            onChange={(e) => onChange(e.currentTarget.value.toUpperCase())}
+            onChange={(e) => onChange(maiuscoloInput(e.currentTarget))}
             placeholder={campo.placeholder}
             maxLength={16}
             rightSection={

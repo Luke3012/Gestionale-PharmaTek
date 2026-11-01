@@ -203,6 +203,83 @@ export function confrontaRigheScadenzario<T extends RigaScadenzarioOrdinabile>(a
   return dataA.localeCompare(dataB) || a.key.localeCompare(b.key);
 }
 
+type PagamentoSlot = Pick<
+  Pagamento,
+  "id" | "tipo" | "saldato" | "scadenza" | "scadDaSpedizione" | "scadRelGiorni" | "contoTipo" | "spedizioneId"
+>;
+
+/** Rate incassate alla consegna (contrassegno/assegno o agganciate a una spedizione): non scalano. */
+function rataAncorataAllaConsegna(p: PagamentoSlot): boolean {
+  return !!p.spedizioneId || èContoTransito(p.contoTipo);
+}
+
+function confrontaSlot(a: PagamentoSlot, b: PagamentoSlot): number {
+  const riga = (p: PagamentoSlot): RigaScadenzarioOrdinabile => ({
+    key: p.id,
+    tipo: "rata",
+    scadenza: p.scadenza,
+    data: "",
+    scadDaSpedizione: p.scadDaSpedizione,
+    scadRelGiorni: p.scadRelGiorni,
+  });
+  return confrontaRigheScadenzario(riga(a), riga(b));
+}
+
+/**
+ * Specchio di `pianifica_scorrimento_rate_saldate` (backend): saldando una rata che non è
+ * la prima aperta, il pagamento prende la posizione (scadenza o «spedizione + N gg») della
+ * prima aperta e le aperte precedenti scalano di un posto, restando in fondo al piano.
+ * `primaDelSaldo` è il pagamento com'era prima del saldo (posizione e conto originali).
+ */
+export function scalaRateDopoSaldo<T extends PagamentoSlot>(pagamenti: T[], primaDelSaldo: PagamentoSlot): T[] {
+  if (
+    (primaDelSaldo.tipo !== "saldo" && primaDelSaldo.tipo !== "rata") ||
+    primaDelSaldo.saldato ||
+    rataAncorataAllaConsegna(primaDelSaldo)
+  ) {
+    return pagamenti;
+  }
+  const candidati: PagamentoSlot[] = pagamenti
+    .filter((p) => p.id !== primaDelSaldo.id && pagamentoApertoSaldoRata(p) && !rataAncorataAllaConsegna(p))
+    .map((p) => ({ ...p }));
+  candidati.push(primaDelSaldo);
+  candidati.sort(confrontaSlot);
+  const pos = candidati.findIndex((p) => p.id === primaDelSaldo.id);
+  if (pos <= 0) return pagamenti;
+  const nuovoSlot = new Map<string, PagamentoSlot>([[primaDelSaldo.id, candidati[0]]]);
+  for (let i = 0; i < pos; i += 1) nuovoSlot.set(candidati[i].id, candidati[i + 1]);
+  return pagamenti.map((p) => {
+    const slot = nuovoSlot.get(p.id);
+    return slot
+      ? { ...p, scadenza: slot.scadenza, scadDaSpedizione: slot.scadDaSpedizione, scadRelGiorni: slot.scadRelGiorni }
+      : p;
+  });
+}
+
+/**
+ * Distanze «spedizione + N gg» coerenti del piano: incassate e attese insieme, in ordine
+ * di piano, a passi di 30 giorni. Restituisce solo le rate da correggere. Includere le
+ * saldate evita che, dopo un saldo, le attese ripartano da +0 sovrapponendosi a quelle
+ * già incassate.
+ */
+export function relSpedizioneDaNormalizzare(
+  pagamenti: Array<Pick<Pagamento, "id" | "tipo" | "saldato" | "scadenza" | "scadDaSpedizione" | "scadRelGiorni">>
+): Map<string, number> {
+  const piano = pagamenti
+    .filter((p) => p.scadDaSpedizione && (p.tipo === "saldo" || p.tipo === "rata"))
+    .sort((a, b) =>
+      (a.scadRelGiorni ?? 0) - (b.scadRelGiorni ?? 0)
+      || Number(b.saldato) - Number(a.saldato)
+      || (a.scadenza || "9999-12-31").localeCompare(b.scadenza || "9999-12-31")
+      || a.id.localeCompare(b.id)
+    );
+  const out = new Map<string, number>();
+  piano.forEach((p, idx) => {
+    if (p.scadRelGiorni !== idx * 30) out.set(p.id, idx * 30);
+  });
+  return out;
+}
+
 export function offsetScadenzaDaSpedizione(contoTipo: string, rel = 0): number {
   const base = èContoTransito(contoTipo) ? 30 : 7;
   return base + Math.max(0, Math.floor(rel));
