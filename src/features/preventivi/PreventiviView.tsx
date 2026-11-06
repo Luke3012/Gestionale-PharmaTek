@@ -143,10 +143,6 @@ function prodottiPreventivo(preventivo: Preventivo): string[] {
   return valoriUnici(preventivo.righe.map((riga) => riga.prodottoNome));
 }
 
-export function ultimoInvioOModificaPreventivo(preventivo: Preventivo): number {
-  return Math.max(preventivo.ultimoInvioMs, preventivo.ultimaModificaMs);
-}
-
 function indirizzoCompatto(
   nome: string,
   indirizzo: string,

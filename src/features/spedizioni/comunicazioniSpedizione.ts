@@ -48,11 +48,12 @@ function destinatari(
 
 export function numeroComunicazioniSpedizione(
   spedizioni: Spedizione[],
+  tutti = false,
 ): number {
   return new Set(
     spedizioni.flatMap((s) =>
       destinatari(s)
-        .filter((d) => !d.avvisato)
+        .filter((d) => tutti || !d.avvisato)
         .map((d) => d.clienteId),
     ),
   ).size;
@@ -61,10 +62,11 @@ export function numeroComunicazioniSpedizione(
 export function preparaAvvisiSpedizione(
   spedizioni: Spedizione[],
   conti: RecordDto[],
-  opzioni: { riapriSeCompleto?: boolean } = {},
+  opzioni: { tutti?: boolean; riapriSeCompleto?: boolean } = {},
 ): CampagnaComunicazioneTarget[] {
-  const riapri = opzioni.riapriSeCompleto &&
-    !spedizioni.some((s) => destinatari(s).some((d) => !d.avvisato));
+  const includiGiaAvvisati =
+    opzioni.tutti ||
+    (opzioni.riapriSeCompleto && numeroComunicazioniSpedizione(spedizioni) === 0);
   const perCliente = new Map<
     string,
     {
@@ -74,7 +76,7 @@ export function preparaAvvisiSpedizione(
   >();
   for (const spedizione of new Map(spedizioni.map((s) => [s.id, s])).values()) {
     for (const destinatario of destinatari(spedizione)) {
-      if (destinatario.avvisato && !riapri) continue;
+      if (destinatario.avvisato && !includiGiaAvvisati) continue;
       const gruppo = perCliente.get(destinatario.clienteId) ?? [];
       gruppo.push({ spedizione, destinatario });
       perCliente.set(destinatario.clienteId, gruppo);
@@ -182,12 +184,12 @@ export function preparaAvvisiSpedizione(
 /** Stessa preparazione da collo, gruppo e selezione: l'anteprima gestisce i recapiti mancanti. */
 export async function apriAvvisiSpedizione(
   spedizioni: Spedizione[],
-  singolo = false,
+  { singolo = false, tutti = false }: { singolo?: boolean; tutti?: boolean } = {},
 ): Promise<boolean> {
   const targets = preparaAvvisiSpedizione(
     spedizioni,
     await api.recordsList("conto"),
-    { riapriSeCompleto: singolo },
+    { riapriSeCompleto: true, tutti },
   );
   if (!targets.length) {
     toast.info("Non ci sono destinatari da avvisare nella selezione.");

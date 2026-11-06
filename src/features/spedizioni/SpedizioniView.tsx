@@ -45,7 +45,6 @@ import {
   IconExternalLink,
   IconFileExport,
   IconFileSpreadsheet,
-  IconMessage,
   IconPackageOff,
   IconSearch,
   IconTrash,
@@ -107,7 +106,7 @@ import {
   ordineHaDatiVaccino,
   spedizioneHaDatiVaccino,
 } from "./datiVaccino";
-import { apriAvvisiSpedizione, numeroComunicazioniSpedizione } from "./comunicazioniSpedizione";
+import { AvvisaClientiSpedizione } from "./AvvisaClientiSpedizione";
 import {
   applicaBozzeNumeriVaccino,
   conservaBozzeNumeriVaccino,
@@ -1091,34 +1090,13 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
     return gruppiOrdinati.filter((g) => lotti.has(g.lotto));
   }, [gruppiOrdinati, selezioneEff]);
 
-  const distinte = useMemo(
-    () => distintePerCorriere(selezionati.flatMap((g) => g.spedizioni)),
-    [selezionati]
-  );
-  const numeroComunicazioni = useMemo(
-    () =>
-      numeroComunicazioniSpedizione(
-        selezionati.flatMap((gruppo) => gruppo.spedizioni),
-      ),
+  const spedizioniSelezionate = useMemo(
+    () => selezionati.flatMap((gruppo) => gruppo.spedizioni),
     [selezionati],
   );
-
-  const avvisaSpedizioni = useCallback(async (
-    spedizioniDaAvvisare: Spedizione[],
-  ) => {
-    try {
-      await apriAvvisiSpedizione(spedizioniDaAvvisare);
-    } catch (error) {
-      toast.error(`Preparazione degli avvisi non riuscita: ${error}`);
-    }
-  }, []);
-
-  const avvisaSelezionati = useCallback(
-    () =>
-      avvisaSpedizioni(
-        selezionati.flatMap((gruppo) => gruppo.spedizioni),
-      ),
-    [avvisaSpedizioni, selezionati],
+  const distinte = useMemo(
+    () => distintePerCorriere(spedizioniSelezionate),
+    [spedizioniSelezionate],
   );
 
   // Memoizza la rowExpansion per «Effettuate» in modo che l'oggetto resti stabile tra
@@ -1142,7 +1120,6 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
           onAnnullaCollo={annulla}
           onSepara={separaGruppo}
           onModificato={aggiornaSpedizioneEffettuata}
-          onAvvisaGruppo={avvisaSpedizioni}
           matchIds={record.matchIds}
         />
       ),
@@ -1151,7 +1128,6 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
       annulla,
       separaGruppo,
       aggiornaSpedizioneEffettuata,
-      avvisaSpedizioni,
       espansiEff,
     ],
   );
@@ -1511,31 +1487,7 @@ export function SpedizioniView({ identity }: { identity: Identity }) {
         justify="flex-end"
         style={{ width: "min(100%, 1160px)", minWidth: 0 }}
       >
-        <Tooltip
-          label={`Avvisa clienti (${numeroComunicazioni})`}
-          withArrow
-        >
-          <Box className="pt-azione-adattiva-wrap">
-            <PremiumAction
-              className="pt-azione-adattiva"
-              leftSection={<IconMessage size={16} />}
-              buttonVariant="light"
-              buttonColor="accent"
-              lockedPresentation="modal"
-              title="Funzionalità extra"
-              message="La preparazione e l’invio coordinato degli avvisi a più clienti è disponibile tra le funzionalità extra."
-              style={{ minHeight: 36, whiteSpace: "nowrap", width: "100%" }}
-              onAction={avvisaSelezionati}
-            >
-              <span className="pt-azione-adattiva-label">
-                Avvisa clienti ({numeroComunicazioni})
-              </span>
-              <span className="pt-azione-adattiva-label-compatta">
-                Avvisa
-              </span>
-            </PremiumAction>
-          </Box>
-        </Tooltip>
+        <AvvisaClientiSpedizione spedizioni={spedizioniSelezionate} selezione />
         {!inRicerca && selezioneEff.length >= 2 && (
           <Tooltip label={`Unisci (${selezioneEff.length})`} withArrow>
             <Box className="pt-azione-adattiva-wrap">

@@ -30,8 +30,7 @@ pub(crate) fn is_enabled(app_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Guardia condivisa dai futuri comandi e processi automatici premium.
-#[allow(dead_code)] // diventa usata appena arriva il primo comando delle FASI 11-13
+/// Guardia condivisa dai comandi e processi premium.
 pub(crate) fn ensure_access(state: &AppState) -> Result<(), String> {
     if is_enabled(&state.app_dir) {
         Ok(())

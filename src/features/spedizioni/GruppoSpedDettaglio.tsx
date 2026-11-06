@@ -75,6 +75,7 @@ import {
   canRunPremiumAction,
 } from "../../premium/PremiumAction";
 import { usePremiumAccess } from "../../premium/PremiumAccess";
+import { AvvisaClientiSpedizione } from "./AvvisaClientiSpedizione";
 import { apriAvvisiSpedizione } from "./comunicazioniSpedizione";
 import {
   colliSpedizioneEffettuata,
@@ -124,7 +125,6 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
   onAnnullaCollo,
   onSepara,
   onModificato,
-  onAvvisaGruppo,
   matchIds,
 }: {
   spedizioni: Spedizione[];
@@ -135,7 +135,6 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
   onAnnullaCollo: (s: Spedizione) => void;
   onSepara?: (lotto: string) => void;
   onModificato: (spedizione?: Spedizione) => void | Promise<void>;
-  onAvvisaGruppo: (spedizioni: Spedizione[]) => void;
   matchIds?: Set<string>;
 }) {
   // La firma del backend copre l'intero lotto, anche sotto un filtro di ricerca.
@@ -359,19 +358,7 @@ export const GruppoSpedDettaglio = memo(function GruppoSpedDettaglio({
                 Separa
               </Button>
             )}
-            <PremiumAction
-              leftSection={<IconMessage size={14} />}
-              buttonVariant="subtle"
-              buttonColor="accent"
-              buttonSize="compact-sm"
-              lockedPresentation="modal"
-              title="Funzionalità extra"
-              message="La preparazione e l’invio coordinato degli avvisi a tutti i clienti di questa spedizione è disponibile tra le funzionalità extra."
-              style={{ whiteSpace: "nowrap" }}
-              onAction={() => onAvvisaGruppo(spedizioni)}
-            >
-              Avvisa clienti
-            </PremiumAction>
+            <AvvisaClientiSpedizione spedizioni={spedizioni} />
             <Button
               size="compact-sm"
               variant="subtle"
@@ -822,7 +809,7 @@ const ColloRiga = memo(function ColloRiga({
   const nColli = colliSpedizioneEffettuata(s);
   const comunica = async () => {
     try {
-      await apriAvvisiSpedizione([s], true);
+      await apriAvvisiSpedizione([s], { singolo: true });
     } catch (error) {
       toast.error(`Apertura dell'avviso non riuscita: ${error}`);
     }

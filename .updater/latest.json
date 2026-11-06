@@ -1,11 +1,11 @@
 {
     "version":  "0.8.7",
     "notes":  "😡 Corretta una rogna che si verifica durante la digitazione del Codice Fiscale.",
-    "pub_date":  "2026-10-31T15:32:33Z",
+    "pub_date":  "2026-11-06T13:30:09Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2xXRVIzY01UQmtnSXA5UGpJZjRPR3RrbkRJZmJOMDVpVkRFMS8rQml0OHJNa0t5TjFQZkZkY1gwalN3cVRITTVuTUhpRVNjZGpOMUxXeDhzYmpwTXdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzNDYwNzQ2CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjdfeDY0LXNldHVwLmV4ZQo4UTN3Z0ovWEhCbWVOY3RWN3lnZ2pTdG4xZUhzNUZGV0RNY0N3YkI1NHpybHcweGZnSFFiVmQ3Q2RDdHJqQ1dnWElBdmFWcEVNZWRWTEhyakI1YUpBUT09Cg==",
-                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/695747086"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdTF1a1RZamdnM2xCTEM4R1NSbVN4MitWZzNaaFQzMkVjMXh6UDgxU012em5ROE5zdHplQWRtaHhZSHlpLzZTUmgzUWVyTGVHNGJCL3YzNi9kUkxjQS9DZ0gyZUtXN2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzOTcxNzk2CWZpbGU6R2VzdGlvbmFsZSBQaGFybWFUZWtfMC44LjdfeDY0LXNldHVwLmV4ZQp1ZmU3ZlV5M1BqQ2hxd01WS2JPT1NuV2pLaTJFTUl1bmllOWFObWkxbDFxcDc3OHVjZ2Q5cmpXUHNCV3VJbWRGZ1lnYXhTWkZ3MEdTOEtXVWdEVktCUT09Cg==",
+                                             "url":  "https://api.github.com/repos/Luke3012/Gestionale-PharmaTek/releases/assets/717270721"
                                          }
                   }
 }

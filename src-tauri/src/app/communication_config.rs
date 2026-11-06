@@ -7,15 +7,17 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
 use std::time::Duration;
 
-use imap::types::Flag;
-use imap::{ClientBuilder, ConnectionMode, Session, TlsKind};
+use async_imap::{Client, Session};
+use futures_util::TryStreamExt;
 use imap_proto::NameAttribute;
 use lettre::message::{header::ContentType, Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 
 use super::communication::{normalizza_email, ComunicazioneDto};
 use super::communication_credentials::{
@@ -376,10 +378,18 @@ fn invia_smtp(
         .map_err(|error| format!("il server non ha accettato l'e-mail: {error}"))
 }
 
-fn nome_cartella_inviati<T: Read + Write>(session: &mut Session<T>) -> AppResult<String> {
-    let cartelle = session
-        .list(None, Some("*"))
-        .map_err(|error| format!("impossibile leggere le cartelle della casella: {error}"))?;
+async fn nome_cartella_inviati<T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send>(
+    session: &mut Session<T>,
+) -> AppResult<String> {
+    let cartelle = async {
+        session
+            .list(None, Some("*"))
+            .await?
+            .try_collect::<Vec<_>>()
+            .await
+    }
+    .await
+    .map_err(|error| format!("impossibile leggere le cartelle della casella: {error}"))?;
     let selezionabile = |attributi: &[NameAttribute<'_>]| {
         !attributi
             .iter()
@@ -420,7 +430,8 @@ fn archivia_inviata_imap(
     let password = password.to_string();
     let raw = raw.to_vec();
     std::thread::spawn(move || {
-        let res = archivia_inviata_imap_impl(&config, &password, &raw);
+        let res =
+            tauri::async_runtime::block_on(archivia_inviata_imap_impl(&config, &password, &raw));
         let _ = tx.send(res);
     });
     match rx.recv_timeout(Duration::from_secs(30)) {
@@ -431,32 +442,83 @@ fn archivia_inviata_imap(
     }
 }
 
-fn archivia_inviata_imap_impl(
+async fn connetti_imap(
+    config: &ConfigurazioneEmailCondivisa,
+) -> AppResult<Client<TlsStream<TcpStream>>> {
+    let host = config.imap_host.as_str();
+    let tcp = TcpStream::connect((host, config.imap_port))
+        .await
+        .map_err(|e| e.to_string())?;
+    let tls = TlsConnector::from(native_tls::TlsConnector::new().map_err(|e| e.to_string())?);
+    let starttls = matches!(config.imap_sicurezza, SicurezzaTrasportoEmail::Starttls);
+    let tcp = if starttls {
+        let mut client = Client::new(tcp);
+        leggi_saluto_imap(&mut client).await?;
+        client
+            .run_command_and_check_ok("STARTTLS", None)
+            .await
+            .map_err(|e| e.to_string())?;
+        client.into_inner()
+    } else {
+        tcp
+    };
+    let mut client = Client::new(tls.connect(host, tcp).await.map_err(|e| e.to_string())?);
+    if !starttls {
+        leggi_saluto_imap(&mut client).await?;
+    }
+    Ok(client)
+}
+
+async fn leggi_saluto_imap<T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug>(
+    client: &mut Client<T>,
+) -> AppResult<()> {
+    use imap_proto::{Response, Status};
+    match client.read_response().await.map_err(|e| e.to_string())? {
+        Some(saluto)
+            if matches!(
+                saluto.parsed(),
+                Response::Data {
+                    status: Status::Ok,
+                    ..
+                }
+            ) =>
+        {
+            Ok(())
+        }
+        _ => Err("saluto IMAP non valido".to_string()),
+    }
+}
+
+async fn archivia_inviata_imap_impl(
     config: &ConfigurazioneEmailCondivisa,
     password: &str,
     raw: &[u8],
 ) -> AppResult<()> {
-    let mode = match config.imap_sicurezza {
-        SicurezzaTrasportoEmail::SslTls => ConnectionMode::Tls,
-        SicurezzaTrasportoEmail::Starttls => ConnectionMode::StartTls,
-    };
-    let client = ClientBuilder::new(&config.imap_host, config.imap_port)
-        .mode(mode)
-        .tls_kind(TlsKind::Native)
-        .connect()
+    let client = connetti_imap(config)
+        .await
         .map_err(|error| format!("server Posta inviata non raggiungibile: {error}"))?;
+    salva_copia_imap(client, &config.smtp_username, password, raw).await
+}
+
+async fn salva_copia_imap<T: AsyncRead + AsyncWrite + Unpin + std::fmt::Debug + Send>(
+    client: Client<T>,
+    username: &str,
+    password: &str,
+    raw: &[u8],
+) -> AppResult<()> {
     let mut session = client
-        .login(&config.smtp_username, password)
+        .login(username, password)
+        .await
         .map_err(|(error, _)| format!("accesso alla Posta inviata non riuscito: {error}"))?;
-    let result = nome_cartella_inviati(&mut session).and_then(|cartella| {
+    let result = async {
+        let cartella = nome_cartella_inviati(&mut session).await?;
         session
-            .append(&cartella, raw)
-            .flag(Flag::Seen)
-            .finish()
-            .map(|_| ())
+            .append(&cartella, Some("(\\Seen)"), None, raw)
+            .await
             .map_err(|error| format!("copia nella Posta inviata non salvata: {error}"))
-    });
-    let _ = session.logout();
+    }
+    .await;
+    let _ = session.logout().await;
     result
 }
 
@@ -732,6 +794,95 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn imap_starttls_rifiutato_non_invia_credenziali() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = ConfigurazioneEmailCondivisa {
+                imap_host: "127.0.0.1".into(),
+                imap_port: listener.local_addr().unwrap().port(),
+                imap_sicurezza: SicurezzaTrasportoEmail::Starttls,
+                ..Default::default()
+            };
+            let server = async {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut io = BufReader::new(stream);
+                io.write_all(b"* OK Server di prova\r\n").await.unwrap();
+                let mut riga = String::new();
+                assert_ne!(io.read_line(&mut riga).await.unwrap(), 0);
+                let (tag, comando) = riga.trim_end().split_once(' ').unwrap();
+                assert_eq!(comando, "STARTTLS");
+                io.write_all(format!("{tag} NO STARTTLS non disponibile\r\n").as_bytes())
+                    .await
+                    .unwrap();
+                riga.clear();
+                assert_eq!(io.read_line(&mut riga).await.unwrap(), 0);
+            };
+            let (esito, ()) = futures_util::future::join(
+                archivia_inviata_imap_impl(&config, "password", b"messaggio"),
+                server,
+            )
+            .await;
+            assert!(esito
+                .unwrap_err()
+                .starts_with("server Posta inviata non raggiungibile:"));
+        });
+    }
+
+    #[test]
+    fn imap_archivia_il_messaggio_letto_nella_cartella_inviati() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        tauri::async_runtime::block_on(async {
+            for (cartelle, attesa) in [
+                (
+                    "* LIST () \"/\" \"Sent\"\r\n* LIST (\\Noselect \\Sent) \"/\" \"Nascosta\"\r\n* LIST (\\Sent) \"/\" \"Inviati\"\r\n",
+                    "Inviati",
+                ),
+                (
+                    "* LIST (\\Noselect) \"/\" \"Sent\"\r\n* LIST () \"/\" \"INBOX.Posta inviata\"\r\n",
+                    "INBOX.Posta inviata",
+                ),
+            ] {
+                let (client, server) = tokio::io::duplex(2048);
+                let raw = b"Subject: Prova\r\n\r\nMessaggio";
+                let server = async {
+                    let mut io = BufReader::new(server);
+                    for (comando, risposta) in [
+                        ("LOGIN \"utente\" \"password\"".to_string(), ""),
+                        ("LIST \"\" *".to_string(), cartelle),
+                        (format!("APPEND \"{attesa}\" (\\Seen) {{{}}}", raw.len()), ""),
+                        ("LOGOUT".to_string(), "* BYE Fine\r\n"),
+                    ] {
+                        let mut riga = String::new();
+                        assert_ne!(io.read_line(&mut riga).await.unwrap(), 0);
+                        let (tag, effettivo) = riga.trim_end().split_once(' ').unwrap();
+                        assert_eq!(effettivo, comando);
+                        if comando.starts_with("APPEND ") {
+                            io.write_all(b"+ continua\r\n").await.unwrap();
+                            let mut corpo = vec![0; raw.len() + 2];
+                            io.read_exact(&mut corpo).await.unwrap();
+                            assert_eq!(&corpo[..raw.len()], raw);
+                            assert_eq!(&corpo[raw.len()..], b"\r\n");
+                        }
+                        io.write_all(format!("{risposta}{tag} OK completato\r\n").as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                };
+                let (esito, ()) = futures_util::future::join(
+                    salva_copia_imap(Client::new(client), "utente", "password", raw),
+                    server,
+                )
+                .await;
+                esito.unwrap();
+            }
+        });
+    }
+
     use super::*;
     use crate::app::communication::{CanaleComunicazione, ComunicazioneDto, StatoComunicazione};
     use crate::app::FinishOnboarding;

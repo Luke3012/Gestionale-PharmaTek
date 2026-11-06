@@ -1387,7 +1387,7 @@ mod tests {
         let bytes = writer.finish().unwrap().into_inner();
         let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
         assert_eq!(archive.len(), 1);
-        assert_eq!(archive.by_index(0).unwrap().name(), "terapia.pdf");
+        assert_eq!(archive.by_index(0).unwrap().name().unwrap(), "terapia.pdf");
     }
 
     #[test]
@@ -1414,8 +1414,11 @@ mod tests {
         let bytes = writer.finish().unwrap().into_inner();
         let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
         assert_eq!(archive.len(), 2);
-        assert_eq!(archive.by_index(0).unwrap().name(), "terapia.pdf");
-        assert_eq!(archive.by_index(1).unwrap().name(), "terapia (2).pdf");
+        assert_eq!(archive.by_index(0).unwrap().name().unwrap(), "terapia.pdf");
+        assert_eq!(
+            archive.by_index(1).unwrap().name().unwrap(),
+            "terapia (2).pdf"
+        );
     }
 
     #[test]

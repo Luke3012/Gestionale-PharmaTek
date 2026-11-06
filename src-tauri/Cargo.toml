@@ -32,13 +32,13 @@ tauri-plugin-global-shortcut = "2"
 # Riproduzione nativa del suono di notifica anche a finestra nascosta/non in primo
 # piano (FASE 6D): WebView2 congela l'audio JS in background → suona il Rust. Solo
 # il decoder WAV (i suoni bundlati sono .wav) per non tirarsi dietro symphonia/mp3.
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
-minisign-verify = "0.2.5"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+minisign-verify = "0.3.0"
 base64 = "0.23"
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
@@ -63,19 +63,22 @@ windows = { version = "0.62.2", features = [
 #   rusqlite -> proiezione locale (read model) in %APPDATA%, SQLite bundled
 #   ulid     -> ID ordinabili, generabili offline (event id + entity id)
 notify = "8.2"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 ulid = "3"
 sha2 = "0.11"
 filetime = "0.2"
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "native-tls"] }
-imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
-imap-proto = "0.16.7"
-zip = "8.6"
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
+imap-proto = "0.17"
+futures-util = { version = "0.3", default-features = false }
+tokio = { version = "1", features = ["net", "io-util"] }
+tokio-native-tls = "0.3"
+zip = "9.4"
 unicode-normalization = "0.1"
 strsim = "0.11"
 # Export Excel nativo (.xlsx) per i riepiloghi (provvigioni, ecc.). Pura Rust.
-rust_xlsxwriter = "0.99"
-calamine = "0.36.1"
+rust_xlsxwriter = "0.102"
+calamine = "0.38.0"
 
 [dev-dependencies]
 tempfile = "3.27"

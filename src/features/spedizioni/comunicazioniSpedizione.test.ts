@@ -1,13 +1,16 @@
-import { describe, expect, it } from "vitest";
-import type { Spedizione, RecordDto } from "../../lib/tauri";
+import { describe, expect, it, vi } from "vitest";
+import { api, type Spedizione, type RecordDto } from "../../lib/tauri";
 import type { DestinatarioComunicazioneSpedizione } from "../../lib/tauriTypes";
 import {
+  apriAvvisiSpedizione,
   preparaAvvisiSpedizione,
   numeroComunicazioniSpedizione,
 } from "./comunicazioniSpedizione";
 import {
+  EVENTO_APRI_CAMPAGNA_COMUNICAZIONI,
   indirizzoConsegnaDaRecord,
   variabiliAnagraficaDestinatario,
+  type AperturaCampagnaComunicazioni,
 } from "../comunicazioni/apriComunicazione";
 import { aggiornaTargetDaRecord } from "../comunicazioni/CampagnaComunicazioni";
 import { risolviModello, aggiornaTestoModelloNonModificato } from "../comunicazioni/modelliComunicazione";
@@ -74,6 +77,32 @@ const conti = [
 ] as RecordDto[];
 
 describe("avvisi delle spedizioni unite", () => {
+  it("apre l'anteprima di gruppo quando tutti i destinatari sono già stati avvisati", async () => {
+    const finestra = new EventTarget();
+    const anteprima = vi.fn();
+    finestra.addEventListener(EVENTO_APRI_CAMPAGNA_COMUNICAZIONI, (evento) => {
+      anteprima((evento as CustomEvent<AperturaCampagnaComunicazioni>).detail.targets);
+    });
+    vi.stubGlobal("window", finestra);
+    vi.spyOn(api, "recordsList").mockResolvedValue(conti);
+    vi.spyOn(api, "recordsGetMany").mockResolvedValue([]);
+    try {
+      const spedizioni = [
+        collo([{ ...persona("Mario", 10000), avvisato: true }]),
+        collo([{ ...persona("Anna", 20000), avvisato: true }], "collo-2"),
+      ];
+
+      await expect(apriAvvisiSpedizione(spedizioni)).resolves.toBe(true);
+      expect(anteprima).toHaveBeenCalledExactlyOnceWith([
+        expect.objectContaining({ destinatarioId: "Mario" }),
+        expect.objectContaining({ destinatarioId: "Anna" }),
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("separa le anagrafiche anche con recapiti identici e non espone dati dell'altra persona", () => {
     const targets = preparaAvvisiSpedizione(
       [collo([persona("Mario", 10000), persona("Anna", 20000)])],
@@ -125,6 +154,26 @@ describe("avvisi delle spedizioni unite", () => {
     ).toEqual(["Anna"]);
     anna.avvisato = true;
     expect(preparaAvvisiSpedizione([spedizione], conti)).toEqual([]);
+  });
+  it("include anche i già avvisati su richiesta, con un avviso per cliente", () => {
+    const mario = { ...persona("Mario", 10000), avvisato: true };
+    const anna = persona("Anna", 20000);
+    const spedizioni = [
+      collo([mario, anna]),
+      collo([{ ...anna, avvisato: true }], "collo-2"),
+    ];
+
+    expect(numeroComunicazioniSpedizione(spedizioni)).toBe(1);
+    expect(numeroComunicazioniSpedizione(spedizioni, true)).toBe(2);
+    const mancanti = preparaAvvisiSpedizione(spedizioni, conti);
+    expect(mancanti.map((t) => t.destinatarioId)).toEqual(["Anna"]);
+    expect(mancanti[0].originiCorrelate).toEqual([]);
+
+    const tutti = preparaAvvisiSpedizione(spedizioni, conti, { tutti: true });
+    expect(tutti.map((t) => t.destinatarioId)).toEqual(["Mario", "Anna"]);
+    expect(tutti[1].originiCorrelate).toEqual([
+      { id: "collo-2", fingerprint: "fp-Anna" },
+    ]);
   });
   it("numera le rate per ordine ed esclude dal residuo quelle saldate", () => {
     const mario = persona("Mario", 10000);

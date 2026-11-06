@@ -124,10 +124,6 @@ struct TrattamentoNormalizzato {
     product_name: String,
     formulation: String,
     dosage: String,
-    // Gli allergeni restano normalizzati per eventuali controlli interni/audit,
-    // ma non sono un dato operativo della bollettazione e non vengono esportati.
-    #[allow(dead_code)]
-    allergens: Vec<String>,
     vials: i64,
     product_fallback: bool,
     veb_product_ambiguous: bool,
@@ -642,78 +638,6 @@ fn doctor_similarity(a: &str, b: &str) -> f64 {
     }
 }
 
-fn alias_allergene(value: &str) -> Option<&'static str> {
-    match normalizza_testo(value).as_str() {
-        "derm farinae" | "dermatophagoides farinae" => Some("d.farinae"),
-        "derm pteronyssinus" | "dermatophagoides pteronyssinus" => Some("d.pteronyssinus"),
-        "gramineas espontaneas" | "gramineas espontaneas polim" => Some("mix graminacee"),
-        "olea europaea" => Some("olea europea"),
-        "parietaria judaica" => Some("parietaria"),
-        "cupressus arizonica" => Some("cipresso"),
-        "betula pendula" => Some("betulla"),
-        "alternaria alternata" => Some("alternaria"),
-        "artemisia vulgaris" => Some("artemisia"),
-        "ambrosia artemisiifolia" => Some("ambrosia"),
-        "cynodon dactylon" => Some("cynodon"),
-        "gato" => Some("gatto"),
-        "perro" => Some("cane"),
-        "haemophilus influenzae" => Some("h.influenzae"),
-        "streptococcus pneumoniae" => Some("s.pneumoniae"),
-        "moraxella catarrhalis" => Some("m.catarrhalis"),
-        "klebsiella pneumoniae" => Some("k.pneumoniae"),
-        "staphylococcus aureus" => Some("s.aureus"),
-        "streptococcus pyogenes" => Some("s.pyogenes"),
-        "pseudomonas aeruginosa" => Some("p.aeruginosa"),
-        "proteus mirabilis" => Some("p.mirabilis"),
-        "escherichia coli" => Some("e.coli"),
-        "enterococcus faecalis" => Some("e.faecalis"),
-        _ => None,
-    }
-}
-
-fn pulisci_allergene(value: &str) -> String {
-    let parts: Vec<&str> = value.split_whitespace().collect();
-    let mut kept = Vec::new();
-    for part in parts {
-        let normalized = normalizza_testo(part);
-        if part.contains('%')
-            || matches!(
-                normalized.as_str(),
-                "polimerizado" | "polimerizzata" | "polimerizzato" | "polim"
-            )
-        {
-            continue;
-        }
-        kept.push(part.trim_matches(|c: char| matches!(c, ',' | ';' | '.')));
-    }
-    let mut cleaned = kept.join(" ").trim().to_string();
-    if cleaned
-        .split_whitespace()
-        .last()
-        .is_some_and(|last| matches!(last, "N" | "S"))
-    {
-        cleaned = cleaned
-            .split_whitespace()
-            .take(cleaned.split_whitespace().count().saturating_sub(1))
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-    cleaned
-}
-
-fn canonicalizza_allergene(value: &str, canonical: &[String]) -> String {
-    let cleaned = pulisci_allergene(value);
-    if let Some(alias) = alias_allergene(&cleaned) {
-        return alias.to_string();
-    }
-    let normalized = normalizza_testo(&cleaned);
-    canonical
-        .iter()
-        .find(|candidate| normalizza_testo(candidate) == normalized)
-        .cloned()
-        .unwrap_or(cleaned)
-}
-
 fn parse_dosage(treatment: &str) -> String {
     let tokens: Vec<&str> = treatment
         .split_whitespace()
@@ -747,11 +671,7 @@ fn parse_dosage(treatment: &str) -> String {
         .unwrap_or_default()
 }
 
-fn normalize_treatment(
-    row: &RigaLaboratorio,
-    products: &[(String, String)],
-    canonical_allergens: &[String],
-) -> TrattamentoNormalizzato {
+fn normalize_treatment(row: &RigaLaboratorio, products: &[(String, String)]) -> TrattamentoNormalizzato {
     let treatment = normalizza_testo(&row.treatment);
     let (family, base_name) = if treatment.starts_with("beltavac") {
         ("beltavac", "Polimerizzato")
@@ -817,42 +737,16 @@ fn normalize_treatment(
         && (treatment.contains("nasale")
             || treatment.contains("spray")
             || treatment.contains("sublinguale"));
-    let mut allergens: Vec<String> = Vec::new();
-    for value in row.composition.split('|') {
-        let canonical = canonicalizza_allergene(value, canonical_allergens);
-        if canonical.trim().is_empty()
-            || allergens
-                .iter()
-                .any(|existing| normalizza_testo(existing) == normalizza_testo(&canonical))
-        {
-            continue;
-        }
-        allergens.push(canonical);
-    }
     TrattamentoNormalizzato {
         family: family.to_string(),
         product_id,
         product_name,
         formulation,
         dosage: parse_dosage(&row.treatment),
-        allergens,
         vials: row.vials,
         product_fallback,
         veb_product_ambiguous,
     }
-}
-
-fn vec_string(data: &Map<String, Value>, field: &str) -> Vec<String> {
-    data.get(field)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn rank_candidate(
@@ -1311,7 +1205,6 @@ fn automatic_assignments(
 type CandidateData = (
     Vec<Candidato>,
     Vec<(String, String)>,
-    Vec<String>,
     HashMap<String, Vec<(String, bool)>>,
 );
 
@@ -1460,19 +1353,6 @@ fn candidate_data(p: &crate::projection::Projection) -> CandidateData {
         .map(|record| (record.id.clone(), str_field(&record.data, "nome")))
         .collect();
     let product_names: HashMap<String, String> = products.iter().cloned().collect();
-    let mut allergens: Vec<String> = p
-        .list("prodotto_produzione")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|record| {
-            matches!(
-                str_field(&record.data, "tipo").as_str(),
-                "allergene" | "ceppo"
-            )
-        })
-        .map(|record| str_field(&record.data, "valore"))
-        .filter(|value| !value.is_empty())
-        .collect();
     let mut candidates = Vec::new();
     let mut references: HashMap<String, Vec<(String, bool)>> = HashMap::new();
     for row in p.list("riga_ordine").unwrap_or_default() {
@@ -1488,7 +1368,6 @@ fn candidate_data(p: &crate::projection::Projection) -> CandidateData {
                 .or_default()
                 .push((row.id.clone(), shipped));
         }
-        allergens.extend(vec_string(&row.data, "allergeni"));
         if shipped {
             continue;
         }
@@ -1559,9 +1438,7 @@ fn candidate_data(p: &crate::projection::Projection) -> CandidateData {
             current_fields,
         });
     }
-    allergens.sort_by_key(|value| normalizza_testo(value));
-    allergens.dedup_by(|a, b| normalizza_testo(a) == normalizza_testo(b));
-    (candidates, products, allergens, references)
+    (candidates, products, references)
 }
 
 impl AppState {
@@ -1599,11 +1476,11 @@ impl AppState {
             return Err("nessuno dei file selezionati contiene righe valide".into());
         }
         self.with_engine(|engine| {
-            let (candidates, products, canonical_allergens, existing_references) =
+            let (candidates, products, existing_references) =
                 engine.with_projection(candidate_data);
             let normalized: Vec<TrattamentoNormalizzato> = source_rows
                 .iter()
-                .map(|row| normalize_treatment(row, &products, &canonical_allergens))
+                .map(|row| normalize_treatment(row, &products))
                 .collect();
             let reuse_candidates: HashMap<String, HashSet<String>> = engine.with_projection(|p| {
                 let gift_orders: HashSet<_> = p.list("ordine").unwrap_or_default().into_iter()
@@ -2406,28 +2283,24 @@ mod tests {
             vials: 1,
             composition: String::new(),
         };
-        let canonical = Vec::new();
         let beltavac = normalize_treatment(
             &row("BELTAVAC Polimerizado PRO2 1 Vial (ITA)"),
             &products,
-            &canonical,
         );
         assert_eq!(beltavac.product_name, "Polimerizzato PRO");
         assert_eq!(beltavac.product_id, "prod-pol-pro");
         assert!(!beltavac.product_fallback);
 
-        let beltaoral =
-            normalize_treatment(&row("BELTAORAL PRO2 1 Vial (ITA)"), &products, &canonical);
+        let beltaoral = normalize_treatment(&row("BELTAORAL PRO2 1 Vial (ITA)"), &products);
         assert_eq!(beltaoral.product_name, "Sublinguale PRO");
         assert_eq!(beltaoral.product_id, "prod-sub-pro");
 
-        let veb = normalize_treatment(&row("VEB Sottocutanea 1 Vial (ITA)"), &products, &canonical);
+        let veb = normalize_treatment(&row("VEB Sottocutanea 1 Vial (ITA)"), &products);
         assert_eq!(veb.formulation, "VEB sottocute");
 
         let fallback = normalize_treatment(
             &row("BELTAVAC Polimerizado PRO2 1 Vial (ITA)"),
             &products[2..],
-            &canonical,
         );
         assert_eq!(fallback.product_name, "Polimerizzato 1 fiala");
         assert_eq!(fallback.product_id, "prod-pol-1");
@@ -2497,7 +2370,6 @@ mod tests {
             product_name: "Lisato batterico 2 fiale".into(),
             formulation: "spray".into(),
             dosage: String::new(),
-            allergens: Vec::new(),
             vials: 2,
             product_fallback: false,
             veb_product_ambiguous: true,
@@ -2520,7 +2392,6 @@ mod tests {
             product_name: "Polimerizzato 2 fiale".into(),
             formulation: "polimerizzato".into(),
             dosage: String::new(),
-            allergens: Vec::new(),
             vials: 2,
             product_fallback: false,
             veb_product_ambiguous: false,
@@ -2538,7 +2409,6 @@ mod tests {
             product_name: "Polimerizzato PRO".into(),
             formulation: "polimerizzato".into(),
             dosage: String::new(),
-            allergens: Vec::new(),
             vials: 2,
             product_fallback: false,
             veb_product_ambiguous: false,
@@ -2601,7 +2471,7 @@ mod tests {
 
     #[test]
     fn allergeni_assenti_non_alterano_il_punteggio_di_associazione() {
-        let row = RigaLaboratorio {
+        let mut row = RigaLaboratorio {
             source: "fixture.xlsx".into(),
             source_row: 2,
             reference: "5080001".into(),
@@ -2631,19 +2501,11 @@ mod tests {
             dosage: String::new(),
             current_fields: Map::new(),
         };
-        let mut normalized = TrattamentoNormalizzato {
-            family: "beltavac".into(),
-            product_id: "prod-1".into(),
-            product_name: "Polimerizzato 1 fiala".into(),
-            formulation: "polimerizzato".into(),
-            dosage: String::new(),
-            allergens: Vec::new(),
-            vials: 1,
-            product_fallback: false,
-            veb_product_ambiguous: false,
-        };
+        let products = vec![("prod-1".into(), "Polimerizzato 1 fiala".into())];
+        let normalized = normalize_treatment(&row, &products);
         let without_allergens = rank_candidate(&row, &normalized, 0, &candidate);
-        normalized.allergens.push("non identificato".into());
+        row.composition = "Allergene non identificato 100%".into();
+        let normalized = normalize_treatment(&row, &products);
         let with_unmatched_allergens = rank_candidate(&row, &normalized, 0, &candidate);
         assert_eq!(without_allergens.score, with_unmatched_allergens.score);
     }
@@ -2656,7 +2518,6 @@ mod tests {
             product_name: "Lisato batterico 2 fiale".into(),
             formulation: String::new(),
             dosage: String::new(),
-            allergens: Vec::new(),
             vials: 2,
             product_fallback: false,
             veb_product_ambiguous: false,
@@ -2688,7 +2549,6 @@ mod tests {
             product_name: "Lisato batterico 2 fiale".into(),
             formulation: "spray".into(),
             dosage: "2+2".into(),
-            allergens: vec!["d.farinae".into()],
             vials: 2,
             product_fallback: false,
             veb_product_ambiguous: false,
@@ -2730,27 +2590,6 @@ mod tests {
         assert_eq!(parse_dosage("BELTAORAL DUO 2 Viales (ITA)"), "");
         assert_eq!(parse_dosage("VEB NasaleOrale 1,2,3,3 (ITA)"), "1+2+3+3");
         assert_eq!(parse_dosage("BELTAVAC Polimerizado 3 (ITA)"), "3");
-    }
-
-    #[test]
-    fn allergeni_convergono_sul_catalogo_e_mantengono_i_liberi() {
-        let canonical = vec![
-            "d.farinae".to_string(),
-            "mix graminacee".to_string(),
-            "olea europea".to_string(),
-        ];
-        assert_eq!(
-            canonicalizza_allergene("Dermatophagoides farinae polimerizado 50%", &canonical),
-            "d.farinae"
-        );
-        assert_eq!(
-            canonicalizza_allergene("Gramíneas espontáneas polim. 50%", &canonical),
-            "mix graminacee"
-        );
-        assert_eq!(
-            canonicalizza_allergene("Nuovo allergene 100%", &canonical),
-            "Nuovo allergene"
-        );
     }
 
     #[test]
@@ -3157,11 +2996,11 @@ mod tests {
         let copy = dir.path().join("projection.sqlite");
         fs::copy(database, &copy).unwrap();
         let projection = crate::projection::Projection::open(&copy).unwrap();
-        let (candidates, products, allergens, _) = candidate_data(&projection);
+        let (candidates, products, _) = candidate_data(&projection);
         let rows = parse_workbook(Path::new(&sample)).unwrap();
         for reference in references.to_string_lossy().split(',') {
             let row = rows.iter().find(|row| row.reference == reference).unwrap();
-            let normalized = normalize_treatment(row, &products, &allergens);
+            let normalized = normalize_treatment(row, &products);
             let matches: Vec<_> = candidates
                 .iter()
                 .enumerate()
@@ -3351,18 +3190,18 @@ mod tests {
                 .count(),
             1
         );
-        let (candidates, products, allergens, _) = state
+        let (candidates, products, _) = state
             .with_engine(|engine| Ok(engine.with_projection(candidate_data)))
             .unwrap();
         let mut source = parse_workbook(&path).unwrap().remove(0);
         source.treatment = "BELTAVAC Polimerizado PRO2 1 Vial (ITA)".into();
-        let pro = normalize_treatment(&source, &products, &allergens);
+        let pro = normalize_treatment(&source, &products);
         assert!(
             product_score_for(&pro, &candidates[0]) < 1.0,
             "PRO non deve diventare standard per le fiale assenti"
         );
         source.treatment = "VEB Sublinguale Spray 3,3 (ITA)".into();
-        let veb = normalize_treatment(&source, &products, &allergens);
+        let veb = normalize_treatment(&source, &products);
         let mut candidate = candidates[0].clone();
         candidate.product_name = "Lisato batterico 2 fiale".into();
         candidate.formulation = "VEB sottocute".into();

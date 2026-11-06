@@ -296,10 +296,11 @@ pub fn snapshot_choices(zip_path: &Path) -> R<Vec<SnapshotInfoDto>> {
     let mut out = Vec::new();
     for i in 0..archive.len() {
         let mut f = archive.by_index(i).map_err(s)?;
-        if f.is_dir() || !f.name().starts_with("snapshots/") || !f.name().ends_with(".json") {
+        let nome = f.name().map_err(s)?;
+        if f.is_dir() || !nome.starts_with("snapshots/") || !nome.ends_with(".json") {
             continue;
         }
-        let path_in_zip = f.name().replace('\\', "/");
+        let path_in_zip = nome.replace('\\', "/");
         let (device_id, seq) = snapshot_name_parts(Path::new(&path_in_zip))
             .unwrap_or_else(|| ("sconosciuto".to_string(), 0));
         let bytes = f.size();
@@ -643,7 +644,7 @@ mod tests {
         let file = File::open(&info.path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         assert!(names.iter().all(|n| !n.starts_with("meta/locks")));
         assert!(names
@@ -678,7 +679,7 @@ mod tests {
         let file = File::open(&info.path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         assert!(names.iter().any(|n| n == "snapshots/PC-A-00000002.json"));
         assert!(names.iter().any(|n| n == "snapshots/PC-B-00000001.json"));
